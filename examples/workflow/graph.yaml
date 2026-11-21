@@ -1,0 +1,54 @@
+schema: mcbtodo.workflow/v1
+id: nightly-check
+name: Nightly Check
+entry: test
+capabilities:
+  - {kind: process.exec, scope: page-table-check}
+  - {kind: agent.invoke, scope: analyze_test_failure}
+nodes:
+  test:
+    kind: script
+    runner: nushell
+    source: scripts/check.nu
+    timeout_seconds: 30
+    capabilities: [{kind: process.exec, scope: page-table-check}]
+    outputs: {passed: boolean, summary: string}
+  judge:
+    kind: condition
+    equals: true
+  report:
+    kind: action
+    action: report.create
+  triage:
+    kind: agent
+    capability: analyze_test_failure
+    inputs: {summary: string}
+    outputs: {title: string}
+  approve:
+    kind: approval
+  followup:
+    kind: action
+    action: task.create
+  rejected:
+    kind: action
+    action: report.create
+  script_error:
+    kind: action
+    action: report.create
+edges:
+  - {from: test, to: judge}
+  - {from: test, to: script_error, when: failure}
+  - {from: judge, to: report, when: "true"}
+  - {from: judge, to: triage, when: "false"}
+  - {from: triage, to: approve}
+  - {from: approve, to: followup, when: approved}
+  - {from: approve, to: rejected, when: rejected}
+bindings:
+  - {from: {node: test, port: passed}, to: {node: judge, port: value}}
+  - {from: {node: test, port: summary}, to: {node: report, port: summary}}
+  - {from: {node: test, port: summary}, to: {node: triage, port: summary}}
+  - {from: {node: triage, port: title}, to: {node: followup, port: title}}
+literals:
+  - {to: {node: followup, port: project_id}, value: "10000000-0000-4000-8000-000000000001"}
+  - {to: {node: rejected, port: summary}, value: "Follow-up declined"}
+  - {to: {node: script_error, port: summary}, value: "Check could not run"}

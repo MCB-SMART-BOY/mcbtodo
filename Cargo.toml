@@ -1,0 +1,43 @@
+[workspace]
+resolver = "3"
+members = ["apps/mcbtodo", "apps/mcbtodo-daemon", "apps/mcbtodo-worker", "crates/application", "crates/domain", "crates/execution", "crates/platform", "crates/protocol", "crates/vault", "crates/workflow", "xtask"]
+default-members = ["apps/mcbtodo"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.100"
+publish = true
+license = "Apache-2.0"
+license-file = "LICENSE"
+repository = "https://github.com/MCB-SMART-BOY/mcbtodo"
+
+[workspace.dependencies]
+anyhow = "1"
+base64 = "0.23"
+chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = { version = "0.10.4", features = ["serde"] }
+clap = { version = "4.6", features = ["derive"] }
+crossterm = "0.29"
+icalendar = { version = "0.17.17", default-features = false }
+mcbtodo-domain = { path = "crates/domain", version = "0.1.0" }
+mcbtodo-execution = { path = "crates/execution", version = "0.1.0" }
+mcbtodo-application = { path = "crates/application", version = "0.1.0" }
+mcbtodo-platform = { path = "crates/platform", version = "0.1.0" }
+mcbtodo-protocol = { path = "crates/protocol", version = "0.1.0" }
+mcbtodo-workflow = { path = "crates/workflow", version = "0.1.0" }
+mcbtodo-vault = { path = "crates/vault", version = "0.1.0" }
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
+rusqlite = { version = "0.38", features = ["bundled"] }
+rustix = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde-saphyr = "1.3"
+sha2 = "0.10"
+tempfile = "3"
+thiserror = "2"
+toml = "1"
+uuid = { version = "1", features = ["serde", "v5"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"

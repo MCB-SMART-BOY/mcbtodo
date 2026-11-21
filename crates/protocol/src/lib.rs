@@ -1,0 +1,89 @@
+//! Typed client and wire protocol for the local workspace daemon.
+
+mod client;
+pub mod focus;
+pub mod notifications;
+pub mod wire;
+pub mod worker;
+pub mod workflow;
+
+pub use client::request;
+pub use wire::ProtocolError;
+
+use chrono::{DateTime, NaiveDate, Utc};
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Request {
+    Status,
+    /// Starts a new session or resumes the current paused session.
+    /// Omit the work unit to start an unassigned session or resume the existing work unit.
+    Start {
+        work_unit_id: Option<Uuid>,
+    },
+    Pause,
+    Stop,
+    FocusReport {
+        date: NaiveDate,
+        /// IANA timezone used to determine the local session start date.
+        timezone: String,
+    },
+    /// List terminal workflow notifications, starting strictly before the given run ID.
+    ListNotifications {
+        before: Option<Uuid>,
+    },
+    /// List reminder deliveries, starting strictly before the given notification ID.
+    ListReminderNotifications {
+        before: Option<Uuid>,
+    },
+    Workflow(workflow::WorkflowRequest),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum Response {
+    Status(TimerStatus),
+    FocusReport(focus::DailyFocusReport),
+    Notifications(notifications::NotificationPage),
+    ReminderNotifications(notifications::ReminderNotificationPage),
+    Workflow(workflow::WorkflowResponse),
+    Error { code: ErrorCode, message: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorCode {
+    Conflict,
+    InvalidRequest,
+    UnsupportedVersion,
+    NotFound,
+    PermissionDenied,
+    Internal,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TimerStatus {
+    pub state: TimerState,
+    /// The active session, or the most recently stopped session when idle.
+    pub session: Option<FocusSession>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TimerState {
+    Idle,
+    Running,
+    Paused,
+    NeedsReview,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FocusSession {
+    pub id: Uuid,
+    pub work_unit_id: Option<Uuid>,
+    pub started_at: DateTime<Utc>,
+    pub stopped_at: Option<DateTime<Utc>>,
+    pub elapsed_seconds: u64,
+}

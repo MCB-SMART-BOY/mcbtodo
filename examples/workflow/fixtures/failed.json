@@ -1,0 +1,9 @@
+{
+  "schema": "mcbtodo.workflow-fixture/v1",
+  "nodes": {
+    "test": {"status": "succeeded", "output": {"passed": false, "summary": "A check failed"}},
+    "triage": {"status": "succeeded", "output": {"title": "Investigate the failed check"}},
+    "approve": {"status": "approved"},
+    "followup": {"status": "succeeded"}
+  }
+}

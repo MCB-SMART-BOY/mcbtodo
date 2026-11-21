@@ -1,0 +1,354 @@
+use std::fs;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::net::UnixListener;
+use std::path::PathBuf;
+use std::thread;
+
+use mcbtodo_platform::WorkspacePaths;
+use mcbtodo_protocol::{TimerState, request};
+
+use super::*;
+
+fn status(server: &mut Server, path: PathBuf, command: Request) -> Response {
+    thread::scope(|scope| {
+        let client = scope.spawn(move || request(path, command));
+        while !client.is_finished() {
+            server.step().unwrap();
+        }
+        client.join().unwrap().unwrap()
+    })
+}
+
+#[test]
+fn daemon_answers_commands_and_recovers_running_timer_over_ipc() -> anyhow::Result<()> {
+    let dir = private_tempdir()?;
+    let socket = dir.path().join("s");
+    let mut server = open_for_test(dir.path(), &socket)?;
+    assert_eq!(fs::metadata(&socket)?.permissions().mode() & 0o777, 0o600);
+    assert!(
+        matches!(status(&mut server, socket.clone(), Request::Status), Response::Status(state) if state.state == TimerState::Idle && state.session.is_none())
+    );
+    let started = status(
+        &mut server,
+        socket.clone(),
+        Request::Start { work_unit_id: None },
+    );
+    let Response::Status(started) = started else {
+        panic!("start failed: {started:?}");
+    };
+    assert_eq!(started.state, TimerState::Running);
+    drop(server);
+
+    let mut server = open_for_test(dir.path(), &socket)?;
+    let recovered = status(&mut server, socket.clone(), Request::Status);
+    let Response::Status(recovered) = recovered else {
+        panic!("status failed: {recovered:?}");
+    };
+    assert_eq!(recovered.state, TimerState::NeedsReview);
+    assert_eq!(recovered.session.unwrap().id, started.session.unwrap().id);
+    Ok(())
+}
+
+#[test]
+fn reminders_publish_without_connected_clients_and_survive_daemon_restart() -> Result<()> {
+    use chrono::{SecondsFormat, TimeDelta, Utc};
+    use uuid::Uuid;
+
+    let dir = private_tempdir()?;
+    let paths = WorkspacePaths::from_home(dir.path().to_owned());
+    paths.initialize()?;
+    let state = paths.state_dir();
+    let socket = state.join("s");
+    let mut server = Server::open_with_paths(&state, &socket, paths.clone())?;
+    server.desktop = None;
+    let reminders = paths.vault_root().join("reminders");
+    fs::create_dir(&reminders)?;
+    let now = Utc::now();
+    let write_reminder = |name: &str, id, offset_seconds| -> Result<()> {
+        let scheduled_at =
+            (now + TimeDelta::seconds(offset_seconds)).to_rfc3339_opts(SecondsFormat::Nanos, true);
+        fs::write(
+            reminders.join(format!("{name}.md")),
+            format!(
+                "---\nschema: mcbtodo.reminder/v1\nid: {}\nschedule:\n  kind: once\n  at:\n    value: '{scheduled_at}'\n    timezone: UTC\n---\n\n# {name}\n",
+                Uuid::from_u128(id),
+            ),
+        )?;
+        Ok(())
+    };
+    write_reminder("due", 1, -60)?;
+    // The catch-up window includes recent occurrences but excludes anything older than 24h.
+    write_reminder("within-horizon", 5, -86_000)?;
+    write_reminder("expired", 2, -90_000)?;
+    write_reminder("future", 3, 3_600)?;
+    wait_for_reminders(&mut server, 2)?;
+    let request = Request::ListReminderNotifications { before: None };
+    let Response::ReminderNotifications(page) =
+        status(&mut server, socket.clone(), request.clone())
+    else {
+        panic!("expected reminder inbox");
+    };
+    assert_eq!(page.notifications.len(), 2);
+    assert_eq!(page.notifications[0].reminder_id, Uuid::from_u128(1));
+    assert_eq!(
+        page.notifications[0].scheduled_at,
+        now - TimeDelta::seconds(60)
+    );
+    assert_eq!(page.notifications[1].reminder_id, Uuid::from_u128(5));
+    assert_eq!(
+        page.notifications[1].scheduled_at,
+        now - TimeDelta::seconds(86_000)
+    );
+    drop(server);
+
+    // An independent due item proves the restarted daemon rescanned the first.
+    write_reminder("second-due", 4, -30)?;
+    let mut server = Server::open_with_paths(&state, &socket, paths)?;
+    server.desktop = None;
+    wait_for_reminders(&mut server, 3)?;
+    let Response::ReminderNotifications(restarted) = status(&mut server, socket, request) else {
+        panic!("expected reminder inbox");
+    };
+    assert_eq!(restarted.notifications.len(), 3);
+    assert_eq!(restarted.notifications[0].reminder_id, Uuid::from_u128(4));
+    assert_eq!(restarted.notifications[1..], page.notifications);
+    Ok(())
+}
+
+fn wait_for_reminders(server: &mut Server, count: usize) -> Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while server
+        .runtime
+        .notifications()
+        .reminder_page(None)?
+        .notifications
+        .len()
+        < count
+    {
+        assert!(Instant::now() < deadline, "timed out waiting for reminders");
+        server.step()?;
+    }
+    Ok(())
+}
+
+#[test]
+fn a_second_daemon_cannot_change_the_live_socket() -> anyhow::Result<()> {
+    let dir = private_tempdir()?;
+    let socket = dir.path().join("s");
+    let mut server = open_for_test(dir.path(), &socket)?;
+    let inode = fs::symlink_metadata(&socket)?.ino();
+    assert!(open_for_test(dir.path(), &socket).is_err());
+    assert_eq!(fs::symlink_metadata(&socket)?.ino(), inode);
+    assert!(matches!(
+        status(&mut server, socket.clone(), Request::Status),
+        Response::Status(_)
+    ));
+    Ok(())
+}
+
+#[test]
+fn daemon_keeps_a_live_socket_even_when_its_lock_is_available() -> anyhow::Result<()> {
+    let dir = private_tempdir()?;
+    let socket = dir.path().join("s");
+    let external = UnixListener::bind(&socket)?;
+    let inode = fs::symlink_metadata(&socket)?.ino();
+    assert!(open_for_test(dir.path(), &socket).is_err());
+    assert_eq!(fs::symlink_metadata(&socket)?.ino(), inode);
+    drop(external);
+    let mut server = open_for_test(dir.path(), &socket)?;
+    assert!(matches!(
+        status(&mut server, socket.clone(), Request::Status),
+        Response::Status(_)
+    ));
+    Ok(())
+}
+
+#[test]
+fn daemon_does_not_remove_a_non_socket_at_the_socket_path() -> anyhow::Result<()> {
+    let dir = private_tempdir()?;
+    let socket = dir.path().join("s");
+    fs::write(&socket, "preserve me")?;
+    assert!(open_for_test(dir.path(), &socket).is_err());
+    assert_eq!(fs::read_to_string(socket)?, "preserve me");
+    Ok(())
+}
+
+#[test]
+fn daemon_requires_a_private_preinitialized_state_directory() -> anyhow::Result<()> {
+    let dir = private_tempdir()?;
+    let state = dir.path().join("state");
+    let socket = state.join("s");
+    assert!(open_for_test(&state, &socket).is_err());
+    assert!(!state.exists());
+    fs::create_dir(&state)?;
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o755))?;
+    assert!(open_for_test(&state, &socket).is_err());
+    assert_eq!(fs::read_dir(&state)?.count(), 0);
+    Ok(())
+}
+
+#[test]
+fn malformed_request_receives_a_typed_error_and_does_not_stop_daemon() -> anyhow::Result<()> {
+    use std::io::Write;
+
+    let dir = private_tempdir()?;
+    let socket = dir.path().join("s");
+    let mut server = open_for_test(dir.path(), &socket)?;
+    let mut client = UnixStream::connect(&socket)?;
+    client.write_all(&u32::MAX.to_be_bytes())?;
+    server.step()?;
+    assert!(matches!(
+        wire::read::<Response>(&mut client)?,
+        Response::Error {
+            code: ErrorCode::InvalidRequest,
+            ..
+        }
+    ));
+    assert!(matches!(
+        status(&mut server, socket.clone(), Request::Status),
+        Response::Status(_)
+    ));
+    Ok(())
+}
+
+fn private_tempdir() -> io::Result<tempfile::TempDir> {
+    tempfile::Builder::new()
+        .permissions(fs::Permissions::from_mode(0o700))
+        .tempdir()
+}
+
+fn open_for_test(state_dir: &std::path::Path, socket_path: &std::path::Path) -> Result<Server> {
+    Server::open_with_paths(
+        state_dir,
+        socket_path,
+        WorkspacePaths::from_home(state_dir.to_owned()),
+    )
+}
+
+#[test]
+fn production_server_uses_paths_from_one_workspace() -> anyhow::Result<()> {
+    let home = private_tempdir()?;
+    let paths = WorkspacePaths::from_home(home.path().to_owned());
+    paths.initialize()?;
+    let socket = paths.socket_path();
+    let server = Server::open(paths.clone())?;
+
+    assert!(socket.exists());
+    assert!(paths.state_dir().join("focus.sqlite3").exists());
+    assert!(paths.state_dir().join("workflow.sqlite3").exists());
+    drop(server);
+    Ok(())
+}
+
+#[test]
+fn daemon_checkpoints_without_any_connected_clients() -> anyhow::Result<()> {
+    let dir = private_tempdir()?;
+    let socket = dir.path().join("s");
+    let mut server = open_for_test(dir.path(), &socket)?;
+    let now = Instant::now();
+    let started = now - Duration::from_secs(6);
+    let result = server
+        .timer
+        .apply(Request::Start { work_unit_id: None }, started)?;
+    assert!(result.is_ok());
+    server.step()?;
+    drop(server);
+
+    let mut server = open_for_test(dir.path(), &socket)?;
+    let recovered = status(&mut server, socket, Request::Status);
+    let Response::Status(recovered) = recovered else {
+        panic!("status failed: {recovered:?}");
+    };
+    assert_eq!(recovered.state, TimerState::NeedsReview);
+    assert!(recovered.session.unwrap().elapsed_seconds >= 5);
+    Ok(())
+}
+
+#[test]
+fn notification_inbox_keeps_terminal_runs_and_recovery_across_restarts() -> anyhow::Result<()> {
+    use crate::run_store::RunStore;
+    use chrono::Utc;
+    use mcbtodo_protocol::workflow::{RunState, WorkflowRequest};
+    use serde_json::{Value, json};
+    use uuid::Uuid;
+
+    let dir = private_tempdir()?;
+    let socket = dir.path().join("s");
+    let db = dir.path().join("workflow.sqlite3");
+    let succeeded = Uuid::from_u128(1);
+    let failed = Uuid::from_u128(2);
+    let interrupted = Uuid::from_u128(3);
+    let cancelled = Uuid::from_u128(4);
+    let pending = Uuid::from_u128(5);
+    let due_at = Utc::now() + chrono::TimeDelta::days(1);
+    {
+        let store = RunStore::open(&db)?;
+        for id in [succeeded, failed, interrupted, cancelled, pending] {
+            store.insert(id, "revision", Some(due_at))?;
+        }
+        store.transition(
+            &store.get(succeeded)?.unwrap(),
+            RunState::Succeeded,
+            None,
+            None,
+        )?;
+        store.transition(
+            &store.get(failed)?.unwrap(),
+            RunState::Failed,
+            None,
+            Some("approval denied"),
+        )?;
+        store.transition(
+            &store.get(interrupted)?.unwrap(),
+            RunState::Running,
+            Some("worker"),
+            None,
+        )?;
+    }
+
+    let list = |server: &mut Server| -> anyhow::Result<Value> {
+        let mut client = UnixStream::connect(&socket)?;
+        wire::write(
+            &mut client,
+            &json!({"command":"list_notifications","before":null}),
+        )?;
+        server.step()?;
+        Ok(wire::read(&mut client)?)
+    };
+    let mut server = open_for_test(dir.path(), &socket)?;
+    for _ in 0..2 {
+        let reply = status(
+            &mut server,
+            socket.clone(),
+            Request::Workflow(WorkflowRequest::Cancel { run_id: cancelled }),
+        );
+        assert!(matches!(reply, Response::Workflow(_)));
+    }
+    let inbox = list(&mut server)?;
+    assert_eq!(inbox["result"], "notifications", "{inbox}");
+    let entries = inbox["notifications"].as_array().unwrap();
+    assert_eq!(entries.len(), 4);
+    for (entry, (id, state)) in entries.iter().zip([
+        (cancelled, "cancelled"),
+        (interrupted, "outcome_unknown"),
+        (failed, "failed"),
+        (succeeded, "succeeded"),
+    ]) {
+        assert_eq!(entry["run_id"], id.to_string());
+        assert_eq!(entry["state"], state);
+        assert!(
+            entry["finished_at"]
+                .as_str()
+                .unwrap()
+                .parse::<chrono::DateTime<Utc>>()
+                .is_ok()
+        );
+    }
+    assert_eq!(entries[2]["detail"], "approval denied");
+    assert!(inbox["next_before"].is_null());
+    drop(server);
+
+    let mut restarted = open_for_test(dir.path(), &socket)?;
+    assert_eq!(list(&mut restarted)?, inbox);
+    Ok(())
+}

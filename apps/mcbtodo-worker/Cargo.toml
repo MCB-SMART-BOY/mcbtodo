@@ -1,0 +1,25 @@
+[package]
+name = "mcbtodo-worker"
+repository.workspace = true
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+license-file.workspace = true
+description = "Restricted local worker process for mcbtodo workflow execution."
+documentation = "https://docs.rs/mcbtodo-worker"
+
+[dependencies]
+anyhow.workspace = true
+mcbtodo-execution.workspace = true
+mcbtodo-platform.workspace = true
+mcbtodo-protocol.workspace = true
+mcbtodo-workflow.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+uuid.workspace = true
+
+[lints]
+workspace = true

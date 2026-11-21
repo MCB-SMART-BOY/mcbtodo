@@ -1,0 +1,35 @@
+auto_order = ["codex", "claude", "opencode", "pi"]
+default_workflow = "develop"
+instructions = { path = "instructions.md" }
+
+[harnesses.codex]
+executable = "codex"
+session_vars = ["CODEX_THREAD_ID", "CODEX_SESSION_ID"]
+document = { path = "harness/codex.md" }
+
+[harnesses.claude]
+executable = "claude"
+session_vars = ["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"]
+document = { path = "harness/claude.md" }
+
+[harnesses.opencode]
+executable = "opencode"
+args = ["--prompt"]
+session_vars = ["OPENCODE"]
+document = { path = "harness/opencode.md" }
+
+[harnesses.pi]
+executable = "pi"
+session_vars = ["PI_CODING_AGENT"]
+document = { path = "harness/pi.md" }
+
+[harnesses.generic]
+document = { path = "harness/generic.md" }
+
+[workflows]
+develop = { path = "workflows/develop.md" }
+contribution = { path = "workflows/contribution.md" }
+review = { path = "workflows/review.md" }
+release = { path = "workflows/release.md" }
+documentation = { path = "workflows/documentation.md" }
+architecture = { path = "workflows/architecture.md" }

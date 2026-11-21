@@ -1,0 +1,27 @@
+[package]
+name = "mcbtodo-application"
+repository.workspace = true
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+license-file.workspace = true
+description = "Shared application use cases and query projections for mcbtodo."
+documentation = "https://docs.rs/mcbtodo-application"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+chrono-tz.workspace = true
+mcbtodo-domain.workspace = true
+mcbtodo-vault.workspace = true
+mcbtodo-workflow.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

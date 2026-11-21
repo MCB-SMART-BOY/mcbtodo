@@ -1,0 +1,37 @@
+[package]
+name = "mcbtodo-daemon"
+repository.workspace = true
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+license-file.workspace = true
+description = "Background daemon for mcbtodo scheduling, reminders, and workflow execution."
+documentation = "https://docs.rs/mcbtodo-daemon"
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+chrono-tz.workspace = true
+clap.workspace = true
+mcbtodo-domain.workspace = true
+mcbtodo-application.workspace = true
+mcbtodo-platform.workspace = true
+mcbtodo-protocol.workspace = true
+mcbtodo-workflow.workspace = true
+mcbtodo-vault.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { workspace = true, features = ["event", "fs", "net", "process"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,7 @@
+{
+  "schema": "mcbtodo.workflow-fixture/v1",
+  "nodes": {
+    "test": {"status": "failed", "message": "Fixture runner timed out"},
+    "script_error": {"status": "succeeded"}
+  }
+}

@@ -1,0 +1,539 @@
+mod backup;
+mod calendar_format;
+mod doctor;
+mod focus_report;
+mod ical_import;
+mod mcp;
+mod proposal;
+mod tui;
+mod vault_cli;
+mod workflow;
+mod workflow_runtime_cli;
+
+use std::{
+    io,
+    path::{Path, PathBuf},
+    process::ExitCode,
+};
+
+use anyhow::{Context, Result, bail, ensure};
+use chrono::{NaiveDate, Utc};
+use chrono_tz::Tz;
+use clap::{Parser, Subcommand};
+use icalendar::{Calendar as IcalCalendar, Component, Event as IcalEvent, EventLike, Todo};
+use mcbtodo_application::{CalendarItem, VaultCommands, VaultQueries};
+use mcbtodo_domain::{
+    Id, Occurrence,
+    time::{DateParseError, Deadline, parse_date},
+};
+use mcbtodo_platform::{AppConfig, HomeViewPolicy, WorkspacePaths};
+use mcbtodo_protocol::{Request, Response, TimerState, TimerStatus, request};
+use mcbtodo_vault::Vault;
+
+#[derive(Parser)]
+#[command(version, about = "Markdown-first calendar and task workspace")]
+struct Cli {
+    /// Use a Markdown vault other than ~/.mcbtodo/vault.
+    #[arg(long, global = true, value_name = "PATH")]
+    vault: Option<PathBuf>,
+    /// Override the configured IANA display timezone for this invocation.
+    #[arg(long, global = true, value_name = "ZONE")]
+    timezone: Option<Tz>,
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Initialize the application directories and config file without overwriting them.
+    Init,
+    /// Verify front matter, references, time ranges and the work-unit DAG.
+    Validate,
+    /// Diagnose workspace paths, the Vault, and the daemon socket without changing state.
+    #[command(
+        after_help = "The Linux daemon check looks for a listening socket without connecting. \
+        A stopped daemon and missing optional prerequisites do not affect the exit status."
+    )]
+    Doctor {
+        /// Print a JSON report. Workspace errors still cause a nonzero exit.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Make atomic changes to the Markdown vault.
+    Vault {
+        #[command(subcommand)]
+        command: vault_cli::Command,
+    },
+    /// List projects, tasks and work units.
+    Outline,
+    /// Show the selected day's calendar projection.
+    Calendar {
+        #[arg(long, value_parser = parse_day)]
+        date: Option<NaiveDate>,
+        #[arg(long)]
+        json: bool,
+        #[command(subcommand)]
+        export: Option<CalendarExport>,
+    },
+    /// Export the work-unit DAG as Mermaid.
+    Graph,
+    /// Open the keyboard-driven workspace.
+    Tui {
+        #[arg(long, value_parser = parse_day)]
+        date: Option<NaiveDate>,
+    },
+    /// Control the persistent focus timer through the local daemon.
+    Timer {
+        #[command(subcommand)]
+        command: TimerCommand,
+        #[arg(long, global = true)]
+        json: bool,
+    },
+    /// Validate, publish, schedule and inspect workflows.
+    Workflow {
+        #[command(subcommand)]
+        command: workflow::Command,
+    },
+    /// List persisted notifications as JSON, newest first.
+    Notifications {
+        /// Show reminder deliveries instead of workflow outcomes.
+        #[arg(long)]
+        reminders: bool,
+        /// Continue from the next_before cursor returned by the previous page.
+        #[arg(long, value_name = "UUID")]
+        before: Option<uuid::Uuid>,
+    },
+    /// Expose the configured Vault over Model Context Protocol.
+    Mcp {
+        #[command(subcommand)]
+        command: McpCommand,
+    },
+    /// Review proposed Vault changes.
+    Proposal {
+        #[command(subcommand)]
+        command: proposal::Command,
+    },
+    /// Back up the configured workspace while mcbtodo-daemon is stopped.
+    Backup { destination: PathBuf },
+    /// Restore a backup into a new home directory.
+    Restore {
+        source: PathBuf,
+        destination_home: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum CalendarExport {
+    /// Export calendar projections in an inclusive date window as RFC 5545 iCalendar.
+    ExportIcal {
+        #[arg(long, value_parser = parse_day)]
+        from: NaiveDate,
+        #[arg(long, value_parser = parse_day)]
+        through: NaiveDate,
+        #[arg(long, value_name = "PATH")]
+        output: Option<PathBuf>,
+    },
+    /// Import supported VEVENT components as independent Markdown calendar events.
+    ImportIcal {
+        /// Input iCalendar file.
+        input: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum McpCommand {
+    /// Serve Vault queries and proposal tools over stdio.
+    Serve,
+}
+
+#[derive(Subcommand)]
+enum TimerCommand {
+    Status,
+    Start {
+        /// Associate the session with a WorkUnit in the selected vault.
+        #[arg(long)]
+        unit: Option<Id>,
+    },
+    Pause,
+    Stop,
+    /// Show focus time and estimates by day, week or date range.
+    Report(focus_report::ReportArgs),
+}
+
+fn main() -> ExitCode {
+    match run(Cli::parse()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("mcbtodo: {error:#}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run(cli: Cli) -> Result<()> {
+    let command = cli.command.unwrap_or(Command::Tui { date: None });
+    if let Command::Restore {
+        source,
+        destination_home,
+    } = command
+    {
+        backup::restore(&source, &destination_home)?;
+        println!("Restored workspace to {}", destination_home.display());
+        return Ok(());
+    }
+    let location = VaultLocation {
+        root_override: cli.vault,
+        timezone_override: cli.timezone,
+    };
+    if let Command::Doctor { json } = command {
+        return doctor::run(WorkspacePaths::discover(), location, json);
+    }
+    let paths = WorkspacePaths::discover()?;
+    match command {
+        Command::Workflow { command } => workflow::run(command, &paths)?,
+        Command::Init => {
+            paths.initialize()?;
+            println!(
+                "Config: {}\nVault: {}",
+                paths.config_path().display(),
+                paths.vault_root().display()
+            );
+        }
+        Command::Timer { command, json } => {
+            if let TimerCommand::Report(args) = command {
+                let (root, timezone) = location.resolve(&paths)?;
+                require_default_focus_vault(&paths, &root)?;
+                return focus_report::run(&paths, &root, timezone, args, json);
+            }
+            let command = match command {
+                TimerCommand::Status => Request::Status,
+                TimerCommand::Start { unit } => {
+                    if let Some(id) = unit {
+                        let (root, zone) = location.resolve(&paths)?;
+                        require_default_focus_vault(&paths, &root)?;
+                        let queries = VaultQueries::new(&root, zone);
+                        ensure!(
+                            queries.contains_work_unit(id)?,
+                            "no work unit with ID {id} in the vault"
+                        );
+                    }
+                    Request::Start { work_unit_id: unit }
+                }
+                TimerCommand::Pause => Request::Pause,
+                TimerCommand::Stop => Request::Stop,
+                TimerCommand::Report(_) => unreachable!("handled above"),
+            };
+            let status = timer(&paths, command)?;
+            if json {
+                serde_json::to_writer_pretty(io::stdout().lock(), &status)?;
+                println!();
+            } else {
+                println!("{}", timer_label(&status));
+            }
+        }
+        Command::Mcp {
+            command: McpCommand::Serve,
+        } => {
+            let (root, timezone) = location.resolve(&paths)?;
+            mcp::serve(&root, timezone, &paths)?;
+        }
+        Command::Notifications { before, reminders } => {
+            let request = if reminders {
+                Request::ListReminderNotifications { before }
+            } else {
+                Request::ListNotifications { before }
+            };
+            match daemon_request(&paths, request)? {
+                Response::Notifications(page) if !reminders => {
+                    serde_json::to_writer_pretty(io::stdout().lock(), &page)?;
+                }
+                Response::ReminderNotifications(page) if reminders => {
+                    serde_json::to_writer_pretty(io::stdout().lock(), &page)?;
+                }
+                _ => bail!("unexpected response to notifications request"),
+            }
+            println!();
+        }
+        Command::Proposal { command } => {
+            let (root, timezone) = location.resolve(&paths)?;
+            proposal::run(command, &root, timezone, &paths)?;
+        }
+        Command::Backup { destination } => {
+            ensure!(
+                location.root_override.is_none(),
+                "backup operates on the default Vault"
+            );
+            backup::backup(&paths, &destination)?;
+            println!("Backed up workspace to {}", destination.display());
+        }
+        Command::Vault { command } => {
+            let (root, timezone) = location.resolve(&paths)?;
+            if vault_cli::requires_snapshot(&command) {
+                let vault = Vault::load(&root, timezone)?;
+                vault_cli::run(command, &root, &vault, &paths)?;
+            } else {
+                vault_cli::run_without_snapshot(command, &root, timezone)?;
+            }
+        }
+        Command::Outline => {
+            let (root, timezone) = location.resolve(&paths)?;
+            let rows = VaultQueries::new(root, timezone).outline()?;
+            for row in rows {
+                let blocked = if row.blocked { " [blocked]" } else { "" };
+                println!(
+                    "{}{title}{blocked}",
+                    "  ".repeat(row.depth),
+                    title = row.title
+                );
+            }
+        }
+        Command::Graph => {
+            let (root, timezone) = location.resolve(&paths)?;
+            print!(
+                "{}",
+                VaultQueries::new(root, timezone).work_unit_graph_mermaid()?
+            );
+        }
+        Command::Validate => {
+            let (root, timezone) = location.resolve(&paths)?;
+            VaultQueries::new(root, timezone).validate()?;
+            println!("Vault is valid ({timezone})");
+        }
+        Command::Calendar {
+            export:
+                Some(CalendarExport::ExportIcal {
+                    from,
+                    through,
+                    output,
+                }),
+            ..
+        } => {
+            let (root, timezone) = location.resolve(&paths)?;
+            let window = mcbtodo_domain::time::DateSpan::new(from, through)?;
+            let entries = VaultQueries::new(root, timezone).calendar(window)?;
+            export_ical(entries, timezone, output.as_deref())?;
+        }
+        Command::Calendar {
+            date,
+            json,
+            export: None,
+        } => {
+            let (root, timezone) = location.resolve(&paths)?;
+            let queries = VaultQueries::new(root, timezone);
+            let date = date.unwrap_or_else(|| Utc::now().with_timezone(&timezone).date_naive());
+            let entries = queries.calendar_day(date)?;
+            if json {
+                serde_json::to_writer_pretty(io::stdout().lock(), &entries)?;
+                println!();
+            } else {
+                println!("{date} · {timezone}");
+                for entry in &entries {
+                    println!("{}", calendar_format::item_label(entry, timezone));
+                }
+            }
+        }
+        command => {
+            let (root, vault) = location.load(&paths)?;
+            run_vault(command, root, vault, &paths)?;
+        }
+    }
+    Ok(())
+}
+
+struct VaultLocation {
+    root_override: Option<PathBuf>,
+    timezone_override: Option<Tz>,
+}
+
+impl VaultLocation {
+    fn load(self, paths: &WorkspacePaths) -> Result<(PathBuf, Vault)> {
+        let (root, timezone) = self.resolve(paths)?;
+        let vault = Vault::load(&root, timezone)?;
+        Ok((root, vault))
+    }
+
+    fn resolve(self, paths: &WorkspacePaths) -> Result<(PathBuf, Tz)> {
+        let timezone = match self.timezone_override {
+            Some(timezone) => timezone,
+            None if self.root_override.is_some() && !paths.config_path().try_exists()? => {
+                AppConfig::default().timezone
+            }
+            None => paths.load_config()?.timezone,
+        };
+        let root = self
+            .root_override
+            .unwrap_or_else(|| paths.vault_root().to_path_buf());
+        Ok((root, timezone))
+    }
+}
+
+fn run_vault(command: Command, root: PathBuf, vault: Vault, paths: &WorkspacePaths) -> Result<()> {
+    match command {
+        Command::Init
+        | Command::Doctor { .. }
+        | Command::Timer { .. }
+        | Command::Workflow { .. }
+        | Command::Notifications { .. }
+        | Command::Mcp { .. }
+        | Command::Proposal { .. }
+        | Command::Backup { .. }
+        | Command::Restore { .. } => {
+            unreachable!("handled above")
+        }
+        Command::Validate | Command::Outline | Command::Graph => {
+            unreachable!("handled above")
+        }
+        Command::Vault { command } => vault_cli::run(command, &root, &vault, paths)?,
+        Command::Calendar {
+            export: Some(CalendarExport::ImportIcal { input }),
+            ..
+        } => {
+            let imported = ical_import::parse_file(&input)?;
+            let count = imported.len();
+            VaultCommands::new(&root, vault.timezone())
+                .create_events_atomic(imported)
+                .map_err(anyhow::Error::new)?;
+            println!("Imported {count} calendar events");
+        }
+        Command::Calendar { .. } => unreachable!("calendar queries and exports are handled above"),
+        Command::Tui { date } => {
+            let day = date.unwrap_or_else(|| today(&vault));
+            let home_view = if paths.config_path().try_exists()? {
+                paths.load_config()?.home_view
+            } else {
+                HomeViewPolicy::Month
+            };
+            tui::run(&root, vault, day, paths, home_view)?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn require_default_focus_vault(paths: &WorkspacePaths, root: &Path) -> Result<()> {
+    let default = paths.vault_root();
+    if root != default {
+        ensure!(
+            default.try_exists()? && root.canonicalize()? == default.canonicalize()?,
+            "focus sessions can only reference WorkUnits in the default Vault ({})",
+            default.display(),
+        );
+    }
+    Ok(())
+}
+
+pub(crate) fn require_default_reminder_vault(paths: &WorkspacePaths, root: &Path) -> Result<()> {
+    let default = paths.vault_root();
+    ensure!(
+        default.try_exists()? && root.canonicalize()? == default.canonicalize()?,
+        "background reminders are only supported for the default Vault ({})",
+        default.display(),
+    );
+    Ok(())
+}
+
+pub(crate) fn timer(paths: &WorkspacePaths, operation: Request) -> Result<TimerStatus> {
+    match daemon_request(paths, operation)? {
+        Response::Status(status) => Ok(status),
+        _ => bail!("unexpected response to timer request"),
+    }
+}
+
+pub(crate) fn daemon_request(paths: &WorkspacePaths, operation: Request) -> Result<Response> {
+    let socket = paths.socket_path();
+    match request(&socket, operation)
+        .with_context(|| format!("contacting mcbtodo-daemon at {}", socket.display()))?
+    {
+        Response::Error { code, message } => bail!("{code:?}: {message}"),
+        response => Ok(response),
+    }
+}
+
+pub(crate) fn timer_label(status: &TimerStatus) -> String {
+    let state = match status.state {
+        TimerState::Idle => "idle",
+        TimerState::Running => "running",
+        TimerState::Paused => "paused",
+        TimerState::NeedsReview => "needs review",
+    };
+    match &status.session {
+        Some(session) => format!(
+            "Timer {state} · {}s · {}",
+            session.elapsed_seconds, session.id
+        ),
+        None => format!("Timer {state}"),
+    }
+}
+
+pub(crate) fn today(vault: &Vault) -> NaiveDate {
+    Utc::now().with_timezone(&vault.timezone()).date_naive()
+}
+
+fn export_ical(entries: Vec<CalendarItem>, timezone: Tz, output: Option<&Path>) -> Result<()> {
+    let mut calendar = IcalCalendar::new().name("mcbtodo").done();
+    for entry in entries {
+        let kind = entry.kind.label();
+        match entry.occurrence {
+            Occurrence::Span(mcbtodo_domain::time::Span::DateSpan(span)) => {
+                let end = span
+                    .through()
+                    .succ_opt()
+                    .context("date span cannot be represented as an exclusive iCalendar end")?;
+                let uid = format!("urn:uuid:{}:{kind}:{}", entry.id, span.start());
+                let mut event = IcalEvent::with_uid(&uid);
+                event
+                    .summary(&entry.title)
+                    .starts(span.start())
+                    .ends(end)
+                    .add_property("X-MCBTODO-KIND", kind)
+                    .add_property("X-MCBTODO-ID", entry.id.to_string());
+                calendar.push(event.done());
+            }
+            Occurrence::Span(mcbtodo_domain::time::Span::DateTimeSpan(span)) => {
+                let uid = format!("urn:uuid:{}:{kind}:{}", entry.id, span.start().to_utc());
+                let mut event = IcalEvent::with_uid(&uid);
+                event
+                    .summary(&entry.title)
+                    .starts(span.start().to_utc())
+                    .ends(span.end().to_utc())
+                    .add_property("X-MCBTODO-KIND", kind)
+                    .add_property("X-MCBTODO-ID", entry.id.to_string());
+                calendar.push(event.done());
+            }
+            Occurrence::Deadline(Deadline::Date { value }) => {
+                let mut todo = Todo::with_uid(&format!("urn:uuid:{}:due:{value}", entry.id));
+                todo.summary(&entry.title)
+                    .due(value)
+                    .add_property("X-MCBTODO-KIND", kind)
+                    .add_property("X-MCBTODO-ID", entry.id.to_string());
+                calendar.push(todo.done());
+            }
+            Occurrence::Deadline(deadline @ Deadline::DateTime(_)) => {
+                let instant = deadline
+                    .datetime(timezone)
+                    .context("date-time deadline has no instant")?
+                    .to_utc();
+                let mut todo = Todo::with_uid(&format!("urn:uuid:{}:due:{instant}", entry.id));
+                todo.summary(&entry.title)
+                    .due(instant)
+                    .add_property("X-MCBTODO-KIND", kind)
+                    .add_property("X-MCBTODO-ID", entry.id.to_string());
+                calendar.push(todo.done());
+            }
+        }
+    }
+    let serialized = calendar.to_string();
+    if let Some(path) = output {
+        std::fs::write(path, serialized)
+            .with_context(|| format!("writing iCalendar export to {}", path.display()))?;
+    } else {
+        print!("{serialized}");
+    }
+    Ok(())
+}
+
+pub(crate) fn parse_day(value: &str) -> Result<NaiveDate, String> {
+    parse_date(value).map_err(|error| match error {
+        DateParseError::Format => "expected a date in YYYY-MM-DD format".into(),
+        DateParseError::YearRange => "year must be between 0001 and 9999".into(),
+    })
+}
