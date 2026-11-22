@@ -1,6 +1,6 @@
 # Architecture Acceptance Assessment
 
-Assessment baseline: 2026-11-22. This records what the local implementation
+Assessment baseline: 2026-11-23. This records what the local implementation
 can demonstrate, not what the product design intends to provide. The dated
 evidence is a snapshot and must be refreshed when acceptance checks change;
 documentation ownership and synchronization rules are in
@@ -107,6 +107,23 @@ sandbox and systemd smoke checks also exercise the resulting runtime.
 This verifies local bounded concurrency. A general `ResourceScheduler` with
 cross-provider priority, resource quotas, fallback or health-based selection
 is still planned.
+
+## Release preparation refresh (2026-11-23)
+
+The current workspace passed the first-release package preparation checks on
+Linux AArch64. `cargo package --workspace --exclude mcbtodo-xtask --locked
+--no-verify` created archives for all thirteen publishable packages in a fresh
+target directory. `cargo xtask verify-crate-packages` confirmed Apache-2.0
+metadata and an archived `LICENSE` entry for every package. The online
+`cargo publish --dry-run --workspace --locked --no-verify` reached the upload
+stage for all thirteen packages and skipped the uploads because it was a dry
+run.
+
+This verifies package creation, workspace metadata, and the local publication
+path. It does not publish any crate, create a GitHub Release, or establish
+that a package can be built from crates.io after its workspace dependencies
+have been published. Publication remains a separately authorized operation
+that must follow dependency order.
 
 ## Latest Review
 

@@ -62,5 +62,8 @@ dry-runs because first-release workspace dependencies are not yet available
 from crates.io; the full workspace check compiles and tests local sources, but
 does not establish standalone builds against published dependencies. The
 workspace repository URL is
-`https://github.com/MCB-SMART-BOY/mcbtodo`. Publish dependencies in an order
-accepted by crates.io, and exclude `mcbtodo-xtask`.
+`https://github.com/MCB-SMART-BOY/mcbtodo`. As of 2026-11-23, all thirteen
+publishable packages passed local archive creation, Apache-2.0 archive checks,
+and the workspace `cargo publish --dry-run`. Publish dependencies in an order
+accepted by crates.io, and exclude `mcbtodo-xtask`. This preparation does not
+publish any package.
