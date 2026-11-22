@@ -1,4 +1,4 @@
-name: Linux CI
+name: CI
 
 on:
   push:
@@ -36,6 +36,9 @@ jobs:
           test "$(uname -m)" = "$ARCH"
           rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rustfmt --component clippy
 
+      - name: Install sandbox test dependencies
+        run: sudo apt-get update && sudo apt-get install --yes bubblewrap nushell
+
       - name: Check the workspace
         run: cargo xtask check
 
@@ -50,9 +53,6 @@ jobs:
 
       - name: Build the app, daemon, and worker
         run: cargo build --release --locked --workspace --bin mcbtodo --bin mcbtodo-daemon --bin mcbtodo-worker
-
-      - name: Install sandbox smoke dependencies
-        run: sudo apt-get update && sudo apt-get install --yes bubblewrap nushell jq
 
       - name: Package the release binaries
         run: |
@@ -69,6 +69,7 @@ jobs:
           package_dir="$(mktemp -d "$RUNNER_TEMP/mcbtodo-package.XXXXXXXX")"
           tar -xzf "$RUNNER_TEMP/mcbtodo-linux-$ARCH.tar.gz" -C "$package_dir"
           cmp deploy/systemd/mcbtodo-daemon.service "$package_dir/usr/lib/systemd/user/mcbtodo-daemon.service"
+          cmp LICENSE "$package_dir/usr/share/licenses/mcbtodo/LICENSE"
           test -x "$package_dir/usr/bin/mcbtodo-worker"
           cargo xtask smoke --bin-dir "$package_dir/usr/bin" --sandbox
 
@@ -80,4 +81,111 @@ jobs:
             ${{ runner.temp }}/mcbtodo-linux-${{ matrix.arch }}.tar.gz.sha256
           if-no-files-found: error
           compression-level: 0
+
+  macos-cli:
+    name: macOS ARM64 CLI and Vault
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      RUSTUP_TOOLCHAIN: 1.100.0
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up native Rust
+        run: |
+          test "$(uname -m)" = arm64
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+
+      - name: Check all application entry points
+        run: cargo check --locked --tests -p mcbtodo -p mcbtodo-daemon -p mcbtodo-worker
+
+      - name: Verify native xtask and offline harness preparation
+        run: cargo test --locked -p mcbtodo-xtask
+
+      - name: Test TUI presentation and settings
+        run: |
+          cargo test --locked -p mcbtodo --bin mcbtodo -- tui::render::tests:: tui::screen_model::tests:: tui::keymap::tests:: settings session_palette_override
+
+      - name: Test settings file persistence
+        run: cargo test --locked -p mcbtodo-platform --test workspace_paths -- config_defaults_only_omitted_preferences config_rejects_invalid_and_unknown_fields saving_config saving_unchanged_config concurrent_config_saves
+
+      - name: Run the CLI integration suite
+        run: cargo test --locked -p mcbtodo --test cli
+
+      - name: Validate the example Vault
+        run: cargo run --locked -- --vault examples/vault --timezone Asia/Shanghai validate
+
+  windows-cli:
+    name: Windows x86_64 CLI and Vault
+    runs-on: windows-2025
+    timeout-minutes: 20
+    env:
+      RUSTUP_TOOLCHAIN: 1.100.0
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up native Rust
+        run: rustup toolchain install "$env:RUSTUP_TOOLCHAIN" --profile minimal
+
+      - name: Check all application entry points
+        run: cargo check --locked --tests -p mcbtodo -p mcbtodo-daemon -p mcbtodo-worker
+
+      - name: Verify native xtask and offline harness preparation
+        run: cargo test --locked -p mcbtodo-xtask
+
+      - name: Test TUI presentation and settings
+        run: |
+          cargo test --locked -p mcbtodo --bin mcbtodo -- tui::render::tests:: tui::screen_model::tests:: tui::keymap::tests:: settings session_palette_override
+
+      - name: Test settings file persistence
+        run: cargo test --locked -p mcbtodo-platform --test workspace_paths -- config_defaults_only_omitted_preferences config_rejects_invalid_and_unknown_fields saving_config saving_unchanged_config concurrent_config_saves
+
+      - name: Verify that unsupported workspace operations fail closed
+        run: cargo test --locked -p mcbtodo --test cli windows_unsupported_workspace_operations
+
+      - name: Verify offline reads and daemon capability diagnostics
+        run: |
+          cargo test --locked -p mcbtodo --test cli same_documents_drive_calendar_outline_and_dependencies
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked -p mcbtodo --test cli doctor_reports_unsupported_linux_capabilities
+
+      - name: Verify MCP discovery and unavailable proposal diagnostics
+        run: |
+          cargo test --locked -p mcbtodo --bin mcbtodo mcp::tests::
+
+      - name: Validate the example Vault
+        run: cargo run --locked -- --vault examples/vault --timezone Asia/Shanghai validate
+
+  cross-check:
+    name: Cross-check ${{ matrix.target }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [aarch64-apple-darwin, x86_64-pc-windows-msvc]
+    env:
+      RUSTUP_TOOLCHAIN: 1.100.0
+      RUSTFLAGS: -D warnings
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Rust and target libraries
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --target "$TARGET"
+
+      - name: Check portable boundaries and platform gates
+        run: |
+          cargo check --locked --tests --target "$TARGET" \
+            -p mcbtodo-domain -p mcbtodo-ports -p mcbtodo-agent-codex \
+            -p mcbtodo-platform -p mcbtodo-protocol -p mcbtodo-execution -p mcbtodo-worker \
+            -p mcbtodo-xtask
 

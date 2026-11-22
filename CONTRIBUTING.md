@@ -21,6 +21,8 @@
 - 第三方材料的许可或通知问题未解决时，不将该材料纳入公开发布范围。
 - 贡献按项目 Apache-2.0 许可证的条款提交和分发；不要求单独签署所有权
   证明或提交私密法律文件。
+- 可复现的一般缺陷请使用 GitHub Bug report 表单；不要在公开 Issue 中提交
+  凭据、私人 Vault 数据或漏洞细节。漏洞披露渠道与当前状态见 [SECURITY.md](SECURITY.md)。
 
 许可与第三方材料规则见[许可与第三方材料](docs/licensing.md)。
 发布准备另按[发布工作流](.agents/workflows/release.md)执行。

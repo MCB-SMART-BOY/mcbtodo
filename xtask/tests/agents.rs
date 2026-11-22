@@ -1,20 +1,27 @@
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::{
     fs,
-    os::unix::fs::PermissionsExt,
     path::Path,
     process::{Command, Output},
 };
 
 use sha2::{Digest, Sha256};
 
-fn agent(root: &Path, home: &Path) -> Command {
+fn xtask(root: &Path, home: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_xtask"));
     command
         .current_dir(root)
         .env_clear()
         .env("HOME", home)
-        .env("PATH", home)
-        .arg("agent");
+        .env("USERPROFILE", home)
+        .env("PATH", home);
+    command
+}
+
+fn agent(root: &Path, home: &Path) -> Command {
+    let mut command = xtask(root, home);
+    command.arg("agent");
     command
 }
 
@@ -27,6 +34,7 @@ fn stdout(output: Output) -> String {
     String::from_utf8(output.stdout).unwrap()
 }
 
+#[cfg(unix)]
 fn script(path: &Path, body: &str) {
     fs::write(path, body).unwrap();
     fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
@@ -74,6 +82,62 @@ fn validate_registry(root: &Path) -> Output {
     agent(root, root).arg("validate").output().unwrap()
 }
 
+#[cfg(windows)]
+#[test]
+fn prepare_auto_detects_a_windows_executable_on_path() {
+    let fixture = validation_fixture();
+    let home = tempfile::tempdir().unwrap();
+    fs::write(home.path().join("test-client.cmd"), "exit /b 1").unwrap();
+    let prepare = || {
+        let prepared = stdout(
+            agent(fixture.path(), home.path())
+                .args(["prepare", "--offline"])
+                .output()
+                .unwrap(),
+        );
+        fs::read_to_string(prepared.trim_end()).unwrap()
+    };
+    assert!(prepare().contains("# generic.md"));
+    fs::copy(
+        env!("CARGO_BIN_EXE_xtask"),
+        home.path().join("test-client.exe"),
+    )
+    .unwrap();
+    assert!(prepare().contains("# harness.md"));
+}
+
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn linux_tasks_report_unsupported_before_creating_outputs() {
+    let fixture = validation_fixture();
+    let home = tempfile::tempdir().unwrap();
+    for (args, message) in [
+        (
+            &["smoke", "--sandbox"][..],
+            "workspace smoke requires Linux",
+        ),
+        (
+            &["smoke-systemd"],
+            "smoke-systemd requires a Linux user manager",
+        ),
+        (&["package"], "packaging requires Linux"),
+        (
+            &["workflow-example"],
+            "the sandbox workflow example requires Linux",
+        ),
+    ] {
+        let result = xtask(fixture.path(), home.path())
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(!result.status.success());
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        assert!(stderr.contains(message), "{stderr}");
+    }
+    assert!(!fixture.path().join("target").exists());
+    assert_eq!(fs::read_dir(home.path()).unwrap().count(), 0);
+}
+
 #[test]
 fn bundled_registry_prepares_every_harness_and_workflow_on_a_cold_offline_home() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
@@ -88,6 +152,15 @@ fn bundled_registry_prepares_every_harness_and_workflow_on_a_cold_offline_home()
             "release",
             "documentation",
             "architecture",
+            "architecture-evolution",
+            "audit",
+            "ports",
+            "storage",
+            "agent",
+            "platform",
+            "tui",
+            "sync",
+            "completion",
         ] {
             let home = tempfile::tempdir().unwrap();
             let result = stdout(
@@ -325,7 +398,7 @@ fn validate_checks_remote_pin_format_without_fetching() {
     let registry = root.join(".agents/registry.toml");
     let contents = fs::read_to_string(&registry).unwrap();
     let payload = "# Remote workflow\n";
-    let pin = format!("{:x}", Sha256::digest(payload));
+    let pin = hex::encode(Sha256::digest(payload));
     fs::write(
         &registry,
         contents.replace(
@@ -342,6 +415,7 @@ fn validate_checks_remote_pin_format_without_fetching() {
 }
 
 #[test]
+#[cfg(unix)]
 fn run_from_a_member_delivers_the_selected_context_and_task_to_the_client() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("other-checkout");
@@ -413,14 +487,16 @@ printf '%s\n%s\n%s\n%s' "$PWD" "$MCBTODO_HARNESS" "$MCBTODO_WORKFLOW" "$2"
             .output()
             .unwrap(),
     );
+    let (working_dir, prompt) = result.split_once('\n').unwrap();
     assert_eq!(
-        result,
-        format!(
-            "{}\ntest\ntest\nFollow the repository instructions, harness guide and workflow below.\n\n\
-            # Root instructions from the other checkout\n\n\n# Common instructions\n\n\n\
-            # Harness instructions\n\n\n# Workflow instructions\n\n\nTask:\n--task\nwith a second line",
-            root.display()
-        )
+        Path::new(working_dir).canonicalize().unwrap(),
+        root.canonicalize().unwrap()
+    );
+    assert_eq!(
+        prompt,
+        "test\ntest\nFollow the repository instructions, harness guide and workflow below.\n\n\
+         # Root instructions from the other checkout\n\n\n# Common instructions\n\n\n\
+         # Harness instructions\n\n\n# Workflow instructions\n\n\nTask:\n--task\nwith a second line"
     );
 
     let long_workflow = "review this change\n".repeat(6700);
@@ -451,6 +527,7 @@ printf '%s\n%s\n%s\n%s' "$PWD" "$MCBTODO_HARNESS" "$MCBTODO_WORKFLOW" "$2"
 }
 
 #[test]
+#[cfg(unix)]
 fn remote_selection_fetches_only_online_and_reuses_verified_bytes_offline() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
@@ -461,7 +538,7 @@ fn remote_selection_fetches_only_online_and_reuses_verified_bytes_offline() {
     fs::write(root.join("AGENTS.md"), "# Root\n").unwrap();
     fs::write(root.join(".agents/local.md"), "# Bundled\n").unwrap();
     let payload = "# Pinned remote workflow\n";
-    let pin = format!("{:x}", Sha256::digest(payload));
+    let pin = hex::encode(Sha256::digest(payload));
     fs::write(
         root.join(".agents/registry.toml"),
         format!(

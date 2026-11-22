@@ -1,5 +1,6 @@
 use std::fs;
 
+use mcbtodo_ports::workflow::WorkflowRunCatalog;
 use mcbtodo_protocol::workflow::{Missed, Overlap};
 use rusqlite::Connection;
 
@@ -35,9 +36,9 @@ fn inspect(runtime: &mut Runtime, id: Uuid) -> Result<ScheduleSummary> {
     }
 }
 
-fn pending(store: &RunStore, revision: &str) -> Result<RunSummary> {
+fn pending(store: &dyn WorkflowRunCatalog, revision: &str) -> Result<RunSummary> {
     let id = Uuid::new_v4();
-    store.insert(id, revision, None)?;
+    store.enqueue_if_absent(id, revision, None)?;
     Ok(store.get(id)?.unwrap())
 }
 
@@ -99,7 +100,7 @@ fn successful_pinned_revision_queues_downstream_across_restart() -> Result<()> {
     assert_eq!(runtime.store.list(None)?.0.len(), 2);
 
     // A different source run of the same revision is a new occurrence.
-    let next = pending(&runtime.store, &upstream)?;
+    let next = pending(runtime.store.as_ref(), &upstream)?;
     runtime
         .store
         .transition(&next, RunState::Succeeded, None, None)?;
@@ -115,26 +116,26 @@ fn dependency_ignores_history_other_revisions_and_nonsuccess() -> Result<()> {
     let other = publish(dir.path(), "other")?;
     let downstream = publish(dir.path(), "downstream")?;
     let mut runtime = Runtime::open_for_test(dir.path())?;
-    let old = pending(&runtime.store, &upstream)?;
+    let old = pending(runtime.store.as_ref(), &upstream)?;
     runtime
         .store
         .transition(&old, RunState::Succeeded, None, None)?;
     let schedule = add(&mut runtime, &upstream, &downstream)?;
-    assert_eq!(runtime.store.next_schedule_due()?, None);
+    assert_eq!(runtime.store.next_wake_at(false)?, None);
     for (revision, state) in [
         (&upstream, RunState::Failed),
         (&upstream, RunState::Cancelled),
         (&upstream, RunState::OutcomeUnknown),
         (&other, RunState::Succeeded),
     ] {
-        let run = pending(&runtime.store, revision)?;
+        let run = pending(runtime.store.as_ref(), revision)?;
         runtime.store.transition(&run, state, None, None)?;
     }
     assert!(matches!(
         runtime.handle(WorkflowRequest::DisableSchedule { id: schedule }),
         Response::Workflow(WorkflowResponse::Schedule(summary)) if !summary.enabled
     ));
-    let future = pending(&runtime.store, &upstream)?;
+    let future = pending(runtime.store.as_ref(), &upstream)?;
     runtime
         .store
         .transition(&future, RunState::Succeeded, None, None)?;
@@ -185,11 +186,11 @@ fn replacing_an_edge_cannot_reenter_an_inflight_lineage() -> Result<()> {
     let b = publish(dir.path(), "beta")?;
     let mut runtime = Runtime::open_for_test(dir.path())?;
     let first = add(&mut runtime, &a, &b)?;
-    let root = pending(&runtime.store, &a)?;
+    let root = pending(runtime.store.as_ref(), &a)?;
     runtime
         .store
         .transition(&root, RunState::Succeeded, None, None)?;
-    let child = runtime.store.next_pending()?.unwrap();
+    let child = runtime.store.next_pending_at(Utc::now())?.unwrap();
     assert!(matches!(
         runtime.handle(WorkflowRequest::DisableSchedule { id: first }),
         Response::Workflow(WorkflowResponse::Schedule(summary)) if !summary.enabled
@@ -205,12 +206,16 @@ fn replacing_an_edge_cannot_reenter_an_inflight_lineage() -> Result<()> {
     assert_eq!(inspect(&mut runtime, reversed)?.cascade_skipped, 1);
 
     // The reverse edge remains usable from a fresh root.
-    let fresh = pending(&runtime.store, &b)?;
+    let fresh = pending(runtime.store.as_ref(), &b)?;
     runtime
         .store
         .transition(&fresh, RunState::Succeeded, None, None)?;
     assert_eq!(
-        runtime.store.next_pending()?.unwrap().source_run_id,
+        runtime
+            .store
+            .next_pending_at(Utc::now())?
+            .unwrap()
+            .source_run_id,
         Some(fresh.id)
     );
     assert_eq!(inspect(&mut runtime, reversed)?.cascade_skipped, 1);
@@ -228,7 +233,7 @@ fn dependency_chain_stops_at_eight_edges_and_persists_its_skip() -> Result<()> {
     for edge in revisions.windows(2) {
         last = add(&mut runtime, &edge[0], &edge[1])?;
     }
-    let root = pending(&runtime.store, &revisions[0])?;
+    let root = pending(runtime.store.as_ref(), &revisions[0])?;
     let mut run = root;
     for (depth, revision) in revisions[..9].iter().enumerate() {
         if depth == 8 {
@@ -240,12 +245,12 @@ fn dependency_chain_stops_at_eight_edges_and_persists_its_skip() -> Result<()> {
             .store
             .transition(&run, RunState::Succeeded, None, None)?;
         if depth < 8 {
-            let next = runtime.store.next_pending()?.unwrap();
+            let next = runtime.store.next_pending_at(Utc::now())?.unwrap();
             assert_eq!(next.source_run_id, Some(run.id));
             run = next;
         }
     }
-    assert!(runtime.store.next_pending()?.is_none());
+    assert!(runtime.store.next_pending_at(Utc::now())?.is_none());
     assert_eq!(runtime.store.list(None)?.0.len(), 9);
     assert_eq!(inspect(&mut runtime, last)?.cascade_skipped, 1);
     Ok(())
@@ -275,8 +280,8 @@ fn dependency_fanout_and_total_descendants_are_bounded() -> Result<()> {
         }
     ));
     let mut count = 0;
-    pending(&runtime.store, &root)?;
-    while let Some(run) = runtime.store.next_pending()? {
+    pending(runtime.store.as_ref(), &root)?;
+    while let Some(run) = runtime.store.next_pending_at(Utc::now())? {
         count += 1;
         runtime
             .store
@@ -300,7 +305,7 @@ fn failed_fanout_rolls_back_source_success_children_and_notification() -> Result
     let mut runtime = Runtime::open_for_test(dir.path())?;
     add(&mut runtime, &upstream, &a)?;
     add(&mut runtime, &upstream, &b)?;
-    let source = pending(&runtime.store, &upstream)?;
+    let source = pending(runtime.store.as_ref(), &upstream)?;
     let db = Connection::open(dir.path().join("workflow.sqlite3"))?;
     db.execute_batch(
         "CREATE TRIGGER fail_second_child BEFORE INSERT ON workflow_runs
@@ -319,14 +324,20 @@ fn failed_fanout_rolls_back_source_success_children_and_notification() -> Result
         RunState::Pending
     );
     assert_eq!(runtime.store.list(None)?.0.len(), 1);
-    assert!(runtime.notifications().page(None)?.notifications.is_empty());
+    assert!(
+        runtime
+            .notifications()
+            .workflow_page(None)?
+            .notifications
+            .is_empty()
+    );
     db.execute_batch("DROP TRIGGER fail_second_child;")?;
     runtime
         .store
         .transition(&source, RunState::Succeeded, None, None)?;
     assert_eq!(runtime.store.list(None)?.0.len(), 3);
     assert_eq!(
-        runtime.notifications().page(None)?.notifications[0].run_id,
+        runtime.notifications().workflow_page(None)?.notifications[0].run_id,
         source.id
     );
     Ok(())

@@ -1,4 +1,85 @@
+use std::{cell::RefCell, path::Path, rc::Rc};
+
+use mcbtodo_ports::focus::FocusEntry;
+use mcbtodo_storage_sqlite::focus::FocusStore;
+use rusqlite::{Connection, params};
+
 use super::*;
+
+fn open_sqlite(path: &Path) -> Result<Timer> {
+    let (store, recovered) = FocusStore::open(path)?;
+    Ok(Timer::new(store, recovered))
+}
+
+#[test]
+fn failed_checkpoint_does_not_publish_pause_or_lose_elapsed_time() -> Result<()> {
+    #[derive(Default)]
+    struct Checkpoints {
+        fail: bool,
+        saved: Option<FocusCheckpoint>,
+    }
+
+    struct MemoryStore(Rc<RefCell<Checkpoints>>);
+
+    impl FocusSessionStore for MemoryStore {
+        fn save(&self, checkpoint: &FocusCheckpoint) -> Result<()> {
+            let mut state = self.0.borrow_mut();
+            anyhow::ensure!(!state.fail, "checkpoint unavailable");
+            state.saved = Some(checkpoint.clone());
+            Ok(())
+        }
+
+        fn for_each_session_on(
+            &self,
+            date: NaiveDate,
+            timezone: Tz,
+            visit: &mut dyn FnMut(FocusEntry),
+        ) -> Result<()> {
+            if let Some(saved) = self.0.borrow().saved.as_ref()
+                && saved.started_at.with_timezone(&timezone).date_naive() == date
+            {
+                visit(FocusEntry {
+                    work_unit_id: saved.work_unit_id,
+                    state: saved.state,
+                    elapsed: saved.elapsed,
+                });
+            }
+            Ok(())
+        }
+    }
+
+    let checkpoints = Rc::new(RefCell::new(Checkpoints::default()));
+    let mut timer = Timer::new(MemoryStore(checkpoints.clone()), None);
+    let start = Instant::now();
+    timer
+        .apply(Request::Start { work_unit_id: None }, start)?
+        .unwrap();
+    checkpoints.borrow_mut().fail = true;
+    assert!(
+        timer
+            .apply(Request::Pause, start + Duration::from_secs(3))
+            .is_err()
+    );
+    assert_eq!(
+        checkpoints.borrow().saved.as_ref().unwrap().state,
+        TimerState::Running,
+    );
+    let retry = start + Duration::from_secs(7);
+    assert_eq!(timer.status(retry).state, TimerState::Running);
+
+    checkpoints.borrow_mut().fail = false;
+    let paused = timer.apply(Request::Pause, retry)?.unwrap();
+    let session = paused.session.unwrap();
+    assert_eq!(paused.state, TimerState::Paused);
+    assert_eq!(session.elapsed_seconds, 7);
+    assert_eq!(
+        timer
+            .daily_report(session.started_at.date_naive(), chrono_tz::UTC, retry)?
+            .total_elapsed_seconds,
+        7,
+    );
+    Ok(())
+}
 
 #[test]
 fn pause_resume_and_stop_preserve_elapsed_time_without_double_counting() -> anyhow::Result<()> {
@@ -7,7 +88,7 @@ fn pause_resume_and_stop_preserve_elapsed_time_without_double_counting() -> anyh
     let t = Instant::now();
     let work_unit_id = Uuid::new_v4();
     let id = {
-        let mut timer = Timer::open(&db)?;
+        let mut timer = open_sqlite(&db)?;
         let running = timer
             .apply(
                 Request::Start {
@@ -29,7 +110,7 @@ fn pause_resume_and_stop_preserve_elapsed_time_without_double_counting() -> anyh
         id
     };
 
-    let mut timer = Timer::open(&db)?;
+    let mut timer = open_sqlite(&db)?;
     let paused = timer.status(t + Duration::from_secs(20));
     assert_eq!(paused.state, TimerState::Paused);
     assert_eq!(paused.session.as_ref().unwrap().id, id);
@@ -54,7 +135,7 @@ fn pause_resume_and_stop_preserve_elapsed_time_without_double_counting() -> anyh
         Ok(stopped.clone())
     );
     drop(timer);
-    let mut timer = Timer::open(&db)?;
+    let mut timer = open_sqlite(&db)?;
     assert_eq!(timer.status(t + Duration::from_secs(99)), stopped);
     let next = timer
         .apply(Request::Start { work_unit_id: None }, t)?
@@ -75,7 +156,7 @@ fn interrupted_running_session_freezes_at_the_last_durable_checkpoint() -> anyho
     let first_checkpoint = t + Duration::from_secs(5);
     let after_restart = t + Duration::from_secs(3_600);
     let id = {
-        let mut timer = Timer::open(&db)?;
+        let mut timer = open_sqlite(&db)?;
         let start = timer
             .apply(Request::Start { work_unit_id: None }, t)?
             .unwrap();
@@ -86,7 +167,7 @@ fn interrupted_running_session_freezes_at_the_last_durable_checkpoint() -> anyho
         start.session.unwrap().id
     };
 
-    let mut timer = Timer::open(&db)?;
+    let mut timer = open_sqlite(&db)?;
     let review = timer.status(after_restart);
     assert_eq!(review.state, TimerState::NeedsReview);
     assert_eq!(review.session.as_ref().unwrap().id, id);
@@ -96,7 +177,7 @@ fn interrupted_running_session_freezes_at_the_last_durable_checkpoint() -> anyho
             .apply(Request::Start { work_unit_id: None }, after_restart)?
             .is_err()
     );
-    assert_eq!(Timer::open(&db)?.status(after_restart), review);
+    assert_eq!(open_sqlite(&db)?.status(after_restart), review);
     let stopped = timer.apply(Request::Stop, after_restart)?.unwrap();
     assert_eq!(stopped.state, TimerState::Idle);
     assert_eq!(stopped.session.unwrap().elapsed_seconds, 5);
@@ -107,7 +188,7 @@ fn interrupted_running_session_freezes_at_the_last_durable_checkpoint() -> anyho
 fn another_work_unit_cannot_replace_an_active_session() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let t = Instant::now();
-    let mut timer = Timer::open(&dir.path().join("focus.sqlite3"))?;
+    let mut timer = open_sqlite(&dir.path().join("focus.sqlite3"))?;
     let first = Request::Start {
         work_unit_id: Some(Uuid::new_v4()),
     };
@@ -152,7 +233,7 @@ fn daily_report_groups_durable_history_by_work_unit_on_the_local_start_date() ->
     let time = Instant::now();
     let unit = Uuid::new_v4();
     {
-        let mut timer = Timer::open(&db)?;
+        let mut timer = open_sqlite(&db)?;
         for (work_unit_id, milliseconds) in [(Some(unit), 1_600), (Some(unit), 2_500), (None, 950)]
         {
             let start = timer.apply(Request::Start { work_unit_id }, time)?.unwrap();
@@ -161,7 +242,7 @@ fn daily_report_groups_durable_history_by_work_unit_on_the_local_start_date() ->
                 .unwrap();
             // The session starts on Nov 19 UTC (Nov 20 in Shanghai) and stops
             // on Nov 21 in Shanghai.
-            timer.db.execute(
+            Connection::open(&db)?.execute(
                 "UPDATE focus_sessions SET started_at = ?1, stopped_at = ?2 WHERE id = ?3",
                 params![
                     "2026-11-19T16:59:59+00:00",
@@ -171,7 +252,7 @@ fn daily_report_groups_durable_history_by_work_unit_on_the_local_start_date() ->
             )?;
         }
     }
-    let timer = Timer::open(&db)?;
+    let timer = open_sqlite(&db)?;
     let day = "2026-11-20".parse()?;
     let report = timer.daily_report(day, chrono_tz::Asia::Shanghai, time)?;
     assert_eq!(report.session_count, 3);
@@ -213,7 +294,7 @@ fn daily_report_uses_live_elapsed_until_restart_then_only_the_checkpoint() -> an
     let time = Instant::now();
     let checkpoint = time + Duration::from_secs(5);
     let day = {
-        let mut timer = Timer::open(&db)?;
+        let mut timer = open_sqlite(&db)?;
         let start = timer
             .apply(Request::Start { work_unit_id: None }, time)?
             .unwrap();
@@ -224,7 +305,7 @@ fn daily_report_uses_live_elapsed_until_restart_then_only_the_checkpoint() -> an
         assert_eq!(live.needs_review_count, 0);
         day
     };
-    let timer = Timer::open(&db)?;
+    let timer = open_sqlite(&db)?;
     let recovered = timer.daily_report(day, chrono_tz::UTC, time + Duration::from_secs(3_600))?;
     assert_eq!(recovered.total_elapsed_seconds, 5);
     assert_eq!(recovered.needs_review_count, 1);

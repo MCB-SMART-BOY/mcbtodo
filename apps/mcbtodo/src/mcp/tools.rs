@@ -49,7 +49,11 @@ const TOOLS: [Tool; 15] = [
 ];
 
 pub(super) fn list() -> Vec<Value> {
-    TOOLS.into_iter().map(Tool::description).collect()
+    TOOLS
+        .into_iter()
+        .filter(|tool| tool.available())
+        .map(Tool::description)
+        .collect()
 }
 
 fn graph_diff_units_schema() -> Value {
@@ -75,6 +79,10 @@ fn graph_diff_units_schema() -> Value {
 impl Tool {
     pub(super) fn named(name: &str) -> Option<Self> {
         TOOLS.into_iter().find(|tool| tool.name() == name)
+    }
+
+    fn available(self) -> bool {
+        proposal::QUEUE_SUPPORTED || self.proposal_kind().is_none()
     }
 
     fn name(self) -> &'static str {
@@ -260,6 +268,9 @@ impl Tool {
         paths: &WorkspacePaths,
         arguments: &Map<String, Value>,
     ) -> Result<Value, String> {
+        if !self.available() {
+            return Err("The private proposal queue is unavailable on this platform.".into());
+        }
         if arguments
             .keys()
             .any(|key| !self.argument_names().contains(&key.as_str()))

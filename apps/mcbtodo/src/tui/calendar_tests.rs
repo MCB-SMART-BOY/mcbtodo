@@ -13,9 +13,21 @@ fn press(state: &mut State, vault: &Vault, keys: &str) {
 }
 
 pub(super) fn screen(state: &State, vault: &Vault, width: u16, height: u16) -> String {
+    projected_screen(
+        &screen_model::ScreenModel::project(state, vault),
+        width,
+        height,
+    )
+}
+
+pub(super) fn projected_screen(
+    model: &screen_model::ScreenModel<'_>,
+    width: u16,
+    height: u16,
+) -> String {
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
     let frame = terminal
-        .draw(|frame| render::draw(frame, state, vault))
+        .draw(|frame| render::draw(frame, model, theme::Theme::default()))
         .unwrap();
     (0..height)
         .map(|y| {
@@ -30,6 +42,132 @@ pub(super) fn screen(state: &State, vault: &Vault, width: u16, height: u16) -> S
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+#[test]
+fn month_shows_the_same_cross_month_recurring_event_as_day() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join("calendar")).unwrap();
+    std::fs::write(
+        root.path().join("calendar/review.md"),
+        "\
+---
+schema: mcbtodo.calendar-event/v1
+id: 00000000-0000-4000-8000-000000000001
+when: {kind: date_span, start: '2026-11-29', through: '2026-12-01'}
+availability: busy
+recurrence:
+  start: '2026-11-29'
+  through: '2026-11-29'
+  frequency: weekly
+  dst: {gap: skip, fold: earlier}
+---
+
+# 月度回顾
+",
+    )
+    .unwrap();
+    let vault = Vault::load(root.path(), chrono_tz::Asia::Shanghai).unwrap();
+    let mut state = State::new("2026-12-01".parse().unwrap());
+    let compact = screen(&state, &vault, 24, 5);
+    assert!(compact.contains("Tue 01*"), "{compact}");
+
+    press(&mut state, &vault, ":view day\n");
+    assert_eq!(state.view, View::Day);
+    assert!(screen(&state, &vault, 42, 12).contains("月度回顾"));
+    assert!(state.source(&vault).unwrap().ends_with("review.md"));
+}
+
+#[test]
+fn day_and_agenda_preserve_the_timed_occurrence_during_the_repeated_hour() {
+    let root = tempfile::tempdir().unwrap();
+    let calendar = root.path().join("calendar");
+    std::fs::create_dir(&calendar).unwrap();
+    let path = calendar.join("review.md");
+    std::fs::write(
+        &path,
+        r#"---
+schema: mcbtodo.calendar-event/v1
+id: 00000000-0000-4000-8000-000000000001
+when:
+  kind: date_time_span
+  start: '2026-10-25T01:50:00-04:00'
+  end: '2026-10-25T02:10:00-04:00'
+  timezone: America/New_York
+recurrence:
+  start: '2026-10-25'
+  frequency: weekly
+  dst: {gap: skip, fold: earlier}
+---
+# 回顾 Review
+"#,
+    )
+    .unwrap();
+    let zone = chrono_tz::America::New_York;
+    let mut vault = Vault::load(root.path(), zone).unwrap();
+    let day = "2026-11-01".parse().unwrap();
+    let mut state = State::new(day);
+    press(&mut state, &vault, ":view day\n");
+    let selected = state.selected_focus(&vault).unwrap();
+    let screen = screen(&state, &vault, 48, 8);
+    assert!(
+        screen.contains("01:50 -04:00–01:10 -05:00  回顾 Review"),
+        "{screen}"
+    );
+
+    press(&mut state, &vault, " ua");
+    assert_eq!(state.view, View::Agenda);
+    assert_eq!(state.selected_focus(&vault), Some(selected));
+    let next = Vault::load(root.path(), zone).unwrap();
+    state.install_vault(&mut vault, next);
+    press(&mut state, &vault, " ud");
+    assert_eq!(state.view, View::Day);
+    assert_eq!(state.selected_focus(&vault), Some(selected));
+    assert_eq!(state.source(&vault), Some(path.as_path()));
+}
+
+#[test]
+fn dense_recurring_event_reports_projection_limit_and_navigation_can_recover() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join("calendar")).unwrap();
+    std::fs::write(
+        root.path().join("calendar/review.md"),
+        "\
+---
+schema: mcbtodo.calendar-event/v1
+id: 00000000-0000-4000-8000-000000000001
+when: {kind: date_span, start: '2020-01-01', through: '2024-01-01'}
+recurrence:
+  start: '2020-01-01'
+  through: '2024-01-01'
+  frequency: daily
+  dst: {gap: skip, fold: earlier}
+---
+
+# Dense recurrence
+",
+    )
+    .unwrap();
+    let vault = Vault::load(root.path(), chrono_tz::Asia::Shanghai).unwrap();
+    let mut state = State::new("2024-01-01".parse().unwrap());
+    let compact = screen(&state, &vault, 24, 5);
+    assert!(compact.contains("Calendar error"), "{compact}");
+    assert!(compact.contains("too many occurrences"), "{compact}");
+    for view in [
+        View::Month,
+        View::Week,
+        View::Day,
+        View::Agenda,
+        View::Timeline,
+    ] {
+        state.switch(view, &vault);
+        let text = screen(&state, &vault, 80, 12);
+        assert!(text.contains("Calendar error"), "{text}");
+        assert!(text.contains("1024"), "{text}");
+        assert!(state.selected_document(&vault).is_none());
+    }
+    press(&mut state, &vault, ":date 2019-01-01\n");
+    assert!(!screen(&state, &vault, 80, 12).contains("Calendar error"));
 }
 
 #[test]
@@ -50,6 +188,53 @@ fn command_mode_navigates_views_and_searches_the_outline() {
 
     press(&mut state, &vault, ":workflow\n");
     assert!(state.view == View::Workflow);
+}
+
+#[test]
+fn short_document_picker_keeps_match_and_actions_visible() {
+    let vault = fixture();
+    let mut state = State::new("2026-11-25".parse().unwrap());
+    press(&mut state, &vault, ":search 地址转换\n");
+    let text = screen(&state, &vault, 28, 5);
+    let rows: Vec<_> = text.lines().collect();
+    assert!(rows[1].contains("/地址转换▏"), "{text}");
+    assert!(
+        rows[2].contains("›") && rows[2].contains("实现地址转换"),
+        "{text}"
+    );
+    assert!(
+        rows[4].contains("Enter open") && rows[4].contains("Esc"),
+        "{text}"
+    );
+    press(&mut state, &vault, "\n");
+    assert!(state.source(&vault).unwrap().ends_with("translation.md"));
+}
+
+#[test]
+fn narrow_outline_keeps_the_blocked_indicator_visible_before_a_long_title() {
+    let vault = fixture();
+    let mut state = State::new("2026-11-25".parse().unwrap());
+    press(&mut state, &vault, ":search 地址转换\n\n");
+    assert_eq!(state.view, View::Outline);
+    let model = screen_model::ScreenModel::project(&state, &vault);
+    let mut terminal = Terminal::new(TestBackend::new(23, 5)).unwrap();
+    let monochrome = theme::Theme::with_palette(mcbtodo_platform::TuiTheme::Monochrome);
+    let frame = terminal
+        .draw(|frame| render::draw(frame, &model, monochrome))
+        .unwrap();
+    assert_eq!(frame.buffer[(1, 2)].symbol(), "›");
+    assert_eq!(frame.buffer[(7, 2)].symbol(), "!");
+    assert_eq!(frame.buffer[(9, 2)].symbol(), "实");
+    assert_eq!(frame.buffer[(11, 2)].symbol(), "现");
+    assert_eq!(frame.buffer[(22, 2)].symbol(), "│");
+    let legend: String = (0..23).map(|x| frame.buffer[(x, 3)].symbol()).collect();
+    assert!(legend.contains("! Blocked"), "{legend}");
+    assert!(
+        frame.buffer[(7, 2)]
+            .modifier
+            .contains(ratatui::style::Modifier::BOLD)
+    );
+    assert!(state.source(&vault).unwrap().ends_with("translation.md"));
 }
 
 #[test]
@@ -139,8 +324,36 @@ availability: free
     assert!(text.contains("校园活动"), "{text}");
     assert!(text.contains("!! deadline"), "{text}");
 
+    let remote = timeline::entries(&vault, state.day)
+        .unwrap()
+        .iter()
+        .position(|entry| entry.title == "远程讨论")
+        .unwrap();
+    press(&mut state, &vault, &"j".repeat(remote));
+    let compact = screen(&state, &vault, 30, 6);
+    assert!(compact.contains("Plan · 2026-11-25"), "{compact}");
+    assert!(compact.contains("› >>  E 远程讨论"), "{compact}");
+    assert!(
+        compact
+            .lines()
+            .all(|line| ratatui::text::Span::raw(line).width() == 30),
+        "{compact}"
+    );
+    assert!(
+        compact
+            .lines()
+            .last()
+            .unwrap()
+            .contains("hl date  jk plan  ?")
+    );
+    let source = state.source(&vault);
+
     press(&mut state, &vault, "l");
     assert_eq!(state.day.to_string(), "2026-11-26");
+    let compact = screen(&state, &vault, 30, 6);
+    assert!(compact.contains("Plan · 2026-11-26"), "{compact}");
+    assert!(compact.contains("› --  E 远程讨论"), "{compact}");
+    assert_eq!(state.source(&vault), source);
     press(&mut state, &vault, "j");
     assert!(state.source(&vault).is_some());
 }
@@ -180,6 +393,7 @@ recurrence:
     let target_day = "2026-11-26".parse().unwrap();
     state.row = state
         .agenda(&vault)
+        .unwrap()
         .iter()
         .position(|entry| {
             entry.id.to_string() == "40000000-0000-4000-8000-000000000001"
@@ -237,6 +451,7 @@ recurrence:
     state.switch(View::Agenda, &vault);
     state.row = state
         .agenda(&vault)
+        .unwrap()
         .iter()
         .position(|entry| {
             entry.id.to_string() == "40000000-0000-4000-8000-000000000001"
@@ -262,6 +477,98 @@ recurrence:
         press(&mut state, &vault, " ua");
         assert_eq!(state.view, View::Agenda);
         assert_eq!(state.selected_focus(&vault), Some(selected));
+    }
+}
+
+#[test]
+fn calendar_views_preserve_recurring_focus_across_every_direct_transition() {
+    let dir = tempfile::tempdir().unwrap();
+    let calendar = dir.path().join("calendar");
+    std::fs::create_dir_all(&calendar).unwrap();
+    std::fs::write(
+        calendar.join("daily.md"),
+        r#"---
+schema: mcbtodo.calendar-event/v1
+id: 40000000-0000-4000-8000-000000000001
+when:
+  kind: date_span
+  start: 2026-11-24
+  through: 2026-11-24
+availability: busy
+recurrence:
+  start: "2026-11-24"
+  through: "2026-11-26"
+  frequency: daily
+  interval: 1
+  dst: {gap: skip, fold: earlier}
+---
+# Daily review
+"#,
+    )
+    .unwrap();
+    let vault = Vault::load(dir.path(), "Asia/Shanghai".parse().unwrap()).unwrap();
+    let target_day = "2026-11-26".parse().unwrap();
+    let range_start = "2026-11-24".parse().unwrap();
+    let transitions = [
+        (View::Month, 'm'),
+        (View::Week, 'w'),
+        (View::Day, 'd'),
+        (View::Agenda, 'a'),
+    ];
+
+    for (source, source_key) in transitions {
+        for (target, target_key) in transitions {
+            let mut state = State::new(target_day);
+            state.anchor = Some(range_start);
+            press(&mut state, &vault, " ua");
+            state.row = state
+                .agenda(&vault)
+                .unwrap()
+                .iter()
+                .position(|entry| {
+                    entry.id.to_string() == "40000000-0000-4000-8000-000000000001"
+                        && entry.occurrence.on_day(target_day, vault.timezone())
+                })
+                .unwrap();
+            let selected = state.selected_focus(&vault).unwrap();
+
+            if source != View::Agenda {
+                press(&mut state, &vault, &format!(" u{source_key}"));
+            }
+            assert_eq!(state.view, source);
+
+            if target != source {
+                press(&mut state, &vault, &format!(" u{target_key}"));
+            }
+            assert_eq!(state.view, target, "{source:?} -> {target:?}");
+            assert_eq!(state.day, target_day, "{source:?} -> {target:?}");
+            assert_eq!(
+                state.selected_range(),
+                (range_start, target_day),
+                "{source:?} -> {target:?}"
+            );
+            if matches!(target, View::Day | View::Agenda) {
+                assert_eq!(
+                    state.selected_focus(&vault),
+                    Some(selected),
+                    "{source:?} -> {target:?}"
+                );
+            }
+
+            if target != View::Agenda {
+                press(&mut state, &vault, " ua");
+            }
+            assert_eq!(
+                state.view,
+                View::Agenda,
+                "{source:?} -> {target:?} -> Agenda"
+            );
+            assert_eq!(
+                state.selected_focus(&vault),
+                Some(selected),
+                "{source:?} -> {target:?} -> Agenda"
+            );
+        }
     }
 }
 
@@ -298,6 +605,7 @@ recurrence:
     state.switch(View::Agenda, &vault);
     state.row = state
         .agenda(&vault)
+        .unwrap()
         .iter()
         .position(|entry| {
             entry.id.to_string() == "40000000-0000-4000-8000-000000000001"
@@ -341,6 +649,7 @@ availability: busy
 
     state.row = state
         .agenda(&vault)
+        .unwrap()
         .iter()
         .position(|entry| {
             entry.id.to_string() == "40000000-0000-4000-8000-000000000001"
@@ -461,6 +770,7 @@ fn narrow_week_keeps_weekdays_and_semantic_counts_visible() {
         wednesday.contains("1 all") && wednesday.contains("1 timed") && wednesday.contains("1 due"),
         "{text}"
     );
+    assert!(text.contains("Wed 25  远程讨论"), "{text}");
 }
 
 #[test]
@@ -491,6 +801,35 @@ fn week_hour_cursor_previews_and_opens_the_focused_entry() {
 }
 
 #[test]
+fn compact_week_keeps_the_focused_hour_and_occurrence_visible() {
+    let vault = fixture();
+    let mut state = State::new("2026-11-25".parse().unwrap());
+    press(&mut state, &vault, " uwj");
+
+    let model = screen_model::ScreenModel::project(&state, &vault);
+    let mut terminal = Terminal::new(TestBackend::new(24, 5)).unwrap();
+    let monochrome = theme::Theme::with_palette(mcbtodo_platform::TuiTheme::Monochrome);
+    let frame = terminal
+        .draw(|frame| render::draw(frame, &model, monochrome))
+        .unwrap();
+    let heading: String = (0..24).map(|x| frame.buffer[(x, 1)].symbol()).collect();
+    assert!(heading.contains("13:00"), "{heading}");
+    assert_eq!(frame.buffer[(1, 2)].symbol(), "›");
+    let date: String = (3..9).map(|x| frame.buffer[(x, 2)].symbol()).collect();
+    assert_eq!(date, "Wed 25");
+    for (x, character) in [(11, "远"), (13, "程"), (15, "讨"), (17, "论")] {
+        assert_eq!(frame.buffer[(x, 2)].symbol(), character);
+    }
+    assert_eq!(frame.buffer[(23, 2)].symbol(), "│");
+    let footer: String = (0..24).map(|x| frame.buffer[(x, 4)].symbol()).collect();
+    assert!(footer.contains("Enter day"), "{footer}");
+
+    press(&mut state, &vault, "\n");
+    assert_eq!(state.view, View::Day);
+    assert!(state.source(&vault).unwrap().ends_with("review.md"));
+}
+
+#[test]
 fn week_continuation_hour_opens_the_same_multiday_occurrence_in_day_view() {
     let dir = tempfile::tempdir().unwrap();
     let calendar_dir = dir.path().join("calendar");
@@ -516,6 +855,7 @@ availability: busy
 
     press(&mut state, &vault, " uw");
     let selected = calendar::Week::new(&vault, state.day)
+        .unwrap()
         .focused_timed(state.day, state.week_hour, vault.timezone())
         .map(calendar_focus);
     let text = screen(&state, &vault, 84, 24);
@@ -612,6 +952,111 @@ fn graph_locates_outline_focus_and_follows_outgoing_and_incoming_edges() {
 }
 
 #[test]
+fn graph_projection_cache_refreshes_with_the_validated_vault_snapshot() {
+    let (home, mut vault) = writable_project();
+    let translation: Id = "30000000-0000-4000-8000-000000000003".parse().unwrap();
+    let mut state = State::new("2026-11-25".parse().unwrap());
+    state.switch(View::Graph, &vault);
+
+    assert_eq!(
+        state
+            .graph_nodes(&vault)
+            .iter()
+            .find(|node| node.id == translation)
+            .unwrap()
+            .prerequisites
+            .len(),
+        1
+    );
+
+    let path = vault.source(translation).unwrap().to_owned();
+    let contents = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(
+        &path,
+        contents.replace(
+            "depends_on: [30000000-0000-4000-8000-000000000002]",
+            "depends_on: []",
+        ),
+    )
+    .unwrap();
+    let next = Vault::load(home.path(), vault.timezone()).unwrap();
+    state.install_vault(&mut vault, next);
+
+    assert!(
+        state
+            .graph_nodes(&vault)
+            .iter()
+            .find(|node| node.id == translation)
+            .unwrap()
+            .prerequisites
+            .is_empty()
+    );
+}
+
+#[test]
+fn narrow_graph_keeps_the_selected_node_in_the_visible_window() {
+    let (home, _) = writable_project();
+    let units = home.path().join("projects/rust-os/units");
+    for index in 100..132 {
+        let title = if index == 131 {
+            "Tail unit"
+        } else if index == 100 {
+            "Head unit"
+        } else {
+            "Middle unit"
+        };
+        std::fs::write(
+            units.join(format!("unit-{index}.md")),
+            format!(
+                "---\nschema: mcbtodo.work-unit/v1\nid: 30000000-0000-4000-8000-{index:012}\nproject_id: 10000000-0000-4000-8000-000000000001\nparent_task_id: 20000000-0000-4000-8000-000000000001\nstatus: todo\n---\n\n# {title}\n"
+            ),
+        )
+        .unwrap();
+    }
+    let vault = Vault::load(home.path(), "Asia/Shanghai".parse().unwrap()).unwrap();
+    let mut state = State::new("2026-11-25".parse().unwrap());
+    state.switch(View::Graph, &vault);
+    let selected_row = state
+        .graph_nodes(&vault)
+        .iter()
+        .position(|node| node.title == "Tail unit")
+        .unwrap();
+    state.row = selected_row;
+
+    let text = screen(&state, &vault, 42, 14);
+
+    assert!(text.contains("Tail unit"), "{text}");
+    assert!(!text.contains("Head unit"), "{text}");
+}
+
+#[test]
+fn short_graph_shows_edge_actions_and_keeps_the_target_visible() {
+    let vault = fixture();
+    let source: Id = "30000000-0000-4000-8000-000000000001".parse().unwrap();
+    let target: Id = "30000000-0000-4000-8000-000000000003".parse().unwrap();
+    let mut state = State::new("2026-11-25".parse().unwrap());
+    state.switch(View::Graph, &vault);
+    let ids = state.row_ids(&vault);
+    state.row = ids.iter().position(|id| *id == source).unwrap();
+    press(&mut state, &vault, "x");
+    state.row = ids.iter().position(|id| *id == target).unwrap();
+
+    let text = screen(&state, &vault, 30, 6);
+    let lines: Vec<_> = text.lines().collect();
+    assert!(lines[0].contains("SELECT · 1 nodes"), "{text}");
+    assert!(
+        lines[1..5].iter().any(|line| line.contains("实现地址转换")),
+        "{text}"
+    );
+    assert_eq!(lines[5].trim(), "a add  d remove  Esc clear", "{text}");
+
+    press(&mut state, &vault, "\x1b");
+    let text = screen(&state, &vault, 30, 6);
+    assert!(text.lines().last().unwrap().contains("nodes"), "{text}");
+    assert!(!text.contains("Esc clear"), "{text}");
+}
+
+#[test]
 fn graph_shortcut_uses_the_highlighted_work_unit_and_keeps_the_date_range() {
     let vault = fixture();
     let mapping = "30000000-0000-4000-8000-000000000002".parse().unwrap();
@@ -687,6 +1132,26 @@ fn graph_dependency_edit_previews_then_confirms_or_cancels() {
         preview.contains("阅读 Sv39 规范 → 实现地址转换"),
         "{preview}"
     );
+    let narrow = screen(&state, &vault, 28, 6);
+    assert!(narrow.contains("Target:"), "{narrow}");
+    state.handle(KeyEvent::new(KeyCode::End, KeyModifiers::NONE), &vault);
+    let end = screen(&state, &vault, 28, 6);
+    let impact: String = end
+        .lines()
+        .skip(2)
+        .take(2)
+        .map(|line| {
+            line.strip_prefix('│')
+                .unwrap()
+                .strip_suffix('│')
+                .unwrap()
+                .trim_end()
+        })
+        .collect();
+    assert_eq!(impact, "No WorkUnit blocking status changes", "{end}");
+    assert!(end.contains("y apply  Esc cancel"), "{end}");
+    state.handle(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE), &vault);
+    assert_eq!(screen(&state, &vault, 28, 6), narrow);
     assert_eq!(
         state.handle(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &vault),
         Action::Continue
@@ -760,6 +1225,40 @@ fn submit_time_block(state: &mut State, vault: &Vault) -> time_block::Submission
 }
 
 #[test]
+fn short_time_block_form_keeps_active_field_and_escape_visible() {
+    let vault = fixture();
+    let mut state = State::new("2026-11-20".parse().unwrap());
+    press(&mut state, &vault, " tb映射");
+    let picker = screen(&state, &vault, 28, 5);
+    let rows: Vec<_> = picker.lines().collect();
+    assert!(
+        rows[1..4].iter().any(|row| row.contains("Sv39 页表映射")),
+        "{picker}"
+    );
+    assert!(
+        rows[4].contains("Enter") && rows[4].contains("Esc"),
+        "{picker}"
+    );
+
+    press(&mut state, &vault, "\n13:30\n15:00");
+    let editor = screen(&state, &vault, 28, 5);
+    let rows: Vec<_> = editor.lines().collect();
+    assert!(
+        rows[1..4]
+            .iter()
+            .any(|row| row.contains("End") && row.contains("15:00▏")),
+        "{editor}"
+    );
+    assert!(
+        rows[4].contains("Enter save") && rows[4].contains("Esc"),
+        "{editor}"
+    );
+
+    press(&mut state, &vault, "\x1b\x1b");
+    assert!(matches!(state.overlay, Overlay::None));
+}
+
+#[test]
 fn month_menu_creates_work_unit_time_block_on_the_selected_date() {
     let (dir, mut vault) = writable_project();
     let mut state = State::new("2026-11-19".parse().unwrap());
@@ -796,7 +1295,7 @@ fn month_menu_creates_work_unit_time_block_on_the_selected_date() {
     assert!(text.contains("Day  2026-11-20"), "{text}");
     assert!(text.contains("Time block saved"), "{text}");
     assert!(text.contains("13:30–15:00  实现 Sv39 页表映射"), "{text}");
-    assert_eq!(calendar::day(&vault, state.day)[state.row].id, id);
+    assert_eq!(calendar::day(&vault, state.day).unwrap()[state.row].id, id);
 
     let persisted = Vault::load(dir.path(), vault.timezone()).unwrap();
     assert!(persisted.calendar().iter().any(|entry| {

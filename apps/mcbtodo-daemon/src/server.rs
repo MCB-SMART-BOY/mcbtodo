@@ -1,26 +1,30 @@
-use std::io::{self, Read, Write};
-use std::os::unix::net::UnixStream;
+use std::io;
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use chrono::Datelike;
 use chrono_tz::Tz;
+use mcbtodo_execution::notification::NotifySend;
 use mcbtodo_platform::WorkspacePaths;
-use mcbtodo_protocol::{ErrorCode, ProtocolError, Request, Response, wire};
+use mcbtodo_protocol::{ErrorCode, Request, Response};
+use mcbtodo_storage_sqlite::focus::FocusStore;
+use mcbtodo_storage_sqlite::run_store::RunStore;
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::io::Errno;
-use rustix::net::sockopt::socket_peercred;
-use rustix::process::geteuid;
 
 use crate::endpoint::Endpoint;
 use crate::notifications::{DesktopNotifications, reminders::ReminderPoller};
 use crate::runtime::Runtime;
 use crate::timer::Timer;
+use crate::worker_process::LinuxWorkerLauncher;
 
-const TRANSFER_TIMEOUT: Duration = Duration::from_secs(1);
+mod connection;
+
+use connection::{Connection, ConnectionEvent};
 
 pub struct Server {
+    connection: Option<Connection>,
     endpoint: Endpoint,
     timer: Timer,
     runtime: Runtime,
@@ -29,11 +33,11 @@ pub struct Server {
 }
 
 impl Server {
-    pub fn open(paths: WorkspacePaths) -> Result<Self> {
+    pub fn open(paths: WorkspacePaths, worker_slots: u8) -> Result<Self> {
         let state_dir = paths.state_dir();
         let socket_path = paths.socket_path();
         let lock_path = paths.daemon_lock_path();
-        Self::open_components(&state_dir, &socket_path, &lock_path, paths)
+        Self::open_components(&state_dir, &socket_path, &lock_path, paths, worker_slots)
     }
 
     #[cfg(test)]
@@ -43,7 +47,13 @@ impl Server {
         paths: WorkspacePaths,
     ) -> Result<Self> {
         let lock_path = state_dir.join("mcbtodo-daemon.lock");
-        Self::open_components(state_dir, socket_path, &lock_path, paths)
+        Self::open_components(
+            state_dir,
+            socket_path,
+            &lock_path,
+            paths,
+            crate::DEFAULT_WORKER_SLOTS,
+        )
     }
 
     fn open_components(
@@ -51,6 +61,7 @@ impl Server {
         socket_path: &Path,
         lock_path: &Path,
         paths: WorkspacePaths,
+        worker_slots: u8,
     ) -> Result<Self> {
         let endpoint = Endpoint::bind(state_dir, socket_path, lock_path)?;
         let path = if state_dir == paths.state_dir() {
@@ -58,16 +69,26 @@ impl Server {
         } else {
             state_dir.join("focus.sqlite3")
         };
-        let timer = Timer::open(&path).with_context(|| format!("opening {}", path.display()))?;
-        #[cfg(test)]
-        let runtime = Runtime::open_with_paths(state_dir, paths.clone())?;
-        #[cfg(not(test))]
-        let runtime = Runtime::open(paths.clone())?;
+        let (focus, recovered) =
+            FocusStore::open(&path).with_context(|| format!("opening {}", path.display()))?;
+        let timer = Timer::new(focus, recovered);
+        let workflow_path = if state_dir == paths.state_dir() {
+            paths.workflow_database_path()
+        } else {
+            state_dir.join("workflow.sqlite3")
+        };
+        let workflow = RunStore::open(&workflow_path)
+            .with_context(|| format!("opening {}", workflow_path.display()))?;
+        let runtime = Runtime::new(
+            state_dir,
+            paths,
+            workflow,
+            LinuxWorkerLauncher,
+            worker_slots,
+        )?;
         let reminders = ReminderPoller::start()?;
-        let desktop = if std::env::var_os("DBUS_SESSION_BUS_ADDRESS")
-            .is_some_and(|address| !address.is_empty())
-        {
-            match DesktopNotifications::start(runtime.notifications(), "notify-send".into()) {
+        let desktop = if let Some(sink) = NotifySend::for_session() {
+            match DesktopNotifications::start(runtime.notifications(), sink) {
                 Ok(desktop) => {
                     runtime.notifications().recover_reminder_deliveries()?;
                     Some(desktop)
@@ -81,6 +102,7 @@ impl Server {
             None
         };
         Ok(Self {
+            connection: None,
             endpoint,
             timer,
             runtime,
@@ -110,7 +132,10 @@ impl Server {
                 tv_sec: left.as_secs() as i64,
                 tv_nsec: left.subsec_nanos().into(),
             });
-        let mut fds = [PollFd::new(&self.endpoint.listener, PollFlags::IN)];
+        let mut fds = [match &self.connection {
+            Some(connection) => PollFd::new(connection.wake(), PollFlags::IN),
+            None => PollFd::new(&self.endpoint.listener, PollFlags::IN),
+        }];
         let ready = match poll(&mut fds, timeout.as_ref()) {
             Err(Errno::INTR) => return Ok(()),
             Err(error) => return Err(error).context("waiting for a daemon connection"),
@@ -135,15 +160,7 @@ impl Server {
             Err(error) => eprintln!("mcbtodo-daemon: publishing reminders: {error:#}"),
         }
         if ready != 0 {
-            match self.endpoint.listener.accept() {
-                Ok((stream, _)) => self.handle(stream),
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock
-                    ) => {}
-                Err(error) => return Err(error).context("accepting daemon connection"),
-            }
+            self.handle_ipc_event()?;
         }
         if let Some(desktop) = &mut self.desktop
             && let Err(error) = desktop.dispatch(self.runtime.notifications())
@@ -153,23 +170,34 @@ impl Server {
         Ok(())
     }
 
-    fn handle(&mut self, stream: UnixStream) {
-        match socket_peercred(&stream) {
-            Ok(credential) if credential.uid == geteuid() => (),
-            Ok(_) => return,
-            Err(error) => {
-                eprintln!("mcbtodo-daemon: checking peer credentials: {error}");
-                return;
+    fn handle_ipc_event(&mut self) -> Result<()> {
+        if let Some(mut connection) = self.connection.take() {
+            if let ConnectionEvent::Request(request) = connection.event()? {
+                connection.reply(self.reply(request));
+                self.connection = Some(connection);
+            }
+        } else {
+            match self.endpoint.listener.accept() {
+                Ok((stream, _)) => match Connection::start(stream) {
+                    Ok(connection) => self.connection = Some(connection),
+                    Err(error) => eprintln!("mcbtodo-daemon: starting local connection: {error}"),
+                },
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock
+                    ) => {}
+                Err(error) => return Err(error).context("accepting daemon connection"),
             }
         }
-        let mut stream = TimedStream {
-            stream,
-            deadline: Instant::now() + TRANSFER_TIMEOUT,
-        };
-        let reply = match wire::read::<Request>(&mut stream) {
-            Ok(Request::Workflow(command)) => self.runtime.handle(command),
-            Ok(Request::ListNotifications { before }) => {
-                match self.runtime.notifications().page(before) {
+        Ok(())
+    }
+
+    fn reply(&mut self, request: Request) -> Response {
+        match request {
+            Request::Workflow(command) => self.runtime.handle(command),
+            Request::ListNotifications { before } => {
+                match self.runtime.notifications().workflow_page(before) {
                     Ok(page) => Response::Notifications(page),
                     Err(error) => {
                         eprintln!("mcbtodo-daemon: loading notifications: {error:#}");
@@ -180,7 +208,7 @@ impl Server {
                     }
                 }
             }
-            Ok(Request::ListReminderNotifications { before }) => {
+            Request::ListReminderNotifications { before } => {
                 match self.runtime.notifications().reminder_page(before) {
                     Ok(page) => Response::ReminderNotifications(page),
                     Err(error) => {
@@ -192,7 +220,7 @@ impl Server {
                     }
                 }
             }
-            Ok(Request::FocusReport { date, timezone }) => match timezone.parse::<Tz>() {
+            Request::FocusReport { date, timezone } => match timezone.parse::<Tz>() {
                 Ok(zone) if (1..=9999).contains(&date.year()) => {
                     match self.timer.daily_report(date, zone, Instant::now()) {
                         Ok(report) => Response::FocusReport(report),
@@ -211,7 +239,7 @@ impl Server {
                         .into(),
                 },
             },
-            Ok(command) => match self.timer.apply(command, Instant::now()) {
+            command => match self.timer.apply(command, Instant::now()) {
                 Ok(Ok(status)) => Response::Status(status),
                 Ok(Err(message)) => Response::Error {
                     code: ErrorCode::Conflict,
@@ -225,53 +253,7 @@ impl Server {
                     }
                 }
             },
-            Err(ProtocolError::Io(_)) => return,
-            Err(error) => Response::Error {
-                code: if matches!(error, ProtocolError::UnsupportedVersion(_)) {
-                    ErrorCode::UnsupportedVersion
-                } else {
-                    ErrorCode::InvalidRequest
-                },
-                message: error.to_string(),
-            },
-        };
-        stream.deadline = Instant::now() + TRANSFER_TIMEOUT;
-        if let Err(error) = wire::write(&mut stream, &reply) {
-            eprintln!("mcbtodo-daemon: sending response: {error}");
         }
-    }
-}
-
-// Bound an entire frame transfer even if a client sends a few bytes at a time.
-struct TimedStream {
-    stream: UnixStream,
-    deadline: Instant,
-}
-
-impl TimedStream {
-    fn remaining(&self) -> io::Result<Duration> {
-        self.deadline
-            .checked_duration_since(Instant::now())
-            .filter(|left| !left.is_zero())
-            .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "IPC transfer timed out"))
-    }
-}
-
-impl Read for TimedStream {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.stream.set_read_timeout(Some(self.remaining()?))?;
-        self.stream.read(buf)
-    }
-}
-
-impl Write for TimedStream {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.stream.set_write_timeout(Some(self.remaining()?))?;
-        self.stream.write(buf)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.stream.flush()
     }
 }
 

@@ -5,7 +5,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, ensure};
-use mcbtodo_domain::WorkUnitCompleted;
+use mcbtodo_domain::{Id, WorkUnitCompleted};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 
 // Keep the rollback-mode database beside the Markdown so backup captures both
@@ -13,9 +13,26 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 const DATABASE: &str = ".mcbtodo-events.sqlite3";
 const APPLICATION_ID: i32 = 0x4d434245; // MCBE
 
-pub(crate) struct CompletionJournal(Connection);
+/// Durable completion intents and committed facts for a single Markdown Vault.
+///
+/// The Vault owns the writer lock and coordinates intent publication with
+/// Markdown. This adapter does not read or modify Markdown.
+pub struct CompletionJournal(Connection);
 
-pub(crate) struct PendingCompletion {
+/// A committed fact with its journal-local cursor and source document revision.
+#[derive(serde::Serialize)]
+pub struct CompletionEventRecord {
+    pub sequence: i64,
+    /// SHA-256 of the WorkUnit Markdown bytes immediately before completion.
+    pub observed_revision: String,
+    /// Local installation identity recorded when preparing the completion.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin_device_id: Option<Id>,
+    pub event: WorkUnitCompleted,
+}
+
+/// A prepared fact whose publication is decided by the Vault.
+pub struct PendingCompletion {
     pub event: WorkUnitCompleted,
     pub before: String,
     pub after: String,
@@ -57,7 +74,22 @@ impl CompletionJournal {
             db.pragma_query_value(None, "application_id", |row| row.get::<_, i32>(0))?,
             db.pragma_query_value(None, "user_version", |row| row.get::<_, i32>(0))?,
         ) {
-            (APPLICATION_ID, 1) => (),
+            (APPLICATION_ID, 3) => (),
+            (APPLICATION_ID, version @ (1 | 2)) => {
+                let tx = db.transaction()?;
+                if version == 1 {
+                    tx.execute(
+                        "ALTER TABLE work_unit_completions ADD COLUMN origin_device_id TEXT",
+                        [],
+                    )?;
+                }
+                tx.execute_batch(
+                    "ALTER TABLE work_unit_completions ADD COLUMN trigger_workflows INTEGER
+                        NOT NULL DEFAULT 1 CHECK (trigger_workflows IN (0, 1));",
+                )?;
+                initialize_event_identity(&tx)?;
+                tx.commit()?;
+            }
             (0, 0) => {
                 let tx = db.transaction()?;
                 let objects: i64 =
@@ -69,13 +101,15 @@ impl CompletionJournal {
                         event TEXT NOT NULL,
                         before_digest TEXT NOT NULL,
                         after_digest TEXT NOT NULL,
-                        pending INTEGER NOT NULL CHECK (pending IN (0, 1))
+                        pending INTEGER NOT NULL CHECK (pending IN (0, 1)),
+                        origin_device_id TEXT,
+                        trigger_workflows INTEGER NOT NULL CHECK (trigger_workflows IN (0, 1))
                     ) STRICT;
                     CREATE UNIQUE INDEX one_pending_completion
                         ON work_unit_completions(pending) WHERE pending = 1;",
                 )?;
                 tx.pragma_update(None, "application_id", APPLICATION_ID)?;
-                tx.pragma_update(None, "user_version", 1)?;
+                initialize_event_identity(&tx)?;
                 tx.commit()?;
             }
             _ => anyhow::bail!("unsupported completion store format"),
@@ -113,7 +147,7 @@ impl CompletionJournal {
             "completion database integrity check failed: {integrity}"
         );
         let mut query = journal.0.prepare(
-            "SELECT event, before_digest, after_digest, pending
+            "SELECT event, before_digest, after_digest, pending, origin_device_id
              FROM work_unit_completions ORDER BY sequence",
         )?;
         let mut rows = query.query([])?;
@@ -123,6 +157,7 @@ impl CompletionJournal {
                 .context("decoding WorkUnit completion event")?;
             let before: String = row.get(1)?;
             let after: String = row.get(2)?;
+            read_origin(row, 4)?;
             ensure!(
                 is_revision_digest(&before) && is_revision_digest(&after) && before != after,
                 "invalid completion revision digests"
@@ -143,11 +178,25 @@ impl CompletionJournal {
         Ok(pending)
     }
 
-    pub fn prepare(&self, event: &WorkUnitCompleted, before: &str, after: &str) -> Result<()> {
+    pub fn prepare(
+        &self,
+        event: &WorkUnitCompleted,
+        before: &str,
+        after: &str,
+        origin_device_id: Option<Id>,
+        trigger_workflows: bool,
+    ) -> Result<()> {
         self.0.execute(
-            "INSERT INTO work_unit_completions(event, before_digest, after_digest, pending)
-             VALUES (?1, ?2, ?3, 1)",
-            params![serde_json::to_string(event)?, before, after],
+            "INSERT INTO work_unit_completions(
+                event, before_digest, after_digest, pending, origin_device_id, trigger_workflows
+             ) VALUES (?1, ?2, ?3, 1, ?4, ?5)",
+            params![
+                serde_json::to_string(event)?,
+                before,
+                after,
+                origin_device_id.map(|id| id.to_string()),
+                trigger_workflows,
+            ],
         )?;
         Ok(())
     }
@@ -193,18 +242,29 @@ impl CompletionJournal {
         )?)
     }
 
-    pub fn page(&self, after: i64) -> Result<Vec<(i64, WorkUnitCompleted)>> {
+    pub fn committed_event(&self, id: Id) -> Result<Option<CompletionEventRecord>> {
         let mut query = self.0.prepare(
-            "SELECT sequence, event FROM work_unit_completions
-             WHERE sequence > ?1 AND pending = 0 ORDER BY sequence LIMIT 64",
+            "SELECT sequence, before_digest, event, origin_device_id FROM work_unit_completions
+             WHERE json_extract(event, '$.event_id') = ?1 AND pending = 0",
         )?;
+        let mut rows = query.query([id.to_string()])?;
+        rows.next()?.map(read_event).transpose()
+    }
+
+    pub fn page(&self, after: i64, workflow_only: bool) -> Result<Vec<CompletionEventRecord>> {
+        let sql = if workflow_only {
+            "SELECT sequence, before_digest, event, origin_device_id FROM work_unit_completions
+             WHERE sequence > ?1 AND pending = 0 AND trigger_workflows = 1
+             ORDER BY sequence LIMIT 64"
+        } else {
+            "SELECT sequence, before_digest, event, origin_device_id FROM work_unit_completions
+             WHERE sequence > ?1 AND pending = 0 ORDER BY sequence LIMIT 64"
+        };
+        let mut query = self.0.prepare(sql)?;
         let mut rows = query.query([after])?;
         let mut events = Vec::new();
         while let Some(row) = rows.next()? {
-            events.push((
-                row.get(0)?,
-                serde_json::from_str(row.get_ref(1)?.as_str()?)?,
-            ));
+            events.push(read_event(row)?);
         }
         Ok(events)
     }
@@ -220,6 +280,32 @@ impl CompletionJournal {
         }
         Ok(result)
     }
+}
+
+fn initialize_event_identity(tx: &rusqlite::Transaction<'_>) -> Result<()> {
+    tx.execute_batch(
+        "CREATE UNIQUE INDEX completion_event_identity
+            ON work_unit_completions(json_extract(event, '$.event_id'));
+         CREATE INDEX completion_workflow_delivery ON work_unit_completions(sequence)
+            WHERE pending = 0 AND trigger_workflows = 1;",
+    )?;
+    tx.pragma_update(None, "user_version", 3)?;
+    Ok(())
+}
+
+fn read_event(row: &rusqlite::Row<'_>) -> Result<CompletionEventRecord> {
+    Ok(CompletionEventRecord {
+        sequence: row.get(0)?,
+        observed_revision: row.get(1)?,
+        event: serde_json::from_str(row.get_ref(2)?.as_str()?)?,
+        origin_device_id: read_origin(row, 3)?,
+    })
+}
+
+fn read_origin(row: &rusqlite::Row<'_>, column: usize) -> Result<Option<Id>> {
+    row.get::<_, Option<String>>(column)?
+        .map(|text| Id::parse_str(&text).context("invalid completion origin device identity"))
+        .transpose()
 }
 
 fn check_sidecars(root: &Path) -> Result<Option<PathBuf>> {

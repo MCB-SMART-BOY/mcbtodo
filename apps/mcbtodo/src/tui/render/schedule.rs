@@ -1,164 +1,100 @@
-use chrono::NaiveDate;
-use mcbtodo_vault::Vault;
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
-    style::{Color, Modifier, Style},
-    widgets::{Block, Cell, ListItem, Paragraph, Row, Table},
+    style::Style,
+    widgets::{Cell, ListItem, Paragraph, Row, Table},
 };
 
-use super::list;
+use super::{list, render_list};
 use crate::tui::{
-    State,
-    calendar::{self, Lane, Week},
+    screen_model::{DayRow, DayScreenModel, WeekRow, WeekScreenModel},
+    theme::Theme,
 };
 
-pub(super) fn day(frame: &mut Frame<'_>, area: Rect, state: &State, vault: &Vault) {
-    let entries = calendar::day(vault, state.day);
-    let mut items = Vec::new();
-    let mut previous_lane = None;
-    let mut selected = 0;
-    for (index, entry) in entries.iter().enumerate() {
-        let lane = calendar::lane(entry);
-        if previous_lane != Some(lane) {
-            let title = match lane {
-                Lane::AllDay => "All-day",
-                Lane::Timed => "Timed",
-                Lane::Deadline => "Deadlines",
-                Lane::Ongoing => "Ongoing",
-            };
-            items.push(ListItem::new(title).style(Style::new().fg(Color::Cyan).bold()));
-            previous_lane = Some(lane);
-        }
-        if index == state.row {
-            selected = items.len();
-        }
-        items.push(ListItem::new(calendar::day_label(
-            entry,
-            state.day,
-            vault.timezone(),
-        )));
-    }
-    list(frame, area, items, selected, "No entries for this day");
+pub(super) fn day(frame: &mut Frame<'_>, area: Rect, model: &DayScreenModel, theme: Theme) {
+    let items = model
+        .rows
+        .iter()
+        .map(|row| match row {
+            DayRow::Section(title) => ListItem::new(*title).style(theme.accent()),
+            DayRow::Entry(label) => ListItem::new(label.clone()),
+        })
+        .collect();
+    list(
+        frame,
+        area,
+        items,
+        model.focused,
+        "No entries for this day",
+        theme,
+    );
 }
 
-pub(super) fn week(frame: &mut Frame<'_>, area: Rect, state: &State, vault: &Vault) {
-    let week = Week::new(vault, state.day);
-    let columns: [_; 7] = std::array::from_fn(|index| week.column(index));
-    let (start, end) = state.selected_range();
-    let date_label = |date: NaiveDate| {
-        let marker = if date == state.day {
-            '>'
-        } else if (start..=end).contains(&date) {
-            '+'
-        } else {
-            ' '
-        };
-        format!("{marker}{}", date.format("%a %d"))
-    };
+pub(super) fn week(frame: &mut Frame<'_>, area: Rect, week: &WeekScreenModel, theme: Theme) {
     if area.width < 72 || area.height < 8 {
-        let items = columns
+        let focus = week.compact_focus.as_deref();
+        let [days, preview] = Layout::vertical([
+            Constraint::Min(0),
+            Constraint::Length(u16::from(area.height >= 4 && focus.is_some())),
+        ])
+        .areas(area);
+        let items = week
+            .compact_rows
             .iter()
-            .map(|column| {
-                let counts = [
-                    (Lane::AllDay, "all"),
-                    (Lane::Timed, "timed"),
-                    (Lane::Deadline, "due"),
-                    (Lane::Ongoing, "active"),
-                ]
-                .into_iter()
-                .filter_map(|(lane, label)| {
-                    let count = column.in_lane(lane).count();
-                    (count > 0).then(|| format!("{count} {label}"))
-                })
-                .collect::<Vec<_>>()
-                .join(" · ");
-                ListItem::new(format!("{}  {counts}", date_label(column.date)))
+            .enumerate()
+            .map(|(index, label)| {
+                let label = if preview.is_empty() && index == week.selected_day {
+                    focus.unwrap_or(label)
+                } else {
+                    label
+                };
+                ListItem::new(label)
             })
             .collect();
-        list(
+        render_list(
             frame,
-            area,
+            days,
             items,
-            (state.day - week.monday).num_days() as usize,
-            "No entries for this week",
+            week.selected_day,
+            theme.panel(week.compact_title.as_str()),
+            theme,
         );
+        if let Some(focus) = focus.filter(|_| !preview.is_empty()) {
+            frame.render_widget(Paragraph::new(focus), preview);
+        }
         return;
     }
 
     let header = Row::new(
-        std::iter::once(Cell::from("Local")).chain(columns.iter().map(|column| {
-            let style = if column.date == state.day {
-                Style::new().fg(Color::Black).bg(Color::Cyan).bold()
-            } else if (start..=end).contains(&column.date) {
-                Style::new()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::REVERSED)
+        std::iter::once(Cell::from("Local")).chain(week.headers.iter().map(|column| {
+            let style = if column.selected {
+                theme.selected()
+            } else if column.in_selection {
+                theme.selected_cell()
             } else {
-                Style::new().bold()
+                theme.title()
             };
-            Cell::from(date_label(column.date)).style(style)
+            Cell::from(column.label.as_str()).style(style)
         })),
     );
-    let title_cell = |title| Cell::from(title).style(Style::new().bold());
-    let mut rows: Vec<_> = [
-        (Lane::AllDay, "All-day"),
-        (Lane::Deadline, "Due"),
-        (Lane::Ongoing, "Ongoing"),
-    ]
-    .into_iter()
-    .map(|(lane, label)| {
-        Row::new(
-            std::iter::once(title_cell(label)).chain(columns.iter().map(|column| {
-                let mut entries = column.in_lane(lane);
-                let label = entries.next().map(|entry| {
-                    let mark = match lane {
-                        Lane::AllDay if entry.busy => '*',
-                        Lane::AllDay => '·',
-                        Lane::Deadline => '!',
-                        _ => '·',
-                    };
-                    summarize(format!("{mark}{}", entry.title), entries.count())
-                });
-                Cell::from(label.unwrap_or_default())
-            })),
-        )
-    })
-    .collect();
-
     let [grid, preview] = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
     let visible = usize::from(grid.height.saturating_sub(6));
-    let selected = state.week_hour.min(week.hours.len().saturating_sub(1));
-    let offset = (selected + 1).saturating_sub(visible);
-    let zone = vault.timezone();
-    for (index, &hour) in week.hours.iter().enumerate().skip(offset).take(visible) {
-        let pointer = if index == selected { '>' } else { ' ' };
-        rows.push(Row::new(
-            std::iter::once(Cell::from(format!("{pointer} {hour:02}:00"))).chain(
-                columns.iter().map(|column| {
-                    let mut entries = column.at_hour(hour, zone);
-                    let label = entries.next().map(|entry| {
-                        let time = calendar::grid_time(entry, column.date, zone);
-                        let mark = if entry.busy { '*' } else { '·' };
-                        summarize(format!("{mark}{time} {}", entry.title), entries.count())
-                    });
-                    let style = if index == selected && column.date == state.day {
-                        Style::new()
-                            .fg(Color::Cyan)
-                            .add_modifier(Modifier::REVERSED)
-                    } else {
-                        Style::default()
-                    };
-                    Cell::from(label.unwrap_or_default()).style(style)
+    let offset = (week.selected_hour + 1).saturating_sub(visible);
+    let rows = week
+        .fixed_rows
+        .iter()
+        .map(|row| week_row(row, theme.title(), None, theme))
+        .chain(
+            week.timed_rows
+                .iter()
+                .enumerate()
+                .skip(offset)
+                .take(visible)
+                .map(|(index, row)| {
+                    let active = (index == week.selected_hour).then_some(week.selected_day);
+                    week_row(row, Style::default(), active, theme)
                 }),
-            ),
-        ));
-    }
-    let timed = if week.hours.is_empty() {
-        "No timed entries".into()
-    } else {
-        format!("Timed hours {}/{}", selected + 1, week.hours.len())
-    };
+        );
     let table = Table::new(
         rows,
         std::iter::once(Constraint::Length(8)).chain([Constraint::Fill(1); 7]),
@@ -166,27 +102,26 @@ pub(super) fn week(frame: &mut Frame<'_>, area: Rect, state: &State, vault: &Vau
     .column_spacing(1)
     .header(header)
     .block(
-        Block::bordered()
-            .title(format!(
-                " {} → {} ",
-                week.monday.format("%Y-%m-%d"),
-                week.days[6].format("%Y-%m-%d")
-            ))
-            .title_bottom(format!(" {timed}  * Busy  · Free  ! Due ")),
+        theme
+            .panel(week.title.as_str())
+            .title_bottom(week.legend.as_str()),
     );
     frame.render_widget(table, grid);
-    if let Some(entry) = week.focused_timed(state.day, selected, zone) {
-        frame.render_widget(
-            Paragraph::new(calendar::day_label(entry, state.day, zone)),
-            preview,
-        );
+    if let Some(label) = &week.preview {
+        frame.render_widget(Paragraph::new(label.as_str()), preview);
     }
 }
 
-fn summarize(first: String, additional: usize) -> String {
-    if additional == 0 {
-        first
-    } else {
-        format!("+{additional} {first}")
-    }
+fn week_row(row: &WeekRow, label_style: Style, active: Option<usize>, theme: Theme) -> Row<'_> {
+    let label = Cell::from(row.label.as_str()).style(label_style);
+    Row::new(
+        std::iter::once(label).chain(row.cells.iter().enumerate().map(|(index, label)| {
+            let cell = Cell::from(label.as_str());
+            if active == Some(index) {
+                cell.style(theme.selected_cell())
+            } else {
+                cell
+            }
+        })),
+    )
 }

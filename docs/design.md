@@ -23,7 +23,7 @@
 6. 同时存在 Task Graph（工作依赖）与 Workflow Graph（可执行逻辑），不混为一种图；执行证据 Evidence 将两者关联。
 7. 目标是由共享 Command/Query API 承载相同业务场景的规则；TUI/CLI/MCP 尽量共用，但不要求命令集合或交互步骤完全一致。MCP 写操作必须经过人工审批，TUI 可复用已加载快照，CLI 可保留格式解析等传输职责。当前共享边界和验收缺口详见架构与架构验收评估。AI 不能通过任意 Shell 或 SQL 越过权限与校验。
 8. 脚本、定时计划和 AI 修改采用版本固定、权限声明、独立授权、执行隔离、结果留痕、失败恢复。
-9. 单用户、单机、单活动 Vault、单写入 Daemon 加独立本机执行 Worker 为首发架构边界；分布式 Worker 集群、多设备同步和团队协作延后。
+9. 单用户、单机、单活动 Vault、单写入 Daemon 加独立本机执行 Worker 为默认首发架构边界；Daemon 可显式配置有限的本机 Worker 并发。分布式 Worker 集群、多设备同步和团队协作延后。
 10. 从第一迭代起写集成测试、属性测试和崩溃恢复测试，UI 不先于核心语义。
 
 **最重要的对象边界**：
@@ -137,7 +137,7 @@ Workspace / Vault
 - `ZonedDateTime`：当地时间 + IANA 时区 + 可解析 UTC 瞬时；保存原始时区意图。涉及时区歧义时必须明确策略。
 - `DateTimeSpan`：两个真实时刻定义的区间，内部左闭右开；可跨日/跨月。
 - `Deadline`：`Date` 或 `DateTime`，语义是期限，不是 busy 占位。
-- `RecurrenceRule`：与发生实体分离；按有界查询窗口展开。日历事件的日期规则锚定模板的 `when.start`；任务规则保存在 Task 模板，发生日期通过显式物化成为独立 Task Markdown 实例，不无限生成文件。实例 UUID 由模板 UUID 与发生日期稳定派生，实例状态与模板分开持久化。精确时段规则需要先定义并测试本地时刻、跨度和 DST 的组合语义。
+- 重复规则与发生实体分离，按有界查询窗口展开。日历规则锚定事件模板的当地开始日期。定时事件保持模板时区的本地开始时刻及实际经过时长，锚定实例保留显式偏移，后续实例按声明的 DST gap/fold 策略生成。任务规则保存在 Task 模板，发生日期通过显式物化成为独立 Task Markdown 实例。实例 UUID 由模板 UUID 与发生日期稳定派生，实例状态与模板分开持久化。
 - `Duration`：工作量或实际耗时；不与日历日期/时间戳混用。
 
 建议研究 RFC 5545（iCalendar）中的 DATE、DATE-TIME、RRULE 和非包含式 DTEND 语义，导入/导出时正确转换。
@@ -210,6 +210,8 @@ availability: busy
 **目标**：第一次打开 `mcbtodo` 进入 `Home / Month`；再次进入可以按配置选择“总是月历”或“恢复上次视图”，默认总是月历。当前 `config.toml` 支持 `home_view = "month" | "restore_last_view"`；恢复策略将上次正常退出时的九种稳定 TUI 视图名保存在私有 `.mcbtodo/state/last-view` 中，缺失或未知值回退 Month。此实现已有配置与平台状态文件测试，但完整 Month/Week/Day/Agenda/Outline 模式矩阵和真实交互仍未整体验收。TUI 日历行焦点身份区分对象 UUID 与具体 occurrence，并在已覆盖的 Agenda/Day 切换、Vault reload，以及从 Week continuation hour 打开多日定时事件的测试中恢复精确 occurrence；多日全天事件也覆盖了从非首日经 Agenda 切换至 Day 并 reload 的场景。源文档编辑仍定位到业务对象 UUID。日历按用户选定的显示时区进行投影，与调度器的触发时区分离。
 
 新增回归覆盖重复日历事件经 Agenda、Month、Week、Day、Outline 往返切换后，返回 Agenda 能恢复精确 occurrence；Outline 不展示日历行时仅保留源对象 UUID。该用例补足了单条路径的证据，不代表所有视图组合、多日类型或交互式桌面验收完成。
+
+Month、Week、Day、Agenda 四种日历视图之间的 16 种有向切换现有键盘交互回归：使用三日重复全天事件验证日期范围与 occurrence 焦点保持，并在回到 Agenda 后核对精确实例。此覆盖不代表多日定时事件、跨时区边界、窄终端渲染及真实桌面使用已完成验收。
 
 ### 4.2 视图矩阵
 
@@ -699,6 +701,8 @@ Worker 仅通过受限本机 IPC 接收信封并返回一个有界的类型化�
 
 取消时 Daemon 先持久化取消状态，再向该尝试发送取消请求；超时后终止 Worker 及其整个进程组，并等待回收。只有确认进程树停止后才可清除当前尝试。已开始执行但没有可验证结果、Daemon 与 Worker 通信中断、Worker 异常退出，或结果事务未提交时，一律转入 `outcome_unknown`；不自动重放该节点，也不调度依赖节点。Worker 仅在已持久化领取且可证明尚未开始副作用时退出，才可按明确状态安全释放领取。
 
+内部 Worker 协议 v2 的 `agent_outcome_unknown` 结果携带 Attempt 身份和所选宿主适配器的 `provider_id`。Daemon 接纳报告后持久化不确定原因，并记录 `run_id`、`attempt_id`、`provider_id`。这条结果帧不传输 Provider 错误原文和工件。若由 Daemon 先判定超时、取消或崩溃，以对应的进程监督诊断为准。Daemon 和 Worker 使用同一构建的版本，用户配置和 SQLite 数据无须迁移。
+
 Daemon 重启时不接管或重放旧 Worker 的任务：事务中所有活动尝试失效并成为 `outcome_unknown`。每次进程启动使用新的 epoch/attempt ID；即使旧进程返回迟到结果，也无法通过 fencing。Worker 单独崩溃由 Daemon 观察退出状态并执行同一恢复规则。生产取消路径已有真实 workload 的进程树终止与回收测试；Worker SIGKILL 和 Daemon 强制终止后的状态恢复也有覆盖。Daemon 死亡 smoke 同时核验其当时可见的 Worker 后代退出；这不代表已经发生的外部副作用被撤销或得到核对。错身份 Result 已由 fixture 子进程写入 stdout pipe，并通过生产协议 reader 和 `outcome_unknown`/no-replay 路径测试；发行归档 smoke 另覆盖 packaged Worker 执行非零退出脚本并持久化失败结果，但打包 Worker 的协议故障及故障组合仍须验收，并明确各外部集成的幂等、补偿或人工确认边界。OS 进程监督、私有 IPC、进程树回收和上述状态转换都必须有故障注入测试；租约超时或父进程失联本身不能证明外部副作用已停止。
 
 ### 11.4 副作用与幂等性
@@ -916,13 +920,17 @@ mcbtodo workflow simulate examples/workflow/graph.yaml --fixture examples/workfl
 ```text
 apps/
 ├── mcbtodo/                 # mcbtodo：CLI、TUI、MCP、提案、备份/诊断
-└── mcbtodo-daemon/          # mcbtodo-daemon：IPC 服务、计时、调度和执行协调
+├── mcbtodo-daemon/          # mcbtodo-daemon：IPC 服务、计时、调度和执行协调
+└── mcbtodo-worker/          # mcbtodo-worker：执行已授权的单个节点 Attempt
 
 crates/
 ├── application/           # shared business queries, commands, workflow use cases
 ├── domain/                # domain types, time semantics, projections, graph
+├── execution/             # local Agent, Bubblewrap, script runner, desktop notifications
 ├── platform/              # WorkspacePaths, config, Agent policy
+├── ports/                 # business-facing adapter contracts
 ├── protocol/              # daemon IPC types and client
+├── storage-sqlite/        # daemon workflow, focus and notification persistence
 ├── vault/                 # Markdown persistence, validation, watcher, event journal
 └── workflow/              # workflow definition, compiler, publication, scheduler logic
 
@@ -1072,14 +1080,14 @@ xtask/                     # mcbtodo-xtask package; cargo xtask check/smoke/pack
 
 ## 22. 里程碑与当前交付状态
 
-以下状态基于 `docs/architecture-assessment.md` 的验收基线（2026-11-21）。阶段沿用产品规划，状态反映当前证据；“部分”表示有实质实现，但尚未满足该阶段全部目标。不能把测试通过等同于完整日用验收。
+以下状态基于 `docs/architecture-assessment.md` 的验收基线（2026-11-22）。阶段沿用产品规划，状态反映当前证据；“部分”表示有实质实现，但尚未满足该阶段全部目标。不能把测试通过等同于完整日用验收。
 
 | 阶段 | 状态 | 当前已实现的主要部分 | 仍未完成的目标/验收 |
 |---|---|---|---|
-| M0 — 核心领域与时间规范 | 部分 | UUID 业务身份、时间类型/投影、重复规则、WorkUnit DAG 及单元测试 | 尚无覆盖全部序列化对象及跨时区边界的统一验收套件。 |
+| M0 — 核心领域与时间规范 | 部分 | UUID 业务身份、时间类型与投影、重复规则、WorkUnit DAG。跨层测试验证日期与定时截止日期、跨显示时区的归属日、定时重复事件的 DST 跳时和回拨 | 定时重复事件的完整交互视图矩阵与桌面会话待验收。 |
 | M1 — Markdown Vault + CLI | 部分 | Vault 加载、校验、原子写入、监听；CLI 与 TUI/MCP 共用 application 查询投影和业务命令，TUI 复用当前 snapshot | 尚无按实际 Vault 规模验证的查询性能基线；不以通用 daemon 查询/索引服务作为首发要求。 |
 | M2 — Daemon + IPC + Time Engine | 部分 | Unix socket、计时持久化/恢复、提醒持久 outbox 与有界重试、完成事件分页、Vault 变更校验、systemd smoke | 桌面送达为崩溃窗口下的至少一次语义；24 小时以外 occurrence 不补偿，仍需更完整的跨进程、长时间运行和平台验收。 |
-| M3 — Calendar-first + TUI | 部分 | 日历投影、Inbox triage、Graph/Timeline 等视图及若干创建/编辑流程；首页策略支持 Month/恢复上次视图并有配置和状态存储测试；日历行焦点包含 UUID、类型和 occurrence，Agenda/Day 切换及 reload 有针对性回归测试 | 完整 Month/Week/Day/Agenda/Outline 矩阵尚未整体验收；仍需扩大跨视图和多日条目焦点恢复测试。 |
+| M3 — Calendar-first + TUI | 部分 | 日历投影、Inbox triage、Graph/Timeline 等视图及若干创建/编辑流程；首页策略支持 Month/恢复上次视图并有配置和状态存储测试；日历行焦点包含 UUID、类型和 occurrence；Agenda/Day 切换、reload，以及 Month/Week/Day/Agenda 四种日历视图间 16 种有向切换均有针对性回归测试 | 完整 Month/Week/Day/Agenda/Outline 交互矩阵尚未整体验收；多日定时条目、时区边界、窄终端与真实交互会话仍需验证。 |
 | M4 — Task Graph + Workflow Compiler | 部分 | DAG 校验、Graph Diff、类型化 workflow 编译、发布、模拟 | 大型图渲染与规模行为未充分验证；更广的图交互仍属目标。 |
 | M5 — Durable Scheduler + Runner | 部分 | 持久化调度、授权、沙箱执行、恢复和产物；Daemon 已启动并监督独立 Worker，使用发布 revision 字节、Ready/Started/Start 门、attempt 身份校验及 Daemon 单事务结果提交；Linux 覆盖真实进程组终止，以及生产 Daemon 取消 sandbox 脚本后 `OutcomeUnknown`、不提交步骤、Worker 回收和后代停止；畸形 readiness 子进程回包与错身份 Result 经真实协议 decoder/reader 到 supervisor 的测试均已覆盖，后者由 fixture 子进程经 pipe 输出帧并验证 `OutcomeUnknown` 和重启不重放；发行归档 smoke 验证 packaged Worker 的非零脚本退出和失败结果持久化 | 仍缺打包 Worker 协议故障及组合故障验收。RunStore epoch 是单 Daemon 状态 fencing，不是独立 Worker 租约，也不能阻止失联进程的外部副作用。人工观察不等价于工作流机器验证或成功状态。 |
 | M6 — MCP / AI 操作 | 部分 | 类型化 MCP tools、提案、revision 校验、人工审批、Agent policy/预算；MCP、CLI、TUI 对各自暴露的共享场景使用 application 规则，并在架构评估中维护代表性场景到适配器及测试的矩阵 | 现有矩阵不是完整命令清单；扩展适配器的共享场景时需补充对应 owner-layer/adapter 测试证据，并继续验证 revision 与权限行为。入口功能集合不要求相同。 |

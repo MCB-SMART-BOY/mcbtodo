@@ -1,0 +1,235 @@
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
+    thread,
+    time::{Duration, Instant},
+};
+
+use anyhow::{Context, Result, bail, ensure};
+use mcbtodo_platform::WorkspacePaths;
+use serde_json::Value;
+
+const WORK_UNIT: &str = "30000000-0000-4000-8000-000000000002";
+
+pub(crate) fn run(root: &Path, bin_dir: &Path) -> Result<()> {
+    let home = WorkspacePaths::discover()?.home_dir().canonicalize()?;
+    let bwrap = env::split_paths(&env::var_os("PATH").unwrap_or_default())
+        .map(|dir| dir.join("bwrap"))
+        .find(|path| path.is_file())
+        .context("smoke-systemd requires Bubblewrap (bwrap)")?
+        .canonicalize()?;
+    checked_output(
+        Command::new("systemctl").args(["--user", "show-environment"]),
+        "contacting the systemd user manager",
+    )?;
+
+    let staging = tempfile::Builder::new()
+        .prefix("mcbtodo-smoke-")
+        .tempdir_in("/tmp")?;
+    let directory = staging.path();
+    let workspace = directory.join("workspace");
+    fs::create_dir(&workspace)?;
+    for binary in ["mcbtodo", "mcbtodo-daemon"] {
+        fs::copy(bin_dir.join(binary), directory.join(binary))
+            .with_context(|| format!("staging {binary} from {}", bin_dir.display()))?;
+    }
+    let smoke = SystemdSmoke {
+        bwrap,
+        home,
+        workspace,
+        directory,
+    };
+    smoke.cli(&["init"])?;
+    crate::smoke::copy_fixture(
+        &root.join("examples/vault"),
+        &WorkspacePaths::from_home(smoke.workspace.clone()).vault_root(),
+    )?;
+
+    let mut service = UserService {
+        name: format!(
+            "{}.service",
+            directory
+                .file_name()
+                .context("missing staging name")?
+                .display()
+        ),
+        diagnostics: true,
+    };
+    checked_output(
+        Command::new("systemd-run")
+            .args(["--user", "--collect"])
+            .arg(format!("--unit={}", service.name))
+            .args([
+                "--property=Type=exec",
+                "--property=Restart=on-failure",
+                "--property=RestartSec=3s",
+                "--property=NoNewPrivileges=yes",
+                "--property=UMask=0077",
+            ])
+            .arg("--")
+            .arg(&smoke.bwrap)
+            .args(smoke.sandbox_args())
+            .arg(directory.join("mcbtodo-daemon")),
+        "starting the transient user service",
+    )?;
+
+    smoke.wait_for_timer("idle with no session", |status| {
+        status["state"] == "idle" && status.get("session").is_some_and(Value::is_null)
+    })?;
+    let started = smoke.json(&["timer", "start", "--unit", WORK_UNIT, "--json"])?;
+    let started_id = started["session"]["id"]
+        .as_str()
+        .context("timer start response has no session ID")?;
+    let date = started["session"]["started_at"]
+        .as_str()
+        .and_then(|stamp| stamp.get(..10))
+        .context("timer start response has no start date")?;
+    smoke.wait_for_timer("running past the checkpoint", |status| {
+        status["state"] == "running"
+            && status["session"]["id"] == started_id
+            && status["session"]["elapsed_seconds"]
+                .as_u64()
+                .is_some_and(|elapsed| elapsed >= 6)
+    })?;
+
+    checked_output(
+        &mut service.systemctl(&["kill", "--signal=KILL", "--kill-whom=all"]),
+        "killing the transient service to test restart",
+    )?;
+    let recovered = smoke.wait_for_timer("needs_review after the forced restart", |status| {
+        status["state"] == "needs_review"
+    })?;
+    let elapsed = recovered["session"]["elapsed_seconds"]
+        .as_u64()
+        .context("recovered timer has no elapsed time")?;
+    ensure!(
+        recovered["session"]["id"] == started_id && elapsed >= 5,
+        "restart did not preserve the timer identity and checkpoint duration: {recovered}"
+    );
+
+    let args = ["--timezone", "UTC", "timer", "report", "--date", date];
+    let mut json_args = args.to_vec();
+    json_args.push("--json");
+    let report = smoke.json(&json_args)?;
+    ensure!(
+        report["date"] == date
+            && report["session_count"] == 1
+            && report["needs_review_count"] == 1
+            && report["total_elapsed_seconds"] == elapsed
+            && report["by_work_unit"]
+                .as_array()
+                .is_some_and(|rows| { rows.len() == 1 && rows[0]["work_unit_id"] == WORK_UNIT }),
+        "unexpected recovered focus report: {report}"
+    );
+    let markdown = smoke.cli(&args)?;
+    ensure!(
+        markdown.contains(date) && markdown.contains(WORK_UNIT),
+        "Markdown focus report omitted the date or WorkUnit"
+    );
+    smoke.cli(&["timer", "stop"])?;
+    checked_output(
+        &mut service.systemctl(&["stop"]),
+        "stopping the transient service",
+    )?;
+    service.diagnostics = false;
+    println!("systemd user service smoke passed (timer checkpoint, restart, and focus report)");
+    Ok(())
+}
+
+struct SystemdSmoke<'a> {
+    bwrap: PathBuf,
+    home: PathBuf,
+    workspace: PathBuf,
+    directory: &'a Path,
+}
+
+impl SystemdSmoke<'_> {
+    fn sandbox_args(&self) -> [&std::ffi::OsStr; 12] {
+        [
+            "--ro-bind".as_ref(),
+            "/".as_ref(),
+            "/".as_ref(),
+            "--bind".as_ref(),
+            self.workspace.as_os_str(),
+            self.home.as_os_str(),
+            "--setenv".as_ref(),
+            "HOME".as_ref(),
+            self.home.as_os_str(),
+            "--chdir".as_ref(),
+            "/".as_ref(),
+            "--".as_ref(),
+        ]
+    }
+
+    fn cli(&self, args: &[&str]) -> Result<String> {
+        checked_output(
+            Command::new(&self.bwrap)
+                .args(self.sandbox_args())
+                .arg(self.directory.join("mcbtodo"))
+                .args(args),
+            &format!("running isolated mcbtodo {args:?}"),
+        )
+    }
+
+    fn json(&self, args: &[&str]) -> Result<Value> {
+        let stdout = self.cli(args)?;
+        serde_json::from_str(&stdout).with_context(|| format!("decoding mcbtodo {args:?} JSON"))
+    }
+
+    fn wait_for_timer(&self, expected: &str, ready: impl Fn(&Value) -> bool) -> Result<Value> {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let observed = match self.json(&["timer", "status", "--json"]) {
+                Ok(status) if ready(&status) => return Ok(status),
+                Ok(status) => status.to_string(),
+                Err(error) => format!("{error:#}"),
+            };
+            if Instant::now() >= deadline {
+                bail!("timer did not reach {expected}; last observation: {observed}");
+            }
+            thread::sleep(Duration::from_millis(250));
+        }
+    }
+}
+
+struct UserService {
+    name: String,
+    diagnostics: bool,
+}
+
+impl UserService {
+    fn systemctl(&self, args: &[&str]) -> Command {
+        let mut command = Command::new("systemctl");
+        command.arg("--user").args(args).arg(&self.name);
+        command
+    }
+}
+
+impl Drop for UserService {
+    fn drop(&mut self) {
+        if self.diagnostics {
+            let _ = self.systemctl(&["status", "--no-pager"]).status();
+            let _ = Command::new("journalctl")
+                .args(["-n", "30", "--no-pager", "--user-unit"])
+                .arg(&self.name)
+                .status();
+            let _ = self
+                .systemctl(&["stop"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+    }
+}
+
+fn checked_output(command: &mut Command, operation: &str) -> Result<String> {
+    let output = command.output().with_context(|| operation.to_owned())?;
+    ensure!(
+        output.status.success(),
+        "{operation} exited with {}: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    String::from_utf8(output.stdout).with_context(|| format!("reading output from {operation}"))
+}

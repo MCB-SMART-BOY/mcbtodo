@@ -33,3 +33,12 @@ review = { path = "workflows/review.md" }
 release = { path = "workflows/release.md" }
 documentation = { path = "workflows/documentation.md" }
 architecture = { path = "workflows/architecture.md" }
+architecture-evolution = { path = "workflows/architecture-evolution.md" }
+audit = { path = "workflows/audit.md" }
+ports = { path = "workflows/ports.md" }
+storage = { path = "workflows/storage.md" }
+agent = { path = "workflows/agent.md" }
+platform = { path = "workflows/platform.md" }
+tui = { path = "workflows/tui.md" }
+sync = { path = "workflows/sync.md" }
+completion = { path = "workflows/completion.md" }

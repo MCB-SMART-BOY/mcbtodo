@@ -1,9 +1,18 @@
+#![cfg(target_os = "linux")]
+
 use std::{
-    io::{BufReader, BufWriter, Write},
+    fs,
+    io::{self, BufReader, BufWriter, Read, Write},
+    os::unix::net::UnixListener,
     process::{Child, Command, Stdio},
+    thread,
+    time::{Duration, Instant},
 };
 
-use mcbtodo_protocol::worker::{AttemptIdentity, DaemonMessage, WorkerJob, WorkerMessage};
+use mcbtodo_platform::WorkspacePaths;
+use mcbtodo_protocol::worker::{
+    self, AttemptIdentity, DaemonMessage, WorkerJob, WorkerMessage, WorkerOutcome,
+};
 use serde_json::Map;
 use uuid::Uuid;
 
@@ -101,4 +110,109 @@ fn worker_rejects_a_malformed_prepare_frame_before_readiness() {
         String::from_utf8_lossy(&output.stderr).contains("reading worker preparation"),
         "worker should identify the rejected preparation frame"
     );
+}
+
+#[test]
+fn worker_reports_only_uncertainty_after_cancelling_a_dispatched_agent() -> anyhow::Result<()> {
+    let home = tempfile::tempdir()?;
+    let paths = WorkspacePaths::from_home(home.path().to_path_buf());
+    paths.initialize()?;
+    let listener = UnixListener::bind(paths.state_dir().join("agent.sock"))?;
+    listener.set_nonblocking(true)?;
+    let identity = AttemptIdentity {
+        run_id: Uuid::from_u128(1),
+        revision: "a".repeat(64),
+        node: "agent-review".into(),
+        attempt_id: Uuid::from_u128(2),
+        epoch: 1,
+        expected_step: 1,
+    };
+    fs::write(
+        paths.agent_policy_path(),
+        format!(
+            "timeout_seconds = 5\n[providers]\nunix_socket = 'state/agent.sock'\n\
+             [[allow]]\ncapability = 'review'\nrevision = '{}'\n",
+            identity.revision
+        ),
+    )?;
+
+    let mut child = WorkerChild(
+        Command::new(env!("CARGO_BIN_EXE_mcbtodo-worker"))
+            .env_clear()
+            .env("HOME", home.path())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()?,
+    );
+    let mut input = child.0.stdin.take().unwrap();
+    let mut output = BufReader::new(child.0.stdout.take().unwrap());
+    worker::write(
+        &mut input,
+        &DaemonMessage::Prepare {
+            identity: identity.clone(),
+            job: WorkerJob::Agent {
+                capability: "review".into(),
+                timeout_seconds: 10,
+                inputs: Map::new(),
+            },
+        },
+    )?;
+    assert_eq!(
+        worker::read::<WorkerMessage>(&mut output)?,
+        WorkerMessage::Ready {
+            identity: identity.clone()
+        }
+    );
+    worker::write(
+        &mut input,
+        &DaemonMessage::Start {
+            identity: identity.clone(),
+        },
+    )?;
+    let deadline = Instant::now() + Duration::from_secs(4);
+    let mut agent = loop {
+        match listener.accept() {
+            Ok((stream, _)) => break stream,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                assert!(
+                    Instant::now() < deadline,
+                    "expected Worker to call the Agent"
+                );
+                thread::sleep(Duration::from_millis(5));
+            }
+            Err(error) => return Err(error.into()),
+        }
+    };
+    agent.set_read_timeout(Some(Duration::from_secs(4)))?;
+    let mut size = [0; 4];
+    agent.read_exact(&mut size)?;
+    let size = u32::from_be_bytes(size) as usize;
+    assert!(size <= 16 * 1024);
+    let mut request = vec![0; size];
+    agent.read_exact(&mut request)?;
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&request)?["capability"],
+        "review"
+    );
+
+    worker::write(
+        &mut input,
+        &DaemonMessage::Cancel {
+            identity: identity.clone(),
+        },
+    )?;
+    assert_eq!(agent.read(&mut [0])?, 0);
+    assert_eq!(
+        worker::read::<WorkerMessage>(&mut output)?,
+        WorkerMessage::Result {
+            identity,
+            outcome: WorkerOutcome::AgentOutcomeUnknown {
+                provider_id: "mcbtodo-local-agent".into(),
+            },
+            artifact: None,
+        }
+    );
+    assert!(child.0.wait()?.success());
+    Ok(())
 }

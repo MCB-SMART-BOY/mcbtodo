@@ -1,0 +1,21 @@
+[package]
+name = "mcbtodo-agent-codex"
+repository.workspace = true
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "Bounded Codex app-server protocol client for mcbtodo."
+documentation = "https://docs.rs/mcbtodo-agent-codex"
+
+[dependencies]
+anyhow.workspace = true
+mcbtodo-ports.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { workspace = true, features = ["fs"] }
+
+[lints]
+workspace = true

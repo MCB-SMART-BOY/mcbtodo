@@ -4,6 +4,9 @@ Use this workflow when changing crate boundaries, adding an adapter or service,
 moving business behavior between layers, changing persistence ownership, or
 revising the runtime/configuration layout.
 
+For the staged workspace evolution, also follow
+[Architecture Evolution](architecture-evolution.md) for scope and acceptance.
+
 ## Frame the Change
 
 1. Read `AGENTS.md`, `.agents/instructions.md`, `docs/design.md`,
@@ -42,9 +45,13 @@ revising the runtime/configuration layout.
    `read_worker_messages` decoder and Started `poll_worker` state path. The
    fixture is not the packaged Worker binary. The extracted release archive
    sandbox smoke covers a packaged Worker's nonzero script exit and durable
-   failed-step trace; malformed output from the packaged Worker and
-   combined-fault acceptance remain implementation gaps, not product decisions
-   to defer. Preserve one
+   failed-step trace. A development-only `xtask` fixture now also completes
+   Prepare/Ready/Start with the extracted packaged Daemon, emits a malformed
+   Result, and verifies `outcome_unknown`, no step commit, and process reaping.
+   This tests packaged Daemon supervision, not output emitted by the packaged
+   Worker. Packaged-Worker outbound fault combinations and external-side-effect
+   reconciliation remain implementation gaps, not product decisions to defer.
+   Preserve one
    authoritative queue/run state in Daemon;
    use the v1 attempt envelope and process/failure contract in
    `docs/design.md` section 11.3 as the protocol baseline. Any change to that
@@ -72,7 +79,9 @@ revising the runtime/configuration layout.
    domain must not depend on adapters, filesystem paths, or transport types.
    Protocol owns wire contracts, platform owns OS/config boundaries, and
    `mcbtodo-execution` owns reusable execution adapters but not queue state or
-   result persistence. Apps own presentation and transport parsing.
+   result persistence. `mcbtodo-ports` owns only business-shaped contracts
+   already required by a real caller. Apps own presentation and transport
+   parsing.
 
 ## Choose and Implement a Slice
 
@@ -90,6 +99,11 @@ revising the runtime/configuration layout.
    shared scenario that an adapter exposes. Parity means matching business
    rules and revision behavior, not identical command sets or interaction
    flows. Keep a scenario-to-adapter matrix when adapter coverage changes.
+   For a new port, require one real adapter and one focused contract test
+   before adding another provider, registry, scheduler, or plugin protocol.
+   Provider metadata describes capability and health for discovery, but it
+   never grants authorization. Keep policy, budget, idempotency, revision
+   authorization, result submission, and `outcome_unknown` in the host.
    Include malformed input, stale revisions, interrupted operations, and
    restart behavior when the affected use case requires them. Reuse an
    adapter's already-validated snapshot instead of reloading it just to route

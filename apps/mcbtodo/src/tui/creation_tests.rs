@@ -64,6 +64,32 @@ fn calendar_create_menu_advertises_each_keyboard_action() {
 }
 
 #[test]
+fn short_create_menu_reaches_the_last_action_and_keeps_its_shortcut() {
+    let vault = tests::fixture();
+    let mut state = State::new(day("2026-11-25"));
+    press(&mut state, &vault, " c");
+    let rendered = screen(&state, &vault, 24, 5);
+    assert!(rendered.contains("p  Project"), "{rendered}");
+    assert!(rendered.contains("Esc back"), "{rendered}");
+
+    state.handle(KeyEvent::new(KeyCode::End, KeyModifiers::NONE), &vault);
+    let rendered = screen(&state, &vault, 24, 5);
+    assert!(rendered.contains("b  Time block"), "{rendered}");
+    assert!(
+        rendered.lines().nth(2).unwrap().ends_with('│'),
+        "{rendered}"
+    );
+
+    state.handle(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE), &vault);
+    let rendered = screen(&state, &vault, 24, 5);
+    assert!(rendered.contains("p  Project"), "{rendered}");
+    press(&mut state, &vault, "\x1b");
+    assert!(matches!(state.overlay, Overlay::Space(_)));
+    press(&mut state, &vault, "cb");
+    assert!(matches!(state.overlay, Overlay::TimeBlock(_)));
+}
+
+#[test]
 fn reminder_form_requires_an_explicit_matching_timezone_offset() {
     let vault = tests::fixture();
     let mut state = State::new(day("2026-11-25"));
@@ -83,10 +109,10 @@ fn reminder_form_requires_an_explicit_matching_timezone_offset() {
 #[test]
 fn keyboard_creates_a_one_time_reminder_with_an_explicit_local_offset() {
     let root = tempfile::tempdir().unwrap();
-    let mut vault = Vault::load(root.path(), ZONE).unwrap();
     let paths = mcbtodo_platform::WorkspacePaths::from_home(root.path().to_owned());
-    std::fs::create_dir_all(paths.data_dir()).unwrap();
-    std::os::unix::fs::symlink(root.path(), paths.vault_root()).unwrap();
+    paths.initialize().unwrap();
+    let vault_root = paths.vault_root();
+    let mut vault = Vault::load(&vault_root, ZONE).unwrap();
     let mut state = State::new(day("2026-11-25"));
     let Action::CreateReminder(request) = press(
         &mut state,
@@ -96,7 +122,7 @@ fn keyboard_creates_a_one_time_reminder_with_an_explicit_local_offset() {
         panic!("expected reminder creation, got {}", state.message);
     };
 
-    state.create_reminder(root.path(), &mut vault, &paths, request);
+    state.create_reminder(&vault_root, &mut vault, &paths, request);
 
     assert_eq!(state.message, "Reminder saved");
     assert!(matches!(state.overlay, Overlay::None));
@@ -274,14 +300,14 @@ fn malformed_deadline_date_is_reported_instead_of_using_the_default() {
 }
 
 fn save(state: &mut State, root: &Path, vault: &mut Vault, input: &str) -> Id {
-    let before = document_ids(vault);
+    let before = Vault::load(root, vault.timezone()).unwrap();
     let Action::CreateCalendar(submission) = press(state, vault, input) else {
         panic!("expected a calendar submission, got {}", state.message);
     };
     state.create_calendar(root, vault, submission);
     assert!(matches!(state.overlay, Overlay::None), "{}", state.message);
     let id = state.selected_document(vault).expect("saved item focused");
-    assert!(!before.contains(&id));
+    assert!(before.revision(id).is_none());
     id
 }
 
@@ -310,11 +336,17 @@ fn keyboard_creates_a_long_term_project_as_a_nonbusy_active_period() {
     );
 
     state.set_day(day("2027-03-01"));
-    assert!(state.agenda(&persisted).iter().any(|entry| entry.id == id));
+    assert!(
+        state
+            .agenda(&persisted)
+            .unwrap()
+            .iter()
+            .any(|entry| entry.id == id)
+    );
     press(&mut state, &persisted, " um");
     assert!(screen(&state, &persisted, 80, 24).contains(" 1."));
     state.set_day(day("2027-03-02"));
-    assert!(state.agenda(&persisted).is_empty());
+    assert!(state.agenda(&persisted).unwrap().is_empty());
 }
 
 #[test]
@@ -329,7 +361,7 @@ fn keyboard_creates_a_busy_all_day_event_with_inclusive_date_precision() {
         "vl ceCampus event\n\n\n",
     );
     let persisted = Vault::load(root.path(), ZONE).unwrap();
-    let entries = calendar::day(&persisted, day("2026-11-25"));
+    let entries = calendar::day(&persisted, day("2026-11-25")).unwrap();
     let entry = entries.iter().find(|entry| entry.id == id).unwrap();
     assert_eq!(entry.title, "Campus event");
     assert_eq!(entry.kind, CalendarKind::Event);
@@ -338,11 +370,48 @@ fn keyboard_creates_a_busy_all_day_event_with_inclusive_date_precision() {
         matches!(entry.occurrence, Occurrence::Span(Span::DateSpan(span))
         if span.start() == day("2026-11-24") && span.through() == day("2026-11-25"))
     );
-    assert!(calendar::day(&persisted, day("2026-11-26")).is_empty());
+    assert!(
+        calendar::day(&persisted, day("2026-11-26"))
+            .unwrap()
+            .is_empty()
+    );
     let rendered = screen(&state, &persisted, 80, 18);
     assert!(
         rendered.contains("All-day") && rendered.contains("Campus event"),
         "{rendered}"
+    );
+}
+
+#[test]
+fn month_selection_creates_an_inclusive_all_day_event_across_month_boundary() {
+    let root = tempfile::tempdir().unwrap();
+    let mut vault = Vault::load(root.path(), ZONE).unwrap();
+    let mut state = State::new(day("2026-11-30"));
+
+    press(&mut state, &vault, "vl ce");
+    let Action::CreateCalendar(request) = press(&mut state, &vault, "Year-end event\n\n\n") else {
+        panic!("expected all-day event creation");
+    };
+
+    state.create_calendar(root.path(), &mut vault, request);
+    assert_eq!(state.message, "All-day event saved");
+
+    let persisted = Vault::load(root.path(), ZONE).unwrap();
+    for selected_day in ["2026-11-30", "2026-12-01"] {
+        assert!(
+            calendar::day(&persisted, day(selected_day))
+                .unwrap()
+                .iter()
+                .any(|entry| entry.title == "Year-end event" && entry.busy),
+            "event should appear on {selected_day}"
+        );
+    }
+    assert!(
+        calendar::day(&persisted, day("2026-12-02"))
+            .unwrap()
+            .iter()
+            .all(|entry| entry.title != "Year-end event"),
+        "inclusive event range must not extend beyond December 1"
     );
 }
 
@@ -355,7 +424,7 @@ fn deadline_creation_publishes_a_project_with_no_busy_period() {
     let persisted = Vault::load(root.path(), ZONE).unwrap();
     assert_eq!(persisted.outline().len(), 1);
     assert!(persisted.source(id).unwrap().is_file());
-    let entries = state.agenda(&persisted);
+    let entries = state.agenda(&persisted).unwrap();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].id, id);
     assert_eq!(entries[0].title, "Send report");
@@ -363,7 +432,11 @@ fn deadline_creation_publishes_a_project_with_no_busy_period() {
     assert!(!entries[0].busy);
     assert!(matches!(entries[0].occurrence,
         Occurrence::Deadline(mcbtodo_domain::time::Deadline::Date { value }) if value == day("2026-11-25")));
-    assert!(calendar::day(&persisted, day("2026-11-24")).is_empty());
+    assert!(
+        calendar::day(&persisted, day("2026-11-24"))
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -400,7 +473,7 @@ fn a_project_deadline_added_outside_the_tui_refreshes_an_open_snapshot() {
     );
 
     assert!(observer.refresh_external(root.path(), &mut observer_vault));
-    assert_eq!(observer.agenda(&observer_vault)[0].id, id);
+    assert_eq!(observer.agenda(&observer_vault).unwrap()[0].id, id);
     assert!(!observer.refresh_external(root.path(), &mut observer_vault));
 }
 

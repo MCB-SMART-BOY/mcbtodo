@@ -1,8 +1,8 @@
+#[cfg(target_os = "linux")]
+use std::{env::consts::ARCH, os::unix::fs::PermissionsExt, path::PathBuf};
 use std::{
-    env::consts::ARCH,
     fs,
-    os::unix::fs::PermissionsExt,
-    path::{Path, PathBuf},
+    path::Path,
     process::{Command, Output},
 };
 
@@ -19,6 +19,7 @@ pub fn verify_crate_packages(root: &Path) -> Result<()> {
     let packages = metadata["packages"]
         .as_array()
         .context("cargo metadata has no packages array")?;
+    let workspace_license = fs::read(root.join("LICENSE")).context("reading workspace LICENSE")?;
     let mut verified = 0usize;
 
     for package in packages {
@@ -37,9 +38,17 @@ pub fn verify_crate_packages(root: &Path) -> Result<()> {
             package["license"].as_str() == Some("Apache-2.0"),
             "publishable package {name} must declare Apache-2.0"
         );
+        let manifest_path = package["manifest_path"]
+            .as_str()
+            .context("workspace package has no manifest path")?;
+        let package_license = Path::new(manifest_path)
+            .parent()
+            .context("package manifest has no parent directory")?
+            .join("LICENSE");
         ensure!(
-            package["license_file"].as_str().is_some(),
-            "publishable package {name} has no license-file metadata"
+            fs::read(&package_license).with_context(|| format!("reading license for {name}"))?
+                == workspace_license,
+            "publishable package {name} LICENSE differs from the workspace license"
         );
         let output = cargo_output(
             root,
@@ -84,9 +93,10 @@ fn cargo_output(root: &Path, args: &[&str]) -> Result<Output> {
     Ok(output)
 }
 
+#[cfg(target_os = "linux")]
 pub fn build(root: &Path, bin_dir: &Path, out_dir: &Path) -> Result<PathBuf> {
     ensure!(
-        cfg!(target_os = "linux") && matches!(ARCH, "aarch64" | "x86_64"),
+        matches!(ARCH, "aarch64" | "x86_64"),
         "packaging requires a native Linux aarch64 or x86_64 build"
     );
     let staging = tempfile::tempdir().context("creating package staging directory")?;
@@ -96,6 +106,9 @@ pub fn build(root: &Path, bin_dir: &Path, out_dir: &Path) -> Result<PathBuf> {
         "usr/lib",
         "usr/lib/systemd",
         "usr/lib/systemd/user",
+        "usr/share",
+        "usr/share/licenses",
+        "usr/share/licenses/mcbtodo",
     ] {
         let path = staging.path().join(dir);
         fs::create_dir(&path)?;
@@ -116,6 +129,11 @@ pub fn build(root: &Path, bin_dir: &Path, out_dir: &Path) -> Result<PathBuf> {
         (
             root.join("deploy/systemd/mcbtodo-daemon.service"),
             "usr/lib/systemd/user/mcbtodo-daemon.service",
+            0o644,
+        ),
+        (
+            root.join("LICENSE"),
+            "usr/share/licenses/mcbtodo/LICENSE",
             0o644,
         ),
     ] {

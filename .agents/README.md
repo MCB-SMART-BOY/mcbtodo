@@ -6,6 +6,7 @@
 cargo xtask agent prepare
 cargo xtask agent prepare --harness codex --workflow review --offline
 cargo xtask agent prepare --workflow architecture --offline
+cargo xtask agent prepare --workflow architecture-evolution --offline
 cargo xtask agent prepare --workflow contribution --offline
 cargo xtask agent run --workflow develop '为日期投影补充一个闰日测试'
 cargo xtask agent prepare --workflow documentation --offline
@@ -13,6 +14,7 @@ cargo xtask agent prepare --workflow release --offline
 ```
 
 - Harness 依次来自显式 `--harness`、`MCBTODO_HARNESS`、当前会话标记、`PATH` 中的客户端和 `generic`。自动探测顺序由 `auto_order` 管理。`prepare` 可以为尚未安装的客户端准备上下文；`run` 自动探测时跳过未安装的客户端，显式指定的客户端不可用时会报错。xtask 不会安装或下载 harness 客户端。
+- Windows 的 `PATH` 探测匹配 `.exe` 客户端。Windows 把超过 12 KiB 的合并提示切换为上下文文件引用，其他目标沿用 120 KiB 阈值。
 - Workflow 依次来自 `--workflow`、`MCBTODO_WORKFLOW` 和注册表中的 `default_workflow`。
 - Harness 操作约定见注册表引用的指南：
   - [`codex`](harness/codex.md)
@@ -23,6 +25,15 @@ cargo xtask agent prepare --workflow release --offline
 - [`develop`](workflows/develop.md) 规定实现分层、测试与交付检查。
 - [`contribution`](workflows/contribution.md) 在接收代码、文档、夹具或其他材料前核查来源、权利主体与允许用途。
 - [`architecture`](workflows/architecture.md) 从具体使用场景选择最小架构切片并维护层边界。
+- [`architecture-evolution`](workflows/architecture-evolution.md) 规定架构演进的范围、不变量、实施阶段与验收门禁。
+- [`audit`](workflows/audit.md) 规定仓库审计、证据分类、差距报告和最小实施切片。
+- [`ports`](workflows/ports.md) 规定稳定业务端口、真实适配器、契约测试和边界约束。
+- [`storage`](workflows/storage.md) 规定业务仓储、SQLite 事务、迁移、快照和恢复。
+- [`agent`](workflows/agent.md) 规定 Agent Provider、Policy、Transport、Session、Supervisor 和 Codex 适配器。
+- [`platform`](workflows/platform.md) 规定跨平台能力状态、可选工具和沙箱 fail-closed 行为。
+- [`tui`](workflows/tui.md) 规定 ScreenModel、主题、布局、键位和视觉验证。
+- [`sync`](workflows/sync.md) 规定备份、事件身份、恢复校验和跨设备同步边界。
+- [`completion`](workflows/completion.md) 规定阶段验收、能力状态和 A–G 交付报告。
 - [`review`](workflows/review.md) 规定缺陷优先的代码审查及验收。
 - [`documentation`](workflows/documentation.md) 维护文档事实、索引和同步。
 - [`release`](workflows/release.md) 只准备发布并验证输入，不执行实际发布。
@@ -38,3 +49,6 @@ CI 在两种 Linux 架构上运行 `cargo xtask check`、示例 Vault 校验、�
 打 `v*` 版本标签会触发发布准备流水线：检查 workspace、验证示例 Vault、运行 crates.io dry-run，并构建及验证各架构发行归档。该流水线也可通过 `workflow_dispatch` 手动启动；手动运行仅验证 GitHub Actions 中选定的 ref，不会自动创建正式发布。流水线只上传 GitHub Actions 构建产物，不会执行实际发布。
 
 `cargo xtask agent validate` 会校验根 `AGENTS.md`、注册表、每个已注册来源，以及注册 workflow 在本文件和 `docs/README.md` 中的链接与本地来源路径；集成测试在冷离线 HOME 下覆盖全部已注册 harness × workflow 组合。添加或删除 workflow 时仍须同步更新两个索引。远程内容更新需要在注册表中更新摘要。
+
+macOS 和 Windows 的原生 CI 执行 `mcbtodo-xtask` 测试。Linux 专用的
+`smoke`、`smoke-systemd`、`package` 和 `workflow-example` 在其他平台明确拒绝。

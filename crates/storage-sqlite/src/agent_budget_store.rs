@@ -5,16 +5,6 @@ use super::*;
 const MAX_ATTEMPTS: u32 = 4;
 const MAX_WALL_MS: u32 = 60_000;
 
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum AgentBudgetDenied {
-    #[error("per-run Agent call budget exhausted (limit: {MAX_ATTEMPTS})")]
-    Calls,
-    #[error("per-run Agent wall-time budget exhausted")]
-    WallTime,
-    #[error("per-run Agent budget is unavailable for a run with unaccounted Agent history")]
-    Untracked,
-}
-
 pub(super) fn install(tx: &Transaction<'_>) -> Result<()> {
     tx.execute_batch(
         "CREATE TABLE IF NOT EXISTS workflow_agent_budgets (
@@ -32,18 +22,21 @@ pub(super) fn install(tx: &Transaction<'_>) -> Result<()> {
 }
 
 impl RunStore {
-    /// Reserve the remaining wall time and persist the worker claim together.
-    pub(crate) fn claim_agent(
+    /// Reserve the remaining wall time and claim the Worker attempt in one
+    /// writer transaction. The budget is not charged if the claim rolls back.
+    pub(super) fn reserve_and_claim_agent(
         &self,
-        run: &RunSummary,
-        node: &str,
-        has_unaccounted_attempt: impl FnOnce() -> Result<bool>,
-    ) -> Result<Duration> {
+        claim: ClaimAttempt<'_>,
+        has_prior_agent_step: bool,
+    ) -> Result<AgentAttemptClaim> {
+        let tx = self.write_transaction()?;
+        let run = self
+            .get(claim.run_id)?
+            .context("workflow run was not found")?;
         ensure!(
             run.state == RunState::Pending,
             "Agent claim requires a pending run"
         );
-        let tx = self.write_transaction()?;
         let id = run.id.to_string();
         let usage: Option<(u32, u32)> = tx
             .query_row(
@@ -56,24 +49,30 @@ impl RunStore {
             Some(usage) => usage,
             // Earlier databases have no account. Start one only if the prior
             // trace contains no executed Agent whose elapsed time is unknown.
-            None if !has_unaccounted_attempt()? => (0, 0),
+            None if !has_prior_agent_step => (0, 0),
             None => return Err(AgentBudgetDenied::Untracked.into()),
         };
         if attempts >= MAX_ATTEMPTS {
-            return Err(AgentBudgetDenied::Calls.into());
+            return Err(AgentBudgetDenied::Calls {
+                limit: MAX_ATTEMPTS,
+            }
+            .into());
         }
         if wall_ms >= MAX_WALL_MS {
             return Err(AgentBudgetDenied::WallTime.into());
         }
-        update_state(&tx, run, RunState::Running, Some(node), None)?;
         tx.execute(
             "INSERT INTO workflow_agent_budgets(run_id, attempts, wall_ms) VALUES(?1, ?2, ?3)
              ON CONFLICT(run_id) DO UPDATE
              SET attempts=excluded.attempts, wall_ms=excluded.wall_ms",
             params![id, attempts + 1, MAX_WALL_MS],
         )?;
+        let attempt = Self::insert_attempt(&tx, run, claim)?;
         tx.commit()?;
-        Ok(Duration::from_millis(u64::from(MAX_WALL_MS - wall_ms)))
+        Ok(AgentAttemptClaim {
+            attempt,
+            execution_window: Duration::from_millis(u64::from(MAX_WALL_MS - wall_ms)),
+        })
     }
 }
 

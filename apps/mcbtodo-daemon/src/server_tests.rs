@@ -1,11 +1,13 @@
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
-use std::os::unix::net::UnixListener;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::thread;
+use std::time::Duration;
 
 use mcbtodo_platform::WorkspacePaths;
-use mcbtodo_protocol::{TimerState, request};
+use mcbtodo_ports::workflow::WorkflowRunCatalog;
+use mcbtodo_protocol::{TimerState, request, wire};
 
 use super::*;
 
@@ -152,10 +154,27 @@ fn daemon_keeps_a_live_socket_even_when_its_lock_is_available() -> anyhow::Resul
     let socket = dir.path().join("s");
     let external = UnixListener::bind(&socket)?;
     let inode = fs::symlink_metadata(&socket)?.ino();
-    assert!(open_for_test(dir.path(), &socket).is_err());
+    let Err(error) = open_for_test(dir.path(), &socket) else {
+        panic!("unexpectedly replaced a live listener");
+    };
+    assert!(error.to_string().contains("listener is already active"));
     assert_eq!(fs::symlink_metadata(&socket)?.ino(), inode);
     drop(external);
-    let mut server = open_for_test(dir.path(), &socket)?;
+    // A subprocess forked by a parallel test can still hold the listener
+    // descriptor until exec closes it. Wait only for that listener to close.
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut server = loop {
+        match open_for_test(dir.path(), &socket) {
+            Ok(server) => break server,
+            Err(error)
+                if error.to_string().contains("listener is already active")
+                    && Instant::now() < deadline =>
+            {
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => return Err(error),
+        }
+    };
     assert!(matches!(
         status(&mut server, socket.clone(), Request::Status),
         Response::Status(_)
@@ -188,6 +207,69 @@ fn daemon_requires_a_private_preinitialized_state_directory() -> anyhow::Result<
 }
 
 #[test]
+fn partial_ipc_frame_does_not_hold_the_daemon_step_open() -> anyhow::Result<()> {
+    use std::io::Write;
+
+    let dir = private_tempdir()?;
+    let socket = dir.path().join("s");
+    let mut server = open_for_test(dir.path(), &socket)?;
+    let mut client = UnixStream::connect(&socket)?;
+    let mut frame = Vec::new();
+    wire::write(&mut frame, &Request::Status)?;
+    client.write_all(&frame[..1])?;
+
+    let started = Instant::now();
+    server.step()?;
+    assert!(
+        started.elapsed() < Duration::from_millis(500),
+        "the Daemon step waited on the incomplete IPC frame"
+    );
+
+    client.write_all(&frame[1..])?;
+    assert!(matches!(
+        read_with_server::<Response>(&mut server, client)?,
+        Response::Status(_)
+    ));
+    Ok(())
+}
+
+#[test]
+fn expired_partial_request_releases_admission_without_dispatch() -> anyhow::Result<()> {
+    use std::io::{Read, Write};
+
+    let dir = private_tempdir()?;
+    let socket = dir.path().join("s");
+    let mut server = open_for_test(dir.path(), &socket)?;
+    let mut stalled = UnixStream::connect(&socket)?;
+    let mut frame = Vec::new();
+    wire::write(&mut frame, &Request::Start { work_unit_id: None })?;
+    stalled.write_all(&frame[..frame.len() - 1])?;
+    server.step()?;
+
+    let Response::Status(state) = status(&mut server, socket, Request::Status) else {
+        panic!("expected the next client to be admitted after the read deadline");
+    };
+    assert_eq!(state.state, TimerState::Idle);
+    stalled.set_read_timeout(Some(Duration::from_secs(1)))?;
+    assert_eq!(stalled.read(&mut [0])?, 0);
+    Ok(())
+}
+
+fn read_with_server<T: serde::de::DeserializeOwned + Send>(
+    server: &mut Server,
+    mut client: UnixStream,
+) -> Result<T> {
+    client.set_read_timeout(Some(Duration::from_secs(3)))?;
+    thread::scope(|scope| {
+        let reader = scope.spawn(move || wire::read(&mut client));
+        while !reader.is_finished() {
+            server.step()?;
+        }
+        Ok(reader.join().unwrap()?)
+    })
+}
+
+#[test]
 fn malformed_request_receives_a_typed_error_and_does_not_stop_daemon() -> anyhow::Result<()> {
     use std::io::Write;
 
@@ -196,9 +278,8 @@ fn malformed_request_receives_a_typed_error_and_does_not_stop_daemon() -> anyhow
     let mut server = open_for_test(dir.path(), &socket)?;
     let mut client = UnixStream::connect(&socket)?;
     client.write_all(&u32::MAX.to_be_bytes())?;
-    server.step()?;
     assert!(matches!(
-        wire::read::<Response>(&mut client)?,
+        read_with_server::<Response>(&mut server, client)?,
         Response::Error {
             code: ErrorCode::InvalidRequest,
             ..
@@ -231,7 +312,7 @@ fn production_server_uses_paths_from_one_workspace() -> anyhow::Result<()> {
     let paths = WorkspacePaths::from_home(home.path().to_owned());
     paths.initialize()?;
     let socket = paths.socket_path();
-    let server = Server::open(paths.clone())?;
+    let server = Server::open(paths.clone(), crate::DEFAULT_WORKER_SLOTS)?;
 
     assert!(socket.exists());
     assert!(paths.state_dir().join("focus.sqlite3").exists());
@@ -266,9 +347,10 @@ fn daemon_checkpoints_without_any_connected_clients() -> anyhow::Result<()> {
 
 #[test]
 fn notification_inbox_keeps_terminal_runs_and_recovery_across_restarts() -> anyhow::Result<()> {
-    use crate::run_store::RunStore;
     use chrono::Utc;
+    use mcbtodo_ports::workflow::WorkflowProgressStore;
     use mcbtodo_protocol::workflow::{RunState, WorkflowRequest};
+    use mcbtodo_storage_sqlite::run_store::RunStore;
     use serde_json::{Value, json};
     use uuid::Uuid;
 
@@ -284,7 +366,7 @@ fn notification_inbox_keeps_terminal_runs_and_recovery_across_restarts() -> anyh
     {
         let store = RunStore::open(&db)?;
         for id in [succeeded, failed, interrupted, cancelled, pending] {
-            store.insert(id, "revision", Some(due_at))?;
+            store.enqueue_if_absent(id, "revision", Some(due_at))?;
         }
         store.transition(
             &store.get(succeeded)?.unwrap(),
@@ -312,8 +394,7 @@ fn notification_inbox_keeps_terminal_runs_and_recovery_across_restarts() -> anyh
             &mut client,
             &json!({"command":"list_notifications","before":null}),
         )?;
-        server.step()?;
-        Ok(wire::read(&mut client)?)
+        read_with_server(server, client)
     };
     let mut server = open_for_test(dir.path(), &socket)?;
     for _ in 0..2 {

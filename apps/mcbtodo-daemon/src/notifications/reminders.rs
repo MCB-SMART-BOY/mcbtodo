@@ -9,9 +9,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, TimeDelta, Utc};
 use mcbtodo_application::ReminderSummary;
 use mcbtodo_domain::recurrence::OccurrenceWindow;
-use mcbtodo_protocol::notifications::ReminderNotification;
-
-use super::{DueReminder, Inbox};
+use mcbtodo_ports::notifications::{DueReminder, NotificationStore, ReminderNotification};
 
 const SCAN_INTERVAL: Duration = Duration::from_secs(15);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -80,7 +78,7 @@ impl ReminderPoller {
 
     pub fn tick(
         &mut self,
-        inbox: Inbox<'_>,
+        inbox: &dyn NotificationStore,
         generation: u64,
         reminders: &[ReminderSummary],
     ) -> Result<Vec<ReminderNotification>> {

@@ -13,7 +13,8 @@
    `mcbtodo-vault`, cross-adapter business use cases in
    `mcbtodo-application`, OS/config boundaries in `mcbtodo-platform`, and
    transport and presentation in the apps.
-   Reusable Agent and sandbox execution adapters belong to
+   Reusable business-shaped provider contracts belong to `mcbtodo-ports`;
+   reusable Agent and sandbox execution adapters belong to
    `mcbtodo-execution`; the Daemon owns scheduling and durable run results.
 3. Prefer the existing workspace APIs and `cargo xtask` commands. Do not add
    compatibility paths or migration code unless the design explicitly
@@ -37,17 +38,31 @@
    and TUI keymap files. Test symlink, ownership, permissions, hard-link, and
    bounded-read behavior at the layer that opens or publishes the path; use
    atomic same-directory replacement for small mutable preference state. Do
-   not assume a private leaf makes its ancestors safe. For agent cache access,
+   not assume a private leaf makes its ancestors safe. Use the same preferences
+   form for startup repair and in-session edits. Route in-session Settings
+   commands through the same active-form dispatcher. Verify that F5 reloads only
+   the current page and keeps the draft if the file cannot be read. During a
+   running session, an unreadable `config.toml` leaves Keyboard and Agents
+   accessible. An unreadable `keymap.toml` opens Keyboard in info mode with
+   its own F5 retry and preserves the preferences draft. Codex editing uses the
+   same save and reload flow. Reuse the Worker's field validation and keep
+   installation diagnostics in `doctor`. Keep the Vault closed until
+   startup repair publishes a valid configuration. For agent cache access,
    use `WorkspacePaths::prepare_cache_directory`, `read_cache_file`, and
    `write_cache_file`; on Unix these traverse and operate relative to verified
    directory file descriptors. Test nested and final symlinks, directory
    replacement, ownership, permissions, hard links, and bounded reads. The
-   non-Unix fallback uses path-based checks. Specialized policy files may have
-   stricter owner-specific validators.
+   non-Unix fallback uses path-based checks. Preferences and Agent settings on
+   Unix share descriptor-relative reads. Preserve their file-specific permissions,
+   parsing, and byte limits when changing that boundary.
 6. For Inbox conversion, derive retry identity from the source UUID, publish
    the Task before changing its source record, and test interruption recovery
    plus conflicting destination edits. Never describe two Markdown file writes
    as one atomic transaction.
+   When changing a port, keep the interface independent of SQLite, Unix socket,
+   Bubblewrap, Codex, and other adapter types. Add a real adapter parity test
+   in the same change. Do not add a registry, scheduler, or plugin protocol
+   until a second real provider or a concrete coordination requirement exists.
 7. For interrupted external side effects, preserve `outcome_unknown` as a
    distinct fact. Any operator reconciliation must be durable and auditable,
    must not fabricate execution evidence or trigger success-dependent work, and
@@ -74,11 +89,12 @@
    archive sandbox smoke covers a packaged Worker's nonzero script exit and
    durable failed-step trace. The Worker process test and Linux smoke also send
    malformed Prepare input directly to the Worker executable and require
-   rejection before readiness. The malformed-readiness smoke uses the Daemon
-   binary from the supplied `--bin-dir` with a fault-injection Worker
-   substitute; it verifies fail-closed behavior, zero step commits, and
-   process reaping, but does not test malformed output from the packaged
-   Worker binary. Combined packaged-Worker fault acceptance remains open.
+   rejection before readiness. Packaged-Daemon smoke uses development-only
+   protocol fixtures to test malformed readiness and malformed post-Start
+   output; it verifies fail-closed behavior, zero step commits, and process
+   reaping without adding fault modes to release binaries. These fixtures test
+   Daemon supervision, not malformed output emitted by the packaged Worker.
+   Combined packaged-Worker fault acceptance remains open.
    These checks do not undo or reconcile external
    effects. Worker
    protocol, attempt identity, RunStore fencing, result commits, and
@@ -121,8 +137,18 @@
     When changing the harness/workflow registry or context assembly, run
     `cargo test --locked -p mcbtodo-xtask --test agents` and verify the complete
     registered matrix remains covered.
+    When changing platform gates, use the package and target list in the
+    `cross-check` job of `.github/workflows/ci.yml`. Keep compiler and Cargo
+    warnings visible and record any native verification separately.
 12. For scheduling, script execution, Agent decisions, or recovery changes,
     also run `cargo xtask smoke --bin-dir target/debug --sandbox` on Linux with
     Bubblewrap and Nushell. Record unavailable checks explicitly.
+    For Settings input changes, check both the interactive editor and startup
+    repair with the existing PTY smoke. For backup validation changes, use a
+    staged bundle with a matching manifest and verify rejection before
+    publication.
+    For changes to the systemd user unit or its smoke runner, run
+    `cargo xtask smoke-systemd --bin-dir target/debug` from a Linux user
+    session with Bubblewrap and a reachable user manager.
 13. Inspect the final diff and `git status`; do not stage, commit, publish, or
     discard changes unless explicitly requested.

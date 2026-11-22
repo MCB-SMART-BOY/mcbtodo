@@ -24,17 +24,18 @@ use mcbtodo_domain::{
     time::{DateTimeSpan, Deadline},
 };
 use mcbtodo_platform::WorkspacePaths;
-#[cfg(test)]
+#[cfg(all(test, unix))]
 use mcbtodo_vault::Vault;
-#[cfg(test)]
+#[cfg(all(test, unix))]
 use mcbtodo_vault::VaultStore;
 use mcbtodo_vault::{Revision, WriteError};
-#[cfg(test)]
+#[cfg(all(test, unix))]
 use mcbtodo_workflow::RevisionStore;
 use mcbtodo_workflow::WorkflowDraft;
 use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
 
+pub(crate) const QUEUE_SUPPORTED: bool = cfg!(unix);
 const VERSION: u8 = 1;
 
 #[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -384,7 +385,7 @@ fn print_review(value: &impl Serialize) -> Result<()> {
 
 /// Queue a typed operation. A repeated request ID with the same operation keeps
 /// the original revision and document UUID even after the Vault has changed.
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) fn enqueue(
     root: &Path,
     timezone: Tz,
@@ -409,6 +410,7 @@ pub(crate) fn submit(
 
 pub(crate) struct Queue {
     root: PathBuf,
+    paths: WorkspacePaths,
     binding: Binding,
     timezone: Tz,
     directory: PathBuf,
@@ -416,6 +418,10 @@ pub(crate) struct Queue {
 
 impl Queue {
     pub(crate) fn open(root: &Path, timezone: Tz, paths: &WorkspacePaths) -> Result<Self> {
+        ensure!(
+            QUEUE_SUPPORTED,
+            "the private proposal queue is unavailable on this platform"
+        );
         let root = root
             .canonicalize()
             .context("opening the configured Vault")?;
@@ -441,6 +447,7 @@ impl Queue {
         prepare_queue_directory(&directory)?;
         Ok(Self {
             root,
+            paths,
             binding,
             timezone,
             directory,
@@ -626,12 +633,23 @@ impl Queue {
             ),
             _ => None,
         };
+        if matches!(&record.operation, Operation::CreateReminder { .. }) {
+            ensure!(
+                self.paths.is_default_vault(&self.root)?,
+                "background reminders are only supported for the default Vault"
+            );
+        }
+
+        let mut commands = VaultCommands::new(&self.root, self.timezone);
+        if completion_context.is_some() {
+            commands =
+                commands.with_completion_origin(self.paths.load_or_create_device_identity()?);
+        }
 
         // An interruption can leave a committed Vault write with no queue receipt.
         // Persist intent before calling Vault and never replay an uncertain write.
         record.status = Status::Applying;
         self.persist(&record, true)?;
-        let commands = VaultCommands::new(&self.root, self.timezone);
         match apply_operation(
             &commands,
             &record,
@@ -694,6 +712,7 @@ impl Queue {
 
 /// Acquire this before the Vault's writer lock, the order used by proposal
 /// apply. Hold both until the Vault and proposal records have been captured.
+#[cfg(unix)]
 pub(crate) fn lock_for_snapshot(paths: &WorkspacePaths) -> Result<ProposalSnapshot> {
     let directory = canonical_workspace(paths)?.proposals_dir();
     prepare_queue_directory(&directory)?;
@@ -704,11 +723,13 @@ pub(crate) fn lock_for_snapshot(paths: &WorkspacePaths) -> Result<ProposalSnapsh
     })
 }
 
+#[cfg(unix)]
 pub(crate) struct ProposalSnapshot {
     directory: PathBuf,
     _lock: File,
 }
 
+#[cfg(unix)]
 impl ProposalSnapshot {
     /// Copy the exact bytes of portable proposals into a private staging home.
     /// The caller supplies the Vault writer lock for the same source workspace.
@@ -734,6 +755,7 @@ impl ProposalSnapshot {
 }
 
 /// Validate the staged or restored proposal subset without creating state.
+#[cfg(unix)]
 pub(crate) fn validate_snapshot(paths: &WorkspacePaths) -> Result<()> {
     let directory = paths.proposals_dir();
     let metadata = match fs::symlink_metadata(&directory) {
@@ -1017,10 +1039,11 @@ fn ensure_pending(status: Status) -> Result<()> {
 }
 
 fn ensure_private_dir(path: &Path) -> Result<()> {
-    let mut builder = fs::DirBuilder::new();
     #[cfg(unix)]
-    builder.mode(0o700);
-    match builder.create(path) {
+    let created = fs::DirBuilder::new().mode(0o700).create(path);
+    #[cfg(not(unix))]
+    let created = fs::create_dir(path);
+    match created {
         Ok(()) => (),
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => (),
         Err(error) => return Err(error).with_context(|| format!("creating {}", path.display())),
@@ -1058,7 +1081,7 @@ fn sync_dir(_path: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use mcbtodo_vault::SetDeadline;
@@ -1678,6 +1701,17 @@ bindings:
         let vault = fixture.vault();
         let source = fs::read_to_string(vault.source(TRANSLATION).unwrap()).unwrap();
         assert!(source.contains("status: completed"));
+        let origin = fixture.paths.load_or_create_device_identity().unwrap();
+        let events = VaultStore::new(&fixture.queue.root, TIMEZONE)
+            .work_unit_completion_export_page(0)
+            .unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .map(|record| (record.event.work_unit_id, record.origin_device_id))
+                .collect::<Vec<_>>(),
+            [(MAPPING, Some(origin)), (TRANSLATION, Some(origin))]
+        );
     }
 
     #[test]

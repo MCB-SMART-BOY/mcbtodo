@@ -1,9 +1,10 @@
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::{
     collections::{BTreeMap, BTreeSet},
     env,
     ffi::OsStr,
     fs,
-    os::unix::fs::PermissionsExt,
     path::{Component, Path, PathBuf},
     process::Command,
 };
@@ -15,8 +16,11 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 const MAX_BYTES: u64 = 128 * 1024;
-// Leave room below Linux's single-argument limit on hosts with 4 KiB pages.
+// Leave room for other arguments and platform-specific quoting.
+#[cfg(not(windows))]
 const MAX_PROMPT_BYTES: usize = 120 * 1024;
+#[cfg(windows)]
+const MAX_PROMPT_BYTES: usize = 12 * 1024;
 
 #[derive(Subcommand)]
 pub enum Task {
@@ -361,15 +365,27 @@ fn select_harness<'a>(
 }
 
 fn executable(name: &str) -> Option<PathBuf> {
-    if name.is_empty() || name.contains('/') {
+    if Path::new(name).file_name() != Some(OsStr::new(name)) || name.contains(['\\', ':']) {
         return None;
     }
+    #[cfg(windows)]
+    let name = if name.to_ascii_lowercase().ends_with(".exe") {
+        name.to_owned()
+    } else {
+        format!("{name}.exe")
+    };
+    #[cfg(windows)]
+    let name = name.as_str();
     let path = env::var_os("PATH")?;
     env::split_paths(&path)
         .map(|dir| dir.join(name))
         .find(|file| {
-            fs::metadata(file)
-                .is_ok_and(|meta| meta.is_file() && (meta.permissions().mode() & 0o111) != 0)
+            fs::metadata(file).is_ok_and(|meta| {
+                #[cfg(unix)]
+                return meta.is_file() && (meta.permissions().mode() & 0o111) != 0;
+                #[cfg(not(unix))]
+                meta.is_file()
+            })
         })
         .and_then(|file| {
             if file.is_absolute() {
@@ -489,7 +505,7 @@ fn read_small(path: &Path) -> Result<Vec<u8>> {
 }
 
 fn digest(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    hex::encode(Sha256::digest(bytes))
 }
 
 #[cfg(test)]

@@ -3,9 +3,11 @@ use std::io;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail, ensure};
-use rustix::fs::{Mode, OFlags};
+use mcbtodo_platform::private_file::open_private_file;
 use rustix::io::Errno;
 use rustix::net::{AddressFamily, SocketAddrUnix, SocketFlags, SocketType, connect, socket_with};
 use rustix::process::geteuid;
@@ -14,7 +16,45 @@ pub struct Endpoint {
     pub listener: UnixListener,
     _socket: BoundSocket,
     // Keep the lock until after the listener and its pathname are dropped.
-    _lock: File,
+    _lock: StateLock,
+}
+
+struct StateLock(File);
+
+impl StateLock {
+    fn acquire(file: File) -> Result<Self> {
+        const STARTUP_GRACE: Duration = Duration::from_millis(250);
+        const RETRY_INTERVAL: Duration = Duration::from_millis(10);
+        let deadline = Instant::now() + STARTUP_GRACE;
+        loop {
+            match file.try_lock() {
+                Ok(()) => return Ok(Self(file)),
+                Err(TryLockError::WouldBlock) => {
+                    // After a forced stop, a concurrent fork may still hold a
+                    // copy until exec closes it. Keep using the same inode.
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    ensure!(
+                        !remaining.is_zero(),
+                        "the state directory lock is held by another mcbtodo-daemon or backup"
+                    );
+                    thread::sleep(RETRY_INTERVAL.min(remaining));
+                }
+                Err(TryLockError::Error(error)) => {
+                    return Err(error).context("locking daemon state");
+                }
+            }
+        }
+    }
+}
+
+impl Drop for StateLock {
+    fn drop(&mut self) {
+        // A concurrent fork can retain the open file description until exec.
+        // Release ownership explicitly rather than waiting for every copy to close.
+        if let Err(error) = self.0.unlock() {
+            eprintln!("mcbtodo-daemon: releasing the state directory lock: {error}");
+        }
+    }
 }
 
 impl Endpoint {
@@ -39,14 +79,7 @@ impl Endpoint {
             "daemon lock must be directly inside state directory"
         );
         // Keep the lock file on disk so competing processes always lock the same inode.
-        let lock = open_private_file(lock_path)?;
-        match lock.try_lock() {
-            Ok(()) => (),
-            Err(TryLockError::WouldBlock) => {
-                bail!("mcbtodo-daemon already holds the state directory lock")
-            }
-            Err(TryLockError::Error(error)) => return Err(error).context("locking daemon state"),
-        }
+        let lock = StateLock::acquire(open_private_file(lock_path)?)?;
 
         remove_stale_socket(socket_path)?;
         let listener = UnixListener::bind(socket_path)
@@ -64,24 +97,6 @@ impl Endpoint {
             _lock: lock,
         })
     }
-}
-
-pub fn open_private_file(path: &Path) -> Result<File> {
-    let file = File::from(
-        rustix::fs::open(
-            path,
-            OFlags::RDWR | OFlags::CREATE | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
-            Mode::RUSR | Mode::WUSR,
-        )
-        .with_context(|| format!("opening {}", path.display()))?,
-    );
-    let meta = file.metadata()?;
-    ensure!(
-        meta.is_file() && owned_by_us(&meta) && meta.mode() & 0o077 == 0 && meta.nlink() == 1,
-        "{} must be a private regular file owned by the current user",
-        path.display()
-    );
-    Ok(file)
 }
 
 fn remove_stale_socket(path: &Path) -> Result<()> {
@@ -138,4 +153,55 @@ fn owned_by_us(meta: &Metadata) -> bool {
 
 fn identity(meta: &Metadata) -> (u64, u64) {
     (meta.dev(), meta.ino())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn endpoint_startup_can_wait_for_a_closing_lock_descriptor() -> Result<()> {
+        let dir = tempfile::Builder::new()
+            .permissions(fs::Permissions::from_mode(0o700))
+            .tempdir()?;
+        let socket = dir.path().join("s");
+        let lock = dir.path().join("daemon.lock");
+        let previous = open_private_file(&lock)?;
+        previous.try_lock()?;
+        let inherited = previous.try_clone()?;
+        drop(previous);
+
+        thread::scope(|scope| {
+            scope.spawn(move || {
+                thread::sleep(Duration::from_millis(50));
+                drop(inherited);
+            });
+            Endpoint::bind(dir.path(), &socket, &lock)
+        })?;
+        Ok(())
+    }
+
+    #[test]
+    fn dropping_endpoint_releases_lock_even_with_a_duplicate_descriptor() -> Result<()> {
+        let dir = tempfile::Builder::new()
+            .permissions(fs::Permissions::from_mode(0o700))
+            .tempdir()?;
+        let socket = dir.path().join("s");
+        let lock = dir.path().join("daemon.lock");
+        let endpoint = Endpoint::bind(dir.path(), &socket, &lock)?;
+        let duplicate = endpoint._lock.0.try_clone()?;
+
+        let socket_identity = identity(&fs::symlink_metadata(&socket)?);
+        assert!(Endpoint::bind(dir.path(), &socket, &lock).is_err());
+        assert_eq!(identity(&fs::symlink_metadata(&socket)?), socket_identity);
+        assert!(matches!(
+            endpoint.listener.accept(),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock
+        ));
+        drop(endpoint);
+        let replacement = Endpoint::bind(dir.path(), &socket, &lock)?;
+        drop(duplicate);
+        drop(replacement);
+        Ok(())
+    }
 }

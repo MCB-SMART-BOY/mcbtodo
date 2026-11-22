@@ -23,6 +23,10 @@ and update the affected documents together.
 - [Apache License 2.0](../LICENSE): project license text.
 - [Agent adapter protocol](agent-adapter.md): local adapter authorization and
   socket contract.
+- [TUI design system](tui-design.md): presentation boundaries, theme,
+  responsive layout, and visual tests.
+- [Storage and sync model](storage-and-sync.md): data authority, backup and
+  migration behavior, and cross-device event requirements.
 - [Focus reports](focus-reports.md): timer report semantics and output formats.
 - [Systemd deployment](../deploy/systemd/README.md): Linux user-service
   installation and diagnostics.
@@ -53,6 +57,24 @@ procedures are:
   consistency, indexing, and documentation verification.
 - [`architecture`](../.agents/workflows/architecture.md): scenario-led
   architecture changes and boundary evidence.
+- [`architecture-evolution`](../.agents/workflows/architecture-evolution.md):
+  staged architecture evolution, invariants, and acceptance gates.
+- [`audit`](../.agents/workflows/audit.md): repository audit, evidence
+  classification, gap analysis, and scoped implementation slices.
+- [`ports`](../.agents/workflows/ports.md): stable business ports, adapter
+  contracts, and boundary verification.
+- [`storage`](../.agents/workflows/storage.md): business repositories, SQLite
+  transactions, migrations, snapshots, and recovery.
+- [`agent`](../.agents/workflows/agent.md): Agent providers, policy, transport,
+  sessions, supervision, and Codex integration.
+- [`platform`](../.agents/workflows/platform.md): platform capability states,
+  optional tools, and fail-closed sandbox behavior.
+- [`tui`](../.agents/workflows/tui.md): ScreenModel, theme, layout, keymaps,
+  terminal fallback, and visual tests.
+- [`sync`](../.agents/workflows/sync.md): backup, event identity, restore
+  validation, and cross-device sync boundaries.
+- [`completion`](../.agents/workflows/completion.md): delivery gates, evidence
+  labels, and the A–G completion report.
 
 Harness-specific setup is indexed in
 [`../.agents/README.md`](../.agents/README.md); the harness documents and
@@ -63,17 +85,25 @@ when adding or removing a workflow, and keep this index synchronized.
 
 These executable CI workflows are separate from the AI workflow registry:
 
-- [Linux CI](../.github/workflows/ci.yml): push, pull request, or manual
-  dispatch; checks both supported Linux architectures, validates the example
-  Vault and retains validated binary artifacts.
+- [Security policy](../SECURITY.md): supported versions and the current
+  private vulnerability reporting status.
+- [Bug report form](../.github/ISSUE_TEMPLATE/bug_report.yml): structured
+  public reports for reproducible non-security defects.
+- [Code owners](../.github/CODEOWNERS): review requests for repository
+  control-plane files. Required approval still depends on GitHub branch rules.
+- [CI](../.github/workflows/ci.yml) runs on push, pull request and manual
+  dispatch. Linux jobs check both release architectures, validate the
+  example Vault and retain binary artifacts. Additional jobs cover
+  cross-target Rust checks and native macOS and Windows CLI checks.
 - [Release preparation](../.github/workflows/release-preparation.yml):
   version-tag push or manual dispatch; validates packages and staged Linux
   binaries and checks that publishable crate archives carry the Apache
-  license text, but does not publish crates or create a GitHub Release. Cargo
-  package verification is disabled in its dry-run commands because
-  first-release workspace dependencies are not yet available from crates.io;
-  the preceding workspace check compiles and tests local sources. Actual
-  initial publication must follow dependency order. A manual dispatch
+  license text, but does not publish crates or create a GitHub Release. Its
+  `cargo publish --dry-run --no-verify` step exercises packaging and the
+  upload path; the preceding workspace check compiles and tests local
+  sources. It does not compile extracted crates against registry-only
+  dependencies. Initial publication and isolated verification must follow
+  dependency order. A manual dispatch
   validates the selected ref and does not itself assert that the ref is an
   authorized release tag.
 

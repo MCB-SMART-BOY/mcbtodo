@@ -1,8 +1,10 @@
 //! Application use cases shared by local transports and user interfaces.
 
+mod completion_export;
 pub mod graph_diff;
 mod workflow;
 
+pub use completion_export::CompletionExportEntry;
 pub use workflow::WorkflowUseCases;
 
 use std::{
@@ -44,6 +46,7 @@ pub struct CalendarEventDraft {
 pub struct VaultCommands {
     root: PathBuf,
     timezone: Tz,
+    completion_origin: Option<Id>,
 }
 
 impl VaultCommands {
@@ -51,7 +54,14 @@ impl VaultCommands {
         Self {
             root: root.as_ref().to_owned(),
             timezone,
+            completion_origin: None,
         }
+    }
+
+    /// Uses the host's installation identity when recording a new completion.
+    pub fn with_completion_origin(mut self, origin_device_id: Id) -> Self {
+        self.completion_origin = Some(origin_device_id);
+        self
     }
 
     /// Creates a Project after applying the shared user-authored Markdown policy.
@@ -253,7 +263,11 @@ impl VaultCommands {
             validate_evidence(context.workflow_revision.as_ref(), evidence)
                 .map_err(CompleteWorkUnitError::InvalidEvidence)?;
         }
-        VaultStore::new(&self.root, self.timezone)
+        let mut store = VaultStore::new(&self.root, self.timezone);
+        if let Some(origin) = self.completion_origin {
+            store = store.with_completion_origin(origin);
+        }
+        store
             .complete_work_unit_with_evidence(
                 CompleteWorkUnit {
                     id: context.id,
@@ -789,7 +803,8 @@ pub fn project_calendar(vault: &Vault, window: DateSpan) -> Result<Vec<CalendarI
         .collect())
 }
 
-/// Projects every calendar entry from the supplied validated snapshot.
+/// Projects non-recurring entries without a date window.
+/// Use [`project_calendar`] to include occurrences of recurring events.
 pub fn project_calendar_all(vault: &Vault) -> Vec<CalendarItem> {
     vault
         .calendar()
@@ -1215,7 +1230,9 @@ mod tests {
 
     #[test]
     fn recurring_task_materialization_is_idempotent_and_revision_checked() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/vault");
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        copy_example_vault(&root);
         let vault = Vault::load(&root, chrono_tz::Asia::Shanghai).unwrap();
         let expected_revision = vault.revision(PROJECT_ID).unwrap().clone();
         let task = Task {
@@ -1931,6 +1948,83 @@ mod tests {
     }
 
     #[test]
+    fn create_reminder_use_case_publishes_without_owning_workspace_policy() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("external");
+        fs::create_dir_all(&root).unwrap();
+        let schedule = ReminderSchedule::Once {
+            at: mcbtodo_domain::time::ZonedMoment::new(
+                DateTime::parse_from_rfc3339("2026-11-25T09:30:00+08:00").unwrap(),
+                chrono_tz::Asia::Shanghai,
+            )
+            .unwrap(),
+        };
+        let command = VaultCommands::new(&root, chrono_tz::Asia::Shanghai);
+
+        let external = command.create_reminder(
+            Id::new_v4(),
+            None,
+            schedule,
+            "Review notes".into(),
+            String::new(),
+        );
+        let missing = command.create_reminder(
+            Id::new_v4(),
+            None,
+            schedule,
+            "Review notes".into(),
+            String::new(),
+        );
+
+        assert!(external.is_ok());
+        assert!(missing.is_ok());
+        assert_eq!(
+            Vault::load(&root, chrono_tz::Asia::Shanghai)
+                .unwrap()
+                .reminders()
+                .count(),
+            2
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_reminder_writes_through_a_symlinked_vault_root() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        let alias = temp.path().join("vault-alias");
+        fs::create_dir_all(&root).unwrap();
+        symlink(&root, &alias).unwrap();
+        let schedule = ReminderSchedule::Once {
+            at: mcbtodo_domain::time::ZonedMoment::new(
+                DateTime::parse_from_rfc3339("2026-11-25T09:30:00+08:00").unwrap(),
+                chrono_tz::Asia::Shanghai,
+            )
+            .unwrap(),
+        };
+
+        VaultCommands::new(&alias, chrono_tz::Asia::Shanghai)
+            .create_reminder(
+                Id::new_v4(),
+                None,
+                schedule,
+                "Review notes".into(),
+                String::new(),
+            )
+            .unwrap();
+
+        assert_eq!(
+            Vault::load(&root, chrono_tz::Asia::Shanghai)
+                .unwrap()
+                .reminders()
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn dependency_command_publishes_valid_graph_edits_and_rejects_invalid_edits() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("vault");
@@ -2348,6 +2442,267 @@ mod tests {
             .find(|entry| entry.title == "校园活动")
             .unwrap();
         assert!(event.on_day(date, timezone));
+    }
+
+    #[test]
+    fn serialized_vault_calendar_projects_business_objects_across_display_zones() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/vault");
+        for relative in [
+            "projects/rust-os/project.md",
+            "projects/rust-os/tasks/memory.md",
+            "projects/rust-os/units/read-spec.md",
+            "projects/rust-os/units/mapping.md",
+            "calendar/review.md",
+            "calendar/university.md",
+        ] {
+            let destination = root.join(relative);
+            fs::create_dir_all(destination.parent().unwrap()).unwrap();
+            fs::copy(examples.join(relative), destination).unwrap();
+        }
+        fs::write(
+            root.join("projects/rust-os/tasks/deadline.md"),
+            "---\nschema: mcbtodo.task/v1\n\
+             id: 20000000-0000-4000-8000-000000000002\n\
+             project_id: 10000000-0000-4000-8000-000000000001\n\
+             status: todo\n\
+             priority: normal\n\
+             active_period: null\n\
+             deadline: {kind: date, value: \"2026-11-25\"}\n\
+             ---\n\n# Boundary task\n",
+        )
+        .unwrap();
+        let timed_task_id = Id::parse_str("20000000-0000-4000-8000-000000000003").unwrap();
+        fs::write(
+            root.join("projects/rust-os/tasks/timed-deadline.md"),
+            format!(
+                "---\nschema: mcbtodo.task/v1\n\
+                 id: {timed_task_id}\n\
+                 project_id: {PROJECT_ID}\n\
+                 status: todo\n\
+                 priority: normal\n\
+                 active_period: null\n\
+                 deadline: {{kind: date_time, value: \"2026-11-25T09:15:00+09:00\", timezone: Asia/Tokyo}}\n\
+                 ---\n\n# Timed boundary task\n"
+            ),
+        )
+        .unwrap();
+        for directory in ["reminders", "inbox"] {
+            fs::create_dir_all(root.join(directory)).unwrap();
+        }
+
+        let shanghai = Vault::load(&root, chrono_tz::Asia::Shanghai).unwrap();
+        let entries = project_calendar_all(&shanghai);
+        let project_id = Id::parse_str("10000000-0000-4000-8000-000000000001").unwrap();
+        let task_id = Id::parse_str("20000000-0000-4000-8000-000000000002").unwrap();
+        let unit_id = Id::parse_str("30000000-0000-4000-8000-000000000002").unwrap();
+        let event_id = Id::parse_str("40000000-0000-4000-8000-000000000002").unwrap();
+        let all_day_event_id = Id::parse_str("40000000-0000-4000-8000-000000000001").unwrap();
+
+        assert!(entries.iter().any(|entry| {
+            entry.id == project_id
+                && entry.kind == CalendarKind::ActivePeriod
+                && entry.title == "Rust OS"
+        }));
+        assert!(
+            entries
+                .iter()
+                .any(|entry| { entry.id == project_id && entry.kind == CalendarKind::Deadline })
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|entry| { entry.id == task_id && entry.kind == CalendarKind::Deadline })
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|entry| { entry.id == unit_id && entry.kind == CalendarKind::Deadline })
+        );
+        assert!(entries.iter().any(|entry| {
+            entry.id == unit_id && entry.kind == CalendarKind::TimeBlock && entry.busy
+        }));
+        assert!(entries.iter().any(|entry| {
+            entry.title == "校园活动" && entry.kind == CalendarKind::Event && entry.busy
+        }));
+
+        let shanghai_window = DateSpan::new(
+            NaiveDate::from_ymd_opt(2026, 11, 25).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 11, 25).unwrap(),
+        )
+        .unwrap();
+        let shanghai_day = project_calendar(&shanghai, shanghai_window).unwrap();
+        let timed_deadline = shanghai_day
+            .iter()
+            .find(|entry| entry.id == timed_task_id)
+            .unwrap();
+        assert_eq!(timed_deadline.kind, CalendarKind::Deadline);
+        let Occurrence::Deadline(Deadline::DateTime(moment)) = timed_deadline.occurrence else {
+            panic!("expected a timed deadline");
+        };
+        assert_eq!(moment.instant().to_rfc3339(), "2026-11-25T00:15:00+00:00");
+        assert!(shanghai_day.iter().any(|entry| {
+            entry.id == event_id
+                && entry.title == "远程讨论"
+                && entry.on_day(
+                    NaiveDate::from_ymd_opt(2026, 11, 25).unwrap(),
+                    chrono_tz::Asia::Shanghai,
+                )
+        }));
+        let los_angeles = Vault::load(&root, chrono_tz::America::Los_Angeles).unwrap();
+        let los_angeles_day = project_calendar(&los_angeles, shanghai_window).unwrap();
+        assert!(
+            los_angeles_day
+                .iter()
+                .any(|entry| entry.id == all_day_event_id)
+        );
+        assert!(los_angeles_day.iter().any(|entry| entry.id == task_id));
+        assert!(!los_angeles_day.iter().any(|entry| entry.id == event_id));
+        assert!(
+            !los_angeles_day
+                .iter()
+                .any(|entry| entry.id == timed_task_id)
+        );
+        let previous_day = NaiveDate::from_ymd_opt(2026, 11, 24).unwrap();
+        let los_angeles_day = project_calendar(
+            &los_angeles,
+            DateSpan::new(previous_day, previous_day).unwrap(),
+        )
+        .unwrap();
+        assert!(los_angeles_day.iter().any(|entry| {
+            entry.id == event_id && entry.on_day(previous_day, chrono_tz::America::Los_Angeles)
+        }));
+        assert!(los_angeles_day.iter().any(|entry| {
+            entry.id == timed_task_id && entry.occurrence == timed_deadline.occurrence
+        }));
+    }
+
+    #[test]
+    fn serialized_calendar_preserves_the_dst_fold_and_rejects_a_gap_endpoint() {
+        let root = tempfile::tempdir().unwrap();
+        let calendar = root.path().join("calendar");
+        fs::create_dir(&calendar).unwrap();
+        let path = calendar.join("transition.md");
+        let write_event = |start: &str, end: &str| {
+            fs::write(
+                &path,
+                format!(
+                    "---\nschema: mcbtodo.calendar-event/v1\n\
+                     id: 40000000-0000-4000-8000-000000000001\n\
+                     when: {{kind: date_time_span, start: \"{start}\", end: \"{end}\", timezone: America/New_York}}\n\
+                     availability: busy\n\
+                     ---\n\n# DST transition\n"
+                ),
+            )
+            .unwrap();
+        };
+        let day = "2026-11-01".parse().unwrap();
+        let queries = VaultQueries::new(root.path(), chrono_tz::America::New_York);
+
+        write_event("2026-11-01T01:50:00-04:00", "2026-11-01T01:10:00-05:00");
+        let entries = queries.calendar_day(day).unwrap();
+        let [event] = entries.as_slice() else {
+            panic!("expected one event across the repeated hour");
+        };
+        let Occurrence::Span(Span::DateTimeSpan(span)) = event.occurrence else {
+            panic!("expected a zoned event");
+        };
+        assert!(event.busy);
+        assert_eq!(span.start().to_rfc3339(), "2026-11-01T01:50:00-04:00");
+        assert_eq!(span.end().to_rfc3339(), "2026-11-01T01:10:00-05:00");
+        assert_eq!((span.end() - span.start()).num_minutes(), 20);
+
+        write_event("2026-03-08T02:30:00-05:00", "2026-03-08T04:00:00-04:00");
+        let error = queries
+            .calendar_day("2026-03-08".parse().unwrap())
+            .unwrap_err();
+        let diagnostic = format!("{error:#}");
+        assert!(diagnostic.contains("transition.md"), "{diagnostic}");
+        assert!(
+            diagnostic.contains("does not match America/New_York"),
+            "{diagnostic}"
+        );
+    }
+
+    #[test]
+    fn serialized_timed_recurrence_uses_anchor_zone_and_elapsed_duration() {
+        let root = tempfile::tempdir().unwrap();
+        let calendar = root.path().join("calendar");
+        fs::create_dir(&calendar).unwrap();
+        let path = calendar.join("daily.md");
+        let write_event = |gap: &str| {
+            fs::write(
+                &path,
+                format!(
+                    "---\nschema: mcbtodo.calendar-event/v1\n\
+                     id: 40000000-0000-4000-8000-000000000001\n\
+                     when: {{kind: date_time_span, start: '2026-03-07T02:30:00-05:00', end: '2026-03-07T04:00:00-05:00', timezone: America/New_York}}\n\
+                     recurrence: {{start: 2026-03-07, through: 2026-03-08, frequency: daily, dst: {{gap: {gap}, fold: earlier}} }}\n\
+                     ---\n\n# 日历 Daily\n"
+                ),
+            )
+            .unwrap();
+        };
+        let queries = VaultQueries::new(root.path(), chrono_tz::America::Los_Angeles);
+        let date = |value: &str| value.parse::<NaiveDate>().unwrap();
+        let window = DateSpan::new(date("2026-03-08"), date("2026-03-08")).unwrap();
+
+        write_event("skip");
+        assert!(
+            project_calendar(&queries.snapshot().unwrap(), window)
+                .unwrap()
+                .is_empty()
+        );
+        write_event("next_valid");
+        let snapshot = queries.snapshot().unwrap();
+        let entries = project_calendar(&snapshot, window).unwrap();
+        let [event] = entries.as_slice() else {
+            panic!("expected exactly one shifted occurrence, got {entries:?}");
+        };
+        let Occurrence::Span(Span::DateTimeSpan(span)) = event.occurrence else {
+            panic!("expected a timed occurrence");
+        };
+        assert_eq!(span.start().to_rfc3339(), "2026-03-08T03:00:00-04:00");
+        assert_eq!(span.end().to_rfc3339(), "2026-03-08T04:30:00-04:00");
+        assert!(event.on_day(date("2026-03-07"), chrono_tz::America::Los_Angeles));
+        assert!(event.on_day(date("2026-03-08"), chrono_tz::America::Los_Angeles));
+        assert_eq!(snapshot.source(event.id), Some(path.as_path()));
+    }
+
+    #[test]
+    fn serialized_timed_recurrence_projects_the_selected_fold_once() {
+        let root = tempfile::tempdir().unwrap();
+        let calendar = root.path().join("calendar");
+        fs::create_dir(&calendar).unwrap();
+        let path = calendar.join("weekly.md");
+        let queries = VaultQueries::new(root.path(), chrono_tz::America::New_York);
+        let day = "2026-11-01".parse().unwrap();
+        for (fold, expected) in [
+            ("earlier", "2026-11-01T01:50:00-04:00"),
+            ("later", "2026-11-01T01:50:00-05:00"),
+        ] {
+            fs::write(
+                &path,
+                format!(
+                    "---\nschema: mcbtodo.calendar-event/v1\n\
+                     id: 40000000-0000-4000-8000-000000000001\n\
+                     when: {{kind: date_time_span, start: '2026-10-25T01:50:00-04:00', end: '2026-10-25T02:10:00-04:00', timezone: America/New_York}}\n\
+                     recurrence: {{start: 2026-10-25, through: 2026-11-01, frequency: weekly, dst: {{gap: skip, fold: {fold} }} }}\n\
+                     ---\n\n# Weekly DST transition\n"
+                ),
+            )
+            .unwrap();
+            let entries = queries.calendar_day(day).unwrap();
+            let [event] = entries.as_slice() else {
+                panic!("expected one occurrence for {fold}, got {entries:?}");
+            };
+            let Occurrence::Span(Span::DateTimeSpan(span)) = event.occurrence else {
+                panic!("expected a timed occurrence");
+            };
+            assert_eq!(span.start().to_rfc3339(), expected);
+            assert_eq!((span.end() - span.start()).num_minutes(), 20);
+        }
     }
 
     #[test]

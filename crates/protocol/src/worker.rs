@@ -7,7 +7,7 @@ use serde_json::Value;
 use thiserror::Error;
 use uuid::Uuid;
 
-pub const WORKER_PROTOCOL_VERSION: u16 = 1;
+pub const WORKER_PROTOCOL_VERSION: u16 = 2;
 pub const MAX_WORKER_FRAME_BYTES: u32 = 8 * 1024 * 1024;
 pub const MAX_WORKER_SOURCE_BYTES: usize = 1024 * 1024;
 
@@ -83,6 +83,10 @@ pub enum WorkerOutcome {
     Failed {
         message: String,
     },
+    /// The Agent may have executed, but the Worker has no result to commit.
+    AgentOutcomeUnknown {
+        provider_id: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -115,7 +119,17 @@ struct Envelope<T> {
     body: T,
 }
 
-pub fn read<T: DeserializeOwned + Serialize>(
+// Only the two protocol directions are valid bodies. Validate their typed
+// fields directly, without building an intermediate JSON object.
+mod body {
+    use super::WorkerProtocolError;
+
+    pub trait Message {
+        fn validate(&self) -> Result<(), WorkerProtocolError>;
+    }
+}
+
+pub fn read<T: DeserializeOwned + body::Message>(
     reader: &mut impl Read,
 ) -> Result<T, WorkerProtocolError> {
     let mut header = [0; 4];
@@ -130,12 +144,15 @@ pub fn read<T: DeserializeOwned + Serialize>(
     if envelope.protocol_version != WORKER_PROTOCOL_VERSION {
         return Err(WorkerProtocolError::Version(envelope.protocol_version));
     }
-    validate_body(&envelope.body)?;
+    envelope.body.validate()?;
     Ok(envelope.body)
 }
 
-pub fn write<T: Serialize>(writer: &mut impl Write, body: &T) -> Result<(), WorkerProtocolError> {
-    validate_body(body)?;
+pub fn write<T: Serialize + body::Message>(
+    writer: &mut impl Write,
+    body: &T,
+) -> Result<(), WorkerProtocolError> {
+    body.validate()?;
     let envelope = Envelope {
         protocol_version: WORKER_PROTOCOL_VERSION,
         body,
@@ -149,13 +166,8 @@ pub fn write<T: Serialize>(writer: &mut impl Write, body: &T) -> Result<(), Work
         }
         return Err(error.into());
     }
-    let data = buffer.bytes;
-    let size = data.len() as u64;
-    if size == 0 || size > u64::from(MAX_WORKER_FRAME_BYTES) {
-        return Err(WorkerProtocolError::FrameSize(size));
-    }
-    writer.write_all(&(size as u32).to_be_bytes())?;
-    writer.write_all(&data)?;
+    writer.write_all(&(buffer.bytes.len() as u32).to_be_bytes())?;
+    writer.write_all(&buffer.bytes)?;
     writer.flush()?;
     Ok(())
 }
@@ -188,51 +200,58 @@ impl Write for LimitedBuffer {
     }
 }
 
-fn validate_body<T: Serialize>(body: &T) -> Result<(), WorkerProtocolError> {
-    let value = serde_json::to_value(body)?;
-    validate_identity(&value)?;
-    let Some(job) = value.get("job") else {
-        return Ok(());
-    };
-    if let Some(source) = job.get("source")
-        && source
-            .as_array()
-            .is_some_and(|bytes| bytes.len() > MAX_WORKER_SOURCE_BYTES)
-    {
-        return Err(WorkerProtocolError::SourceSize);
+impl body::Message for DaemonMessage {
+    fn validate(&self) -> Result<(), WorkerProtocolError> {
+        let identity = match self {
+            Self::Prepare { identity, .. }
+            | Self::Start { identity }
+            | Self::Cancel { identity } => identity,
+        };
+        identity.validate()?;
+        if let Self::Prepare {
+            job: WorkerJob::Script {
+                source, executable, ..
+            },
+            ..
+        } = self
+        {
+            if source.len() > MAX_WORKER_SOURCE_BYTES {
+                return Err(WorkerProtocolError::SourceSize);
+            }
+            if let Some(bytes) = executable
+                && bytes.len() > 2 * MAX_WORKER_SOURCE_BYTES
+            {
+                return Err(WorkerProtocolError::FrameSize(bytes.len() as u64));
+            }
+        }
+        Ok(())
     }
-    if let Some(executable) = job.get("executable")
-        && executable
-            .as_array()
-            .is_some_and(|bytes| bytes.len() > 2 * MAX_WORKER_SOURCE_BYTES)
-    {
-        return Err(WorkerProtocolError::FrameSize(
-            executable.as_array().map_or(0, |bytes| bytes.len()) as u64,
-        ));
-    }
-    Ok(())
 }
 
-fn validate_identity(value: &Value) -> Result<(), WorkerProtocolError> {
-    let identity = value
-        .get("identity")
-        .ok_or(WorkerProtocolError::InvalidIdentity)?;
-    let revision = identity.get("revision").and_then(Value::as_str);
-    let node = identity.get("node").and_then(Value::as_str);
-    let epoch = identity.get("epoch").and_then(Value::as_u64);
-    let step = identity.get("expected_step").and_then(Value::as_u64);
-    if !revision.is_some_and(|hash| {
-        hash.len() == 64
-            && hash
+impl body::Message for WorkerMessage {
+    fn validate(&self) -> Result<(), WorkerProtocolError> {
+        match self {
+            Self::Ready { identity } | Self::Result { identity, .. } => identity.validate(),
+        }
+    }
+}
+
+impl AttemptIdentity {
+    fn validate(&self) -> Result<(), WorkerProtocolError> {
+        if self.revision.len() != 64
+            || !self
+                .revision
                 .bytes()
                 .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    }) || !node.is_some_and(|node| !node.is_empty() && node.len() <= 256)
-        || !epoch.is_some_and(|epoch| epoch > 0)
-        || !step.is_some_and(|step| step > 0 && step <= u64::from(u32::MAX))
-    {
-        return Err(WorkerProtocolError::InvalidIdentity);
+            || self.node.is_empty()
+            || self.node.len() > 256
+            || self.epoch == 0
+            || self.expected_step == 0
+        {
+            return Err(WorkerProtocolError::InvalidIdentity);
+        }
+        Ok(())
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -264,6 +283,31 @@ mod tests {
     }
 
     #[test]
+    fn uncertain_agent_outcome_carries_status_and_provider_identity() {
+        let outcome = WorkerOutcome::AgentOutcomeUnknown {
+            provider_id: "mcbtodo-local-agent".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(&outcome).unwrap(),
+            serde_json::json!({
+                "status": "agent_outcome_unknown",
+                "provider_id": "mcbtodo-local-agent"
+            })
+        );
+        let message = WorkerMessage::Result {
+            identity: identity(),
+            outcome,
+            artifact: None,
+        };
+        let mut frame = Vec::new();
+        write(&mut frame, &message).unwrap();
+        assert_eq!(
+            read::<WorkerMessage>(&mut frame.as_slice()).unwrap(),
+            message
+        );
+    }
+
+    #[test]
     fn rejects_oversized_frames_before_allocation() {
         let bytes = (MAX_WORKER_FRAME_BYTES + 1).to_be_bytes().to_vec();
         assert!(matches!(
@@ -273,12 +317,36 @@ mod tests {
     }
 
     #[test]
+    fn rejects_an_oversized_result_before_writing_a_frame() {
+        let message = WorkerMessage::Result {
+            identity: identity(),
+            outcome: WorkerOutcome::Failed {
+                message: "x".repeat(MAX_WORKER_FRAME_BYTES as usize),
+            },
+            artifact: None,
+        };
+        let mut bytes = Vec::new();
+        assert!(matches!(
+            write(&mut bytes, &message),
+            Err(WorkerProtocolError::FrameSize(_))
+        ));
+        assert!(bytes.is_empty());
+    }
+
+    #[test]
     fn rejects_unknown_fields() {
-        let body = br#"{"protocol_version":1,"body":{"message":"ready","identity":{"run_id":"00000000-0000-0000-0000-000000000000","revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","node":"test","attempt_id":"00000000-0000-0000-0000-000000000001","epoch":7,"expected_step":3,"extra":true}}}"#;
+        let body = serde_json::to_vec(&serde_json::json!({
+            "protocol_version": WORKER_PROTOCOL_VERSION,
+            "body": {"message": "ready", "identity": identity(), "extra": true},
+        }))
+        .unwrap();
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&(body.len() as u32).to_be_bytes());
-        bytes.extend_from_slice(body);
-        assert!(read::<WorkerMessage>(&mut bytes.as_slice()).is_err());
+        bytes.extend_from_slice(&body);
+        assert!(matches!(
+            read::<WorkerMessage>(&mut bytes.as_slice()),
+            Err(WorkerProtocolError::Json(_))
+        ));
     }
 
     #[test]
@@ -300,6 +368,39 @@ mod tests {
     }
 
     #[test]
+    fn rejects_oversized_executable_on_write_and_read() {
+        let size = 2 * MAX_WORKER_SOURCE_BYTES + 1;
+        let message = DaemonMessage::Prepare {
+            identity: identity(),
+            job: WorkerJob::Script {
+                source: Vec::new(),
+                runner: ScriptRunner::Bash,
+                timeout_seconds: 1,
+                inputs: Default::default(),
+                executable: Some(vec![0; size]),
+            },
+        };
+        let mut bytes = Vec::new();
+        assert!(matches!(
+            write(&mut bytes, &message),
+            Err(WorkerProtocolError::FrameSize(actual)) if actual == size as u64
+        ));
+        assert!(bytes.is_empty());
+
+        let data = serde_json::to_vec(&Envelope {
+            protocol_version: WORKER_PROTOCOL_VERSION,
+            body: message,
+        })
+        .unwrap();
+        bytes.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(&data);
+        assert!(matches!(
+            read::<DaemonMessage>(&mut bytes.as_slice()),
+            Err(WorkerProtocolError::FrameSize(actual)) if actual == size as u64
+        ));
+    }
+
+    #[test]
     fn rejects_invalid_attempt_identity_on_write_and_read() {
         let mut invalid = identity();
         invalid.revision = "../revision".into();
@@ -309,10 +410,14 @@ mod tests {
             Err(WorkerProtocolError::InvalidIdentity)
         ));
 
-        let body = br#"{"protocol_version":1,"body":{"message":"ready","identity":{"run_id":"00000000-0000-0000-0000-000000000000","revision":"../revision","node":"test","attempt_id":"00000000-0000-0000-0000-000000000001","epoch":7,"expected_step":3}}}"#;
+        let body = serde_json::to_vec(&Envelope {
+            protocol_version: WORKER_PROTOCOL_VERSION,
+            body: message,
+        })
+        .unwrap();
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&(body.len() as u32).to_be_bytes());
-        bytes.extend_from_slice(body);
+        bytes.extend_from_slice(&body);
         assert!(matches!(
             read::<WorkerMessage>(&mut bytes.as_slice()),
             Err(WorkerProtocolError::InvalidIdentity)

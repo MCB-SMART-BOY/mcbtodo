@@ -8,14 +8,17 @@ use std::{
     os::unix::fs::{MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::atomic::{AtomicBool, Ordering},
     thread,
     time::{Duration, Instant},
 };
 
 use anyhow::{Context, anyhow, bail, ensure};
+use mcbtodo_ports::{
+    Cancellation,
+    sandbox::{Sandbox, SandboxError, SandboxOutput, Script},
+};
 use rustix::{
-    fs::{OFlags, fcntl_setfl},
+    fs::{Access, OFlags, access, fcntl_setfl},
     process::{geteuid, getuid},
 };
 use serde_json::Value;
@@ -29,6 +32,30 @@ const MAX_JSON: usize = 1024 * 1024;
 const MAX_LOG: usize = 64 * 1024;
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 const READY: &[u8] = b"mcbtodo-ready\n";
+
+/// Fixed system executables used by the Linux sandbox adapter.
+#[derive(Clone, Copy, Debug)]
+pub enum SandboxExecutable {
+    Bubblewrap,
+    Bash,
+    Nushell,
+}
+
+impl SandboxExecutable {
+    pub fn path(self) -> &'static Path {
+        Path::new(match self {
+            Self::Bubblewrap => BWRAP,
+            Self::Bash => BASH,
+            Self::Nushell => NU,
+        })
+    }
+
+    /// Check installation metadata and execute permission without starting a process.
+    /// This checks neither namespace support nor shared libraries or isolation.
+    pub fn check_installation(self) -> anyhow::Result<()> {
+        trusted_runtime_executable(self.path()).map(|_| ())
+    }
+}
 
 // Bubblewrap forwards caller descriptors to its command. Close everything above stdio
 // before opening the one fd explicitly consumed by --seccomp. No script text enters here.
@@ -44,6 +71,120 @@ const HOST_LAUNCHER: &str = r#"
     exec "$@"
 "#;
 
+// Descriptor 2 carries the model connection only until the host shim moves
+// it out of the way of Bubblewrap diagnostics. The sandbox shim gives it to
+// the trusted relay helper as descriptor 2, then closes the intermediate fd.
+const CODEX_HOST_LAUNCHER: &str = r#"
+    exec 4>&2 2>/dev/null || exit 125
+    [[ -d /proc/self/fd && -r /proc/self/fd && -x /proc/self/fd ]] || exit 125
+    for entry in /proc/self/fd/*; do
+        fd=${entry##*/}
+        [[ $fd =~ ^[0-9]+$ ]] || exit 125
+        if (( fd == 3 || fd > 4 )); then exec {fd}>&- || exit 125; fi
+    done
+    exec 3<"$1" || exit 125
+    shift
+    exec "$@"
+"#;
+const CODEX_SANDBOX_LAUNCHER: &str = r#"
+    umask 077
+    ulimit -c 0 && ulimit -n 128 && ulimit -f 16384 || exit 125
+    exec /bin/mcbtodo-worker --internal-codex-session "$1" 2>&4 4>&-
+"#;
+
+pub(crate) fn codex_command(
+    filter: &Path,
+    codex: &Path,
+    timeout: Duration,
+) -> anyhow::Result<Command> {
+    ensure!(
+        geteuid() == getuid() && !geteuid().is_root(),
+        "Codex sandbox requires an unprivileged Worker"
+    );
+    let bash = trusted_runtime_executable(SandboxExecutable::Bash.path())?;
+    let bwrap = trusted_runtime_executable(SandboxExecutable::Bubblewrap.path())?;
+    fs::write(filter, seccomp_filter(true)?)?;
+    // Resolve the installed Worker before entering the user namespace.
+    // The model broker is represented solely by the connected stream.
+    let worker = protected_executable(&std::env::current_exe()?)?;
+    let mut command = Command::new(&bash);
+    command
+        .env_clear()
+        .current_dir("/")
+        .args([
+            "--noprofile",
+            "--norc",
+            "-c",
+            CODEX_HOST_LAUNCHER,
+            "mcbtodo-launcher",
+        ])
+        .arg(filter)
+        .arg(bwrap)
+        .args([
+            "--unshare-user",
+            "--disable-userns",
+            "--unshare-pid",
+            "--unshare-net",
+            "--unshare-ipc",
+            "--unshare-uts",
+            "--unshare-cgroup",
+            "--cap-drop",
+            "ALL",
+            "--as-pid-1",
+            "--die-with-parent",
+            "--new-session",
+            "--seccomp",
+            "3",
+            "--clearenv",
+            "--setenv",
+            "LD_LIBRARY_PATH",
+            "/runtime",
+            "--setenv",
+            "HOME",
+            "/scratch",
+            "--setenv",
+            "CODEX_HOME",
+            "/scratch/.codex",
+            "--setenv",
+            "PATH",
+            "/bin",
+            "--size",
+            "33554432",
+            "--tmpfs",
+            "/scratch",
+            "--dev",
+            "/dev",
+            "--proc",
+            "/proc",
+            "--ro-bind",
+        ])
+        .arg(codex)
+        .args(["/bin/codex"]);
+    mount_runtime_files(
+        &mut command,
+        [
+            (&*bash, BASH.as_ref()),
+            (&*worker, "/bin/mcbtodo-worker".as_ref()),
+        ],
+    )?;
+    command
+        .args([
+            "--remount-ro",
+            "/",
+            "--chdir",
+            "/scratch",
+            "--",
+            BASH,
+            "--noprofile",
+            "--norc",
+            "-c",
+            CODEX_SANDBOX_LAUNCHER,
+            "mcbtodo-codex",
+        ])
+        .arg(timeout.as_millis().max(1).to_string());
+    Ok(command)
+}
+
 // PID 1 is already in the new namespace with its parent-death signal armed. The
 // supervisor releases it only while the Bubblewrap monitor is alive. EOF during startup
 // (including if the daemon dies before Bubblewrap arms its own signal) never runs a script.
@@ -58,37 +199,33 @@ const SANDBOX_LAUNCHER: &str = r#"
     exec "$@" </dev/null
 "#;
 
-#[derive(Debug)]
-pub struct SandboxOutput {
-    pub outputs: BTreeMap<String, Value>,
-    pub stdout: String,
-    pub stderr: String,
+pub struct Bubblewrap<'a> {
+    state_dir: &'a Path,
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum SandboxError {
-    #[error("sandbox execution cancelled")]
-    Cancelled,
-    #[error("sandbox process failed: {0:#}")]
-    Process(#[source] anyhow::Error),
-    #[error("sandbox infrastructure failed: {0:#}")]
-    Infrastructure(#[source] anyhow::Error),
+impl<'a> Bubblewrap<'a> {
+    pub fn new(state_dir: &'a Path) -> Self {
+        Self { state_dir }
+    }
 }
 
-pub struct Script<'a> {
-    pub source: &'a [u8],
-    pub runner: &'a str,
-    pub executable: Option<&'a [u8]>,
-}
-
-pub fn execute(
-    state_dir: &Path,
-    script: Script<'_>,
-    timeout_seconds: u32,
-    inputs: &BTreeMap<String, Value>,
-    cancelled: &AtomicBool,
-) -> Result<SandboxOutput, SandboxError> {
-    execute_with_bwrap(state_dir, script, timeout_seconds, inputs, cancelled, BWRAP)
+impl Sandbox for Bubblewrap<'_> {
+    fn execute(
+        &self,
+        script: Script<'_>,
+        timeout_seconds: u32,
+        inputs: &BTreeMap<String, Value>,
+        cancelled: &dyn Cancellation,
+    ) -> Result<SandboxOutput, SandboxError> {
+        execute_with_bwrap(
+            self.state_dir,
+            script,
+            timeout_seconds,
+            inputs,
+            cancelled,
+            BWRAP,
+        )
+    }
 }
 
 fn execute_with_bwrap(
@@ -96,7 +233,7 @@ fn execute_with_bwrap(
     script: Script<'_>,
     timeout_seconds: u32,
     inputs: &BTreeMap<String, Value>,
-    cancelled: &AtomicBool,
+    cancelled: &dyn Cancellation,
     bwrap: &str,
 ) -> Result<SandboxOutput, SandboxError> {
     let timeout = Duration::from_secs(u64::from(timeout_seconds));
@@ -126,7 +263,7 @@ fn execute_with_bwrap(
     }
     let (_scratch, output_file, mut command) =
         prepare(state_dir, bwrap, runner_args[0], script, inputs)
-            .map_err(SandboxError::Infrastructure)?;
+            .map_err(SandboxError::NotStarted)?;
     command
         .args([
             "--",
@@ -167,11 +304,11 @@ fn execute_with_bwrap(
 }
 
 fn check_deadline(
-    cancelled: &AtomicBool,
+    cancelled: &dyn Cancellation,
     start: Instant,
     timeout: Duration,
 ) -> Result<(), SandboxError> {
-    if cancelled.load(Ordering::Acquire) {
+    if cancelled.is_cancelled() {
         return Err(SandboxError::Cancelled);
     }
     if start.elapsed() >= timeout {
@@ -194,7 +331,7 @@ fn prepare(
         "sandbox requires an unprivileged daemon"
     );
     for executable in [bwrap, BASH, runner] {
-        trusted_runtime_file(executable.as_ref())?;
+        trusted_runtime_executable(executable.as_ref())?;
     }
     let state_dir = state_dir
         .canonicalize()
@@ -209,7 +346,7 @@ fn prepare(
     serde_json::to_writer(&mut input, inputs).context("stage sandbox JSON input")?;
     File::create(path.join("output.json")).context("create sandbox result file")?;
     let output = File::open(path.join("output.json")).context("open sandbox result file")?;
-    fs::write(path.join("seccomp.bpf"), seccomp_filter()?)
+    fs::write(path.join("seccomp.bpf"), seccomp_filter(false)?)
         .context("stage sandbox syscall filter")?;
 
     let mut command = Command::new(BASH);
@@ -346,9 +483,62 @@ fn trusted_runtime_file(path: &Path) -> anyhow::Result<PathBuf> {
     Ok(real)
 }
 
+fn trusted_runtime_executable(path: &Path) -> anyhow::Result<PathBuf> {
+    let real = trusted_runtime_file(path)?;
+    access(&real, Access::EXEC_OK)
+        .with_context(|| format!("sandbox runtime file {} is not executable", real.display()))?;
+    Ok(real)
+}
+
+/// Resolve the launch target and reject canonical paths that another user
+/// can replace between inspection and the bind mount. The installing user
+/// and root are trusted to keep the installation stable during an invocation.
+pub(crate) fn protected_executable(path: &Path) -> anyhow::Result<PathBuf> {
+    let real = path.canonicalize()?;
+    let uid = geteuid().as_raw();
+    let protected =
+        |meta: &fs::Metadata| (meta.uid() == uid || meta.uid() == 0) && meta.mode() & 0o022 == 0;
+    for directory in real
+        .ancestors()
+        .skip(1)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+    {
+        let meta = fs::symlink_metadata(directory)?;
+        ensure!(
+            meta.is_dir() && protected(&meta),
+            "unprotected executable directory: {}",
+            directory.display()
+        );
+    }
+    let meta = fs::symlink_metadata(&real)?;
+    ensure!(
+        meta.is_file() && protected(&meta) && meta.mode() & 0o6000 == 0 && meta.mode() & 0o111 != 0,
+        "unprotected or non-executable file: {}",
+        real.display()
+    );
+    Ok(real)
+}
+
 // Only mount the trusted shells, their ELF loader, and their resolved shared-library closure.
 // The loader resolves dependencies of the installed executables before any user script is read.
 fn mount_runtime(command: &mut Command, runner: &str) -> anyhow::Result<()> {
+    let files = [BASH, runner]
+        .into_iter()
+        .take(if runner == BASH { 1 } else { 2 })
+        .map(|dest| Ok((trusted_runtime_file(dest.as_ref())?, Path::new(dest))))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    mount_runtime_files(
+        command,
+        files.iter().map(|(src, dest)| (src.as_path(), *dest)),
+    )
+}
+
+fn mount_runtime_files<'a>(
+    command: &mut Command,
+    executables: impl IntoIterator<Item = (&'a Path, &'a Path)>,
+) -> anyhow::Result<()> {
     let loader = match std::env::consts::ARCH {
         "aarch64" => "/lib/ld-linux-aarch64.so.1",
         "x86_64" => "/lib64/ld-linux-x86-64.so.2",
@@ -359,14 +549,11 @@ fn mount_runtime(command: &mut Command, runner: &str) -> anyhow::Result<()> {
         .arg(trusted_runtime_file(loader.as_ref())?)
         .arg(loader);
     let mut libraries = BTreeMap::new();
-    for executable in [BASH, runner]
-        .into_iter()
-        .take(if runner == BASH { 1 } else { 2 })
-    {
-        let real = trusted_runtime_file(executable.as_ref())?;
+    for (source, dest) in executables {
+        let executable = dest.display();
         let listing = Command::new(loader)
             .arg("--list")
-            .arg(&real)
+            .arg(source)
             .env_clear()
             .env("LC_ALL", "C")
             .current_dir("/")
@@ -399,7 +586,7 @@ fn mount_runtime(command: &mut Command, runner: &str) -> anyhow::Result<()> {
                 );
             }
         }
-        command.arg("--ro-bind").arg(real).arg(executable);
+        command.arg("--ro-bind").arg(source).arg(dest);
     }
     for (name, real) in libraries {
         command
@@ -413,23 +600,24 @@ fn mount_runtime(command: &mut Command, runner: &str) -> anyhow::Result<()> {
 // Classic BPF instructions as read by bwrap --seccomp. Deny other syscall ABIs, socket
 // creation (including non-network-namespaced address families), io_uring, global keyrings,
 // and anonymous file creation. PID 1 may not clear the kernel's parent-death signal.
-fn seccomp_filter() -> anyhow::Result<Vec<u8>> {
-    let (arch, prctl, denied): (u32, u32, &[u32]) = match std::env::consts::ARCH {
+fn seccomp_filter(codex_loopback: bool) -> anyhow::Result<Vec<u8>> {
+    let (arch, prctl, sockets, denied): (u32, u32, [u32; 2], &[u32]) = match std::env::consts::ARCH
+    {
         // unshare, ptrace, msgget, semget, shmget, socket, socketpair, add_key,
         // request_key, keyctl, perf_event_open, setns, memfd_create, bpf, userfaultfd
         "aarch64" => (
             0xc000_00b7,
             167,
+            [198, 199],
             &[
-                97, 117, 186, 190, 194, 198, 199, 217, 218, 219, 241, 268, 279, 280, 282,
+                97, 117, 186, 190, 194, 217, 218, 219, 241, 268, 279, 280, 282,
             ],
         ),
         "x86_64" => (
             0xc000_003e,
             157,
-            &[
-                272, 101, 68, 64, 29, 41, 53, 248, 249, 250, 298, 308, 319, 321, 323,
-            ],
+            [41, 53],
+            &[272, 101, 68, 64, 29, 248, 249, 250, 298, 308, 319, 321, 323],
         ),
         arch => bail!("sandbox syscall filter is unavailable on {arch}"),
     };
@@ -459,17 +647,27 @@ fn seccomp_filter() -> anyhow::Result<Vec<u8>> {
         insn(JEQ, 0, 1, nr);
         insn(RET, 0, 0, EPERM);
     }
-    insn(JEQ, 0, 3, prctl);
-    insn(
-        LD_WORD,
-        0,
-        0,
-        if cfg!(target_endian = "little") {
-            16
+    let arg0 = if cfg!(target_endian = "little") {
+        16
+    } else {
+        20
+    };
+    for nr in sockets {
+        if codex_loopback {
+            insn(JEQ, 0, 6, nr);
+            insn(LD_WORD, 0, 0, arg0);
+            insn(JEQ, 3, 0, 1); // AF_UNIX
+            insn(JEQ, 2, 0, 2); // AF_INET
+            insn(JEQ, 1, 0, 10); // AF_INET6
+            insn(RET, 0, 0, EPERM);
+            insn(RET, 0, 0, ALLOW);
         } else {
-            20
-        },
-    ); // args[0]
+            insn(JEQ, 0, 1, nr);
+            insn(RET, 0, 0, EPERM);
+        }
+    }
+    insn(JEQ, 0, 3, prctl);
+    insn(LD_WORD, 0, 0, arg0);
     insn(JEQ, 0, 1, 1); // PR_SET_PDEATHSIG
     insn(RET, 0, 0, EPERM);
     insn(RET, 0, 0, ALLOW);
@@ -491,16 +689,15 @@ impl Drop for Running {
 
 fn supervise(
     command: &mut Command,
-    cancelled: &AtomicBool,
+    cancelled: &dyn Cancellation,
     start: Instant,
     timeout: Duration,
 ) -> Result<(String, String), SandboxError> {
-    let infrastructure = |error| SandboxError::Infrastructure(error);
     let mut child = Running(
         command
             .spawn()
             .context("launch Bubblewrap")
-            .map_err(infrastructure)?,
+            .map_err(SandboxError::NotStarted)?,
     );
     let mut stdin = child.0.stdin.take();
     let mut stdout = child.0.stdout.take().expect("piped sandbox stdout");
@@ -508,23 +705,30 @@ fn supervise(
     fcntl_setfl(&stdout, OFlags::NONBLOCK)
         .and_then(|()| fcntl_setfl(&stderr, OFlags::NONBLOCK))
         .context("set sandbox pipes nonblocking")
-        .map_err(infrastructure)?;
+        .map_err(SandboxError::NotStarted)?;
     let mut out = Vec::new();
     let mut err = Vec::new();
     loop {
         check_deadline(cancelled, start, timeout)?;
+        let io_error = |error| {
+            if stdin.is_some() {
+                SandboxError::NotStarted(error)
+            } else {
+                SandboxError::Infrastructure(error)
+            }
+        };
         let log_limit = MAX_LOG + if stdin.is_some() { READY.len() } else { 0 };
         let out_eof = read_log(&mut stdout, &mut out, log_limit)
             .context("read sandbox stdout")
-            .map_err(infrastructure)?;
+            .map_err(io_error)?;
         let err_eof = read_log(&mut stderr, &mut err, MAX_LOG)
             .context("read sandbox stderr")
-            .map_err(infrastructure)?;
+            .map_err(io_error)?;
         let status = child
             .0
             .try_wait()
             .context("wait for Bubblewrap")
-            .map_err(infrastructure)?;
+            .map_err(io_error)?;
         if stdin.is_some() && out.starts_with(READY) && status.is_none() {
             check_deadline(cancelled, start, timeout)?;
             stdin
@@ -532,13 +736,13 @@ fn supervise(
                 .expect("startup pipe is open")
                 .write_all(b"start\n")
                 .context("release sandbox startup gate")
-                .map_err(infrastructure)?;
+                .map_err(SandboxError::Infrastructure)?;
             out.drain(..READY.len());
         }
         if out.len() > MAX_LOG || err.len() > MAX_LOG {
             let error = anyhow!("sandbox log exceeds {MAX_LOG} bytes");
             return Err(if stdin.is_some() {
-                SandboxError::Infrastructure(error)
+                SandboxError::NotStarted(error)
             } else {
                 SandboxError::Process(error)
             });
@@ -548,7 +752,7 @@ fn supervise(
             let stdout = log_text(&out);
             let stderr = log_text(&err);
             if stdin.is_some() {
-                return Err(SandboxError::Infrastructure(anyhow!(
+                return Err(SandboxError::NotStarted(anyhow!(
                     "Bubblewrap failed to start the isolated runner ({status}): {stderr}"
                 )));
             }
@@ -594,6 +798,7 @@ mod tests {
         process::{Pid, PidfdFlags, pidfd_open},
     };
     use serde_json::json;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     const WAITING_SCRIPT: &[u8] = br#"
         if (: >&19) 2>/dev/null; then exit 23; fi
@@ -609,8 +814,7 @@ mod tests {
         inputs: &BTreeMap<String, Value>,
         cancelled: &AtomicBool,
     ) -> Result<SandboxOutput, SandboxError> {
-        super::execute(
-            state_dir,
+        Bubblewrap::new(state_dir).execute(
             Script {
                 source,
                 runner,
@@ -650,8 +854,26 @@ mod tests {
             "/usr/bin/nonexistent-mcbtodo-bwrap",
         )
         .unwrap_err();
-        assert!(matches!(err, SandboxError::Infrastructure(_)));
+        assert!(matches!(err, SandboxError::NotStarted(_)));
         assert_eq!(state.path().read_dir().unwrap().count(), 0);
+    }
+
+    #[test]
+    fn namespace_startup_failure_never_releases_the_script() {
+        let mut command = Command::new("/usr/bin/bash");
+        command
+            .args(["--noprofile", "--norc", "-c", "exit 125"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let error = supervise(
+            &mut command,
+            &AtomicBool::new(false),
+            Instant::now(),
+            Duration::from_secs(2),
+        )
+        .unwrap_err();
+        assert!(matches!(error, SandboxError::NotStarted(_)), "{error:#}");
     }
 
     // Availability is checked with a real namespace probe. Set MCBTODO_REQUIRE_SANDBOX=1
@@ -667,7 +889,7 @@ mod tests {
         );
         match result {
             Ok(_) => true,
-            Err(err @ SandboxError::Infrastructure(_))
+            Err(err @ SandboxError::NotStarted(_))
                 if std::env::var_os("MCBTODO_REQUIRE_SANDBOX").is_none() =>
             {
                 eprintln!("sandbox unavailable: {err:#}");

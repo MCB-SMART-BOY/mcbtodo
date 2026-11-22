@@ -1,5 +1,5 @@
 use std::{
-    io::{self, Write},
+    io::{self, BufRead, Write},
     path::Path,
 };
 
@@ -8,8 +8,8 @@ use chrono::Utc;
 use chrono::{DateTime, FixedOffset, NaiveDate};
 use clap::{Args, Subcommand, ValueEnum};
 use mcbtodo_application::{
-    VaultCommands, WorkflowUseCases, document_revision_in_snapshot, project_inbox,
-    work_unit_completion_context,
+    CompletionExportEntry, VaultCommands, WorkflowUseCases, document_revision_in_snapshot,
+    project_inbox, work_unit_completion_context,
 };
 use mcbtodo_domain::{
     Availability, EvidenceRef, Id, InboxEntry, Priority, Project, Task, WorkUnit,
@@ -84,7 +84,16 @@ pub(crate) enum Command {
         id: Id,
     },
     /// Reconcile interrupted completions and export recorded events as JSON Lines.
-    CompletionEvents,
+    CompletionEvents {
+        /// Export up to 64 records after this journal-local sequence (0 starts at the beginning).
+        #[arg(long, value_parser = clap::value_parser!(i64).range(0..))]
+        after: Option<i64>,
+        /// Export each fact in a versioned logical event envelope.
+        #[arg(long, requires = "after")]
+        logical: bool,
+    },
+    /// Replay trusted logical completion events from standard input.
+    ImportCompletionEvents,
     /// Bind a work unit to a published, immutable workflow revision.
     BindWorkflow {
         #[arg(long)]
@@ -197,7 +206,9 @@ pub(crate) enum AvailabilityArg {
 pub(crate) fn requires_snapshot(command: &Command) -> bool {
     !matches!(
         command,
-        Command::CaptureInbox { .. } | Command::CompletionEvents
+        Command::CaptureInbox { .. }
+            | Command::CompletionEvents { .. }
+            | Command::ImportCompletionEvents
     )
 }
 
@@ -220,14 +231,47 @@ pub(crate) fn run_without_snapshot(
             )?;
             println!("{} {}", written.id, written.path.display());
         }
-        Command::CompletionEvents => {
-            let events = VaultStore::new(root, timezone).work_unit_completed_events()?;
+        Command::CompletionEvents { after, logical } => {
+            let store = VaultStore::new(root, timezone);
             let mut output = io::stdout().lock();
-            for event in events {
-                serde_json::to_writer(&mut output, &event)?;
-                writeln!(output)?;
+            if let Some(after) = after {
+                for record in store.work_unit_completion_export_page(after)? {
+                    if logical {
+                        serde_json::to_writer(&mut output, &CompletionExportEntry::from(record))?;
+                    } else {
+                        serde_json::to_writer(&mut output, &record)?;
+                    }
+                    writeln!(output)?;
+                }
+            } else {
+                for event in store.work_unit_completed_events()? {
+                    serde_json::to_writer(&mut output, &event)?;
+                    writeln!(output)?;
+                }
             }
             output.flush()?;
+        }
+        Command::ImportCompletionEvents => {
+            let store = VaultStore::new(root, timezone);
+            let mut applied = 0;
+            let mut repeated = 0;
+            for (index, raw) in io::stdin().lock().lines().enumerate() {
+                let line = index + 1;
+                let input =
+                    |message| format!("line {line}: {message}. Earlier lines remain committed");
+                let raw = raw.with_context(|| input("could not read completion event"))?;
+                let entry: CompletionExportEntry = serde_json::from_str(&raw)
+                    .with_context(|| input("invalid logical completion event"))?;
+                if entry
+                    .import_into(&store)
+                    .with_context(|| input("could not import completion event"))?
+                {
+                    applied += 1;
+                } else {
+                    repeated += 1;
+                }
+            }
+            println!("Imported {applied}; already recorded {repeated}");
         }
         _ => unreachable!("command requires a Vault snapshot"),
     }
@@ -242,7 +286,9 @@ pub(crate) fn run(
 ) -> Result<()> {
     let written =
         match command {
-            Command::CaptureInbox { .. } | Command::CompletionEvents => {
+            Command::CaptureInbox { .. }
+            | Command::CompletionEvents { .. }
+            | Command::ImportCompletionEvents => {
                 unreachable!("snapshot-independent command used snapshot path")
             }
             Command::ListInbox => {
@@ -306,14 +352,13 @@ pub(crate) fn run(
             Command::Complete { unit, evidence } => {
                 let context = work_unit_completion_context(vault, unit)
                     .with_context(|| format!("no work unit with ID {unit} in the vault"))?;
-                VaultCommands::new(root, vault.timezone()).complete_work_unit(
-                    context,
-                    &evidence,
-                    |binding, evidence| {
+                let origin = paths.load_or_create_device_identity()?;
+                VaultCommands::new(root, vault.timezone())
+                    .with_completion_origin(origin)
+                    .complete_work_unit(context, &evidence, |binding, evidence| {
                         let socket = paths.socket_path();
                         validate_evidence(&socket, binding, evidence)
-                    },
-                )?
+                    })?
             }
             Command::SetDeadline { id, date } => VaultCommands::new(root, vault.timezone())
                 .set_deadline(id, Some(date_deadline(date)), revision(vault, id)?)?,
@@ -406,9 +451,13 @@ pub(crate) fn run(
                 body,
                 schedule,
             } => {
-                crate::require_default_reminder_vault(paths, root)?;
                 let schedule: ReminderSchedule =
                     serde_json::from_str(&schedule).context("invalid reminder schedule JSON")?;
+                ensure!(
+                    paths.is_default_vault(root)?,
+                    "background reminders are only supported for the default Vault ({})",
+                    paths.vault_root().display()
+                );
                 VaultCommands::new(root, vault.timezone()).create_reminder(
                     id.unwrap_or_else(Id::new_v4),
                     target,

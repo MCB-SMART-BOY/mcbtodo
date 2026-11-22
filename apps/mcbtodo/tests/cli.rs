@@ -12,6 +12,12 @@ fn cli() -> Command {
     Command::new(env!("CARGO_BIN_EXE_mcbtodo"))
 }
 
+fn cli_in_home(home: &Path) -> Command {
+    let mut command = cli();
+    command.env("HOME", home).env("USERPROFILE", home);
+    command
+}
+
 fn query(vault: &Path, args: &[&str]) -> Output {
     cli()
         .args(["--timezone", "Asia/Shanghai", "--vault"])
@@ -104,9 +110,26 @@ fn calendar_rejects_dates_outside_the_shared_domain_format() {
 }
 
 #[test]
+fn workflow_approve_requires_the_review_argument_before_contacting_daemon() {
+    let result = cli()
+        .args([
+            "workflow",
+            "approve",
+            "00000000-0000-0000-0000-000000000001",
+            "review",
+        ])
+        .output()
+        .unwrap();
+
+    assert_eq!(result.status.code(), Some(2));
+    let error = String::from_utf8_lossy(&result.stderr);
+    assert!(error.contains("--review"), "{error}");
+}
+
+#[test]
 fn timer_start_rejects_unknown_work_unit_before_contacting_the_daemon() {
     let home = tempfile::tempdir().unwrap();
-    let initialized = cli().env("HOME", home.path()).arg("init").output().unwrap();
+    let initialized = cli_in_home(home.path()).arg("init").output().unwrap();
     assert!(
         initialized.status.success(),
         "{}",
@@ -114,8 +137,7 @@ fn timer_start_rejects_unknown_work_unit_before_contacting_the_daemon() {
     );
     copy_tree(&fixture(), &home.path().join(".mcbtodo/vault"));
 
-    let result = cli()
-        .env("HOME", home.path())
+    let result = cli_in_home(home.path())
         .args([
             "timer",
             "start",
@@ -135,8 +157,7 @@ fn timer_start_rejects_unknown_work_unit_before_contacting_the_daemon() {
 fn reminder_creation_rejects_an_external_vault_before_writing() {
     let home = tempfile::tempdir().unwrap();
     let external = tempfile::tempdir().unwrap();
-    let result = cli()
-        .env("HOME", home.path())
+    let result = cli_in_home(home.path())
         .args(["--timezone", "Asia/Shanghai", "--vault"])
         .arg(external.path())
         .args([
@@ -335,7 +356,10 @@ fn renamed_file_keeps_links_and_invalid_graph_leaves_documents_untouched() {
 #[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
 #[test]
 fn vault_commands_create_and_schedule_work_with_dependency_checks() {
+    use sha2::{Digest, Sha256};
+
     let temp = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
     copy_tree(&fixture(), temp.path());
     let vault = temp.path();
     let project = "10000000-0000-4000-8000-000000000099";
@@ -343,10 +367,13 @@ fn vault_commands_create_and_schedule_work_with_dependency_checks() {
     let unit = "30000000-0000-4000-8000-000000000099";
     let mapping = "30000000-0000-4000-8000-000000000002";
     let command = |args: &[&str]| {
-        let args: Vec<_> = std::iter::once("vault")
-            .chain(args.iter().copied())
-            .collect();
-        query(vault, &args)
+        cli_in_home(home.path())
+            .args(["--timezone", "Asia/Shanghai", "--vault"])
+            .arg(vault)
+            .arg("vault")
+            .args(args)
+            .output()
+            .unwrap()
     };
     output(command(&[
         "create-project",
@@ -415,11 +442,195 @@ fn vault_commands_create_and_schedule_work_with_dependency_checks() {
         "--availability",
         "free",
     ]));
+    let observed_revision = hex::encode(Sha256::digest(
+        fs::read(vault.join(format!("projects/cli-test/units/{unit}.md"))).unwrap(),
+    ));
     output(command(&["complete", "--unit", mapping]));
     output(command(&["complete", "--unit", unit]));
+    let json_lines = |args: &[&str]| {
+        output(command(args))
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>()
+    };
+    let events = json_lines(&["completion-events"]);
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0]["work_unit_id"], mapping);
+    assert_eq!(events[1]["work_unit_id"], unit);
+    assert!(events[1]["event_id"].is_string());
+    let page = json_lines(&["completion-events", "--after", "0"]);
+    assert_eq!(page.len(), 2);
+    assert_eq!(page[0]["event"], events[0]);
+    assert_eq!(page[1]["event"], events[1]);
+    let origin = page[0]["origin_device_id"]
+        .as_str()
+        .expect("completion must record its originating installation");
+    assert_eq!(uuid::Uuid::parse_str(origin).unwrap().get_version_num(), 4);
+    assert_eq!(page[1]["origin_device_id"], origin);
+    assert!(events[0].get("origin_device_id").is_none());
+    let other_home = tempfile::tempdir().unwrap();
+    let other_export = output(
+        cli_in_home(other_home.path())
+            .args(["--timezone", "Asia/Shanghai", "--vault"])
+            .arg(vault)
+            .args(["vault", "completion-events", "--after", "0"])
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(other_export.lines().next().unwrap()).unwrap(),
+        page[0]
+    );
+    assert!(!other_home.path().join(".mcbtodo").exists());
+    assert_eq!(page[1]["observed_revision"], observed_revision);
+    let first_sequence = page[0]["sequence"].as_i64().unwrap();
+    let last_sequence = page[1]["sequence"].as_i64().unwrap();
+    assert!(first_sequence > 0 && last_sequence > first_sequence);
+    assert_eq!(
+        json_lines(&["completion-events", "--after", &first_sequence.to_string()]),
+        page[1..]
+    );
+    assert!(json_lines(&["completion-events", "--after", &last_sequence.to_string()]).is_empty());
+
+    let logical = json_lines(&[
+        "completion-events",
+        "--after",
+        &first_sequence.to_string(),
+        "--logical",
+    ]);
+    assert_eq!(
+        logical,
+        vec![serde_json::json!({
+            "sequence": last_sequence,
+            "envelope": {
+                "schema": "mcbtodo.completion-event/v1",
+                "event_id": events[1]["event_id"],
+                "idempotency_key": events[1]["event_id"],
+                "origin_device_id": origin,
+                "event_type": "work_unit.completed",
+                "entity_id": unit,
+                "created_at": events[1]["occurred_at"],
+                "observed_revision": observed_revision,
+                "payload": {
+                    "project_id": events[1]["project_id"],
+                    "parent_task_id": events[1]["parent_task_id"],
+                    "previous_status": events[1]["previous_status"],
+                    "evidence": events[1]["evidence"],
+                }
+            }
+        })],
+    );
+    let other_logical = output(
+        cli_in_home(other_home.path())
+            .args(["--timezone", "Asia/Shanghai", "--vault"])
+            .arg(vault)
+            .args(["vault", "completion-events", "--logical", "--after", "0"])
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(other_logical.lines().last().unwrap()).unwrap(),
+        logical[0]
+    );
+    assert!(!other_home.path().join(".mcbtodo").exists());
+    let unbounded = command(&["completion-events", "--logical"]);
+    assert!(!unbounded.status.success());
+    assert!(unbounded.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&unbounded.stderr).contains("--after"));
+
+    let invalid_cursor = command(&["completion-events", "--after=-1"]);
+    assert!(!invalid_cursor.status.success());
+    assert!(invalid_cursor.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&invalid_cursor.stderr).contains("invalid value '-1'"));
     let calendar = output(query(vault, &["calendar", "--date", "2026-11-20"]));
     assert!(calendar.contains("block · free · CLI unit · 11-20 12:00 +08:00 → 11-20 14:00 +08:00"));
     output(query(vault, &["validate"]));
+}
+
+#[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
+#[test]
+fn logical_completion_import_retries_a_partial_file_and_preserves_identity() {
+    use std::{io::Write, process::Stdio};
+
+    let source = tempfile::tempdir().unwrap();
+    let source_home = tempfile::tempdir().unwrap();
+    let receiver = tempfile::tempdir().unwrap();
+    let receiver_home = tempfile::tempdir().unwrap();
+    copy_tree(&fixture(), source.path());
+    copy_tree(&fixture(), receiver.path());
+    let command = |home: &Path, vault: &Path| {
+        let mut command = cli_in_home(home);
+        command
+            .args(["--timezone", "Asia/Shanghai", "--vault"])
+            .arg(vault)
+            .arg("vault");
+        command
+    };
+    output(
+        command(source_home.path(), source.path())
+            .args(["complete", "--unit", "30000000-0000-4000-8000-000000000002"])
+            .output()
+            .unwrap(),
+    );
+    let export = |home: &Path, vault: &Path| {
+        let text = output(
+            command(home, vault)
+                .args(["completion-events", "--after", "0", "--logical"])
+                .output()
+                .unwrap(),
+        );
+        serde_json::from_str::<serde_json::Value>(&text).unwrap()
+    };
+    let mut record = export(source_home.path(), source.path());
+    record["sequence"] = 456.into();
+    let import = |input: &str| {
+        let mut child = command(receiver_home.path(), receiver.path())
+            .arg("import-completion-events")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.as_bytes())
+            .unwrap();
+        child.wait_with_output().unwrap()
+    };
+    let mut mismatch = record.clone();
+    mismatch["envelope"]["idempotency_key"] = uuid::Uuid::new_v4().to_string().into();
+    let partial = import(&format!("{record}\n{mismatch}\n"));
+    assert!(!partial.status.success());
+    let diagnostic = String::from_utf8_lossy(&partial.stderr);
+    assert!(diagnostic.contains("line 2"));
+    assert!(diagnostic.contains("idempotency_key must equal event_id"));
+
+    let received = export(receiver_home.path(), receiver.path());
+    assert_eq!(received["sequence"], 1);
+    assert_eq!(received["envelope"], record["envelope"]);
+    assert!(
+        !receiver_home
+            .path()
+            .join(".mcbtodo/state/device-id")
+            .exists()
+    );
+    let markdown = "projects/rust-os/units/translation.md";
+    assert_eq!(
+        fs::read(receiver.path().join(markdown)).unwrap(),
+        fs::read(source.path().join(markdown)).unwrap()
+    );
+    assert_eq!(
+        output(import(&format!("{record}\n"))).trim(),
+        "Imported 0; already recorded 1"
+    );
+
+    record["envelope"]["created_at"] = "2020-01-01T00:00:00Z".into();
+    let conflict = import(&format!("{record}\n"));
+    assert!(!conflict.status.success());
+    assert!(String::from_utf8_lossy(&conflict.stderr).contains("different content"));
+    assert_eq!(export(receiver_home.path(), receiver.path()), received);
 }
 
 #[test]
@@ -468,7 +679,7 @@ fn vault_commands_set_and_clear_a_deadline() {
 #[test]
 fn vault_command_creates_a_targeted_recurring_reminder() {
     let home = tempfile::tempdir().unwrap();
-    let initialized = cli().env("HOME", home.path()).arg("init").output().unwrap();
+    let initialized = cli_in_home(home.path()).arg("init").output().unwrap();
     assert!(
         initialized.status.success(),
         "{}",
@@ -489,8 +700,7 @@ fn vault_command_creates_a_targeted_recurring_reminder() {
         );
     }
     let run = |args: &[&str]| {
-        cli()
-            .env("HOME", home.path())
+        cli_in_home(home.path())
             .args(["--timezone", "Asia/Shanghai", "--vault"])
             .arg(&vault)
             .args(args)
@@ -586,7 +796,7 @@ fn inbox_capture_list_and_triage_are_a_complete_cli_workflow() {
 #[test]
 fn init_uses_the_requested_home_layout_and_preserves_config() {
     let temp = tempfile::tempdir().unwrap();
-    let run = |args: &[&str]| cli().env("HOME", temp.path()).args(args).output().unwrap();
+    let run = |args: &[&str]| cli_in_home(temp.path()).args(args).output().unwrap();
     output(run(&["init"]));
     let config = temp.path().join(".config/mcbtodo/config.toml");
     assert!(temp.path().join(".mcbtodo/vault").is_dir());
@@ -598,4 +808,112 @@ fn init_uses_the_requested_home_layout_and_preserves_config() {
         "timezone = \"Asia/Shanghai\"\n"
     );
     assert!(output(run(&["validate"])).contains("Asia/Shanghai"));
+}
+
+#[test]
+fn default_tui_start_initializes_a_fresh_home_without_building_the_daemon() {
+    let home = tempfile::tempdir().unwrap();
+    let result = cli_in_home(home.path()).output().unwrap();
+
+    assert!(!result.status.success());
+    assert!(
+        String::from_utf8_lossy(&result.stderr)
+            .contains("the TUI requires an interactive terminal"),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(home.path().join(".config/mcbtodo/config.toml").is_file());
+    assert!(home.path().join(".mcbtodo/state").is_dir());
+    assert!(home.path().join(".mcbtodo/vault").is_dir());
+}
+
+#[test]
+fn explicit_external_tui_does_not_initialize_the_default_home() {
+    let home = tempfile::tempdir().unwrap();
+    let external = tempfile::tempdir().unwrap();
+    let result = cli_in_home(home.path())
+        .args(["--vault"])
+        .arg(external.path())
+        .arg("tui")
+        .output()
+        .unwrap();
+
+    assert!(!result.status.success());
+    assert!(
+        String::from_utf8_lossy(&result.stderr)
+            .contains("the TUI requires an interactive terminal"),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(!home.path().join(".config/mcbtodo").exists());
+    assert!(!home.path().join(".mcbtodo").exists());
+}
+
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn doctor_reports_unsupported_linux_capabilities() {
+    let home = tempfile::tempdir().unwrap();
+    let result = cli_in_home(home.path())
+        .arg("--vault")
+        .arg(fixture())
+        .args(["--timezone", "Asia/Shanghai", "doctor", "--json"])
+        .output()
+        .unwrap();
+    let report: serde_json::Value = serde_json::from_str(&output(result)).unwrap();
+    assert_eq!(report["ok"], true);
+    let checks = report["checks"].as_array().unwrap();
+    for id in [
+        "daemon",
+        "agent_policy",
+        "agent_codex",
+        "sandbox_bubblewrap",
+        "sandbox_bash",
+        "sandbox_nushell",
+        "notification_desktop",
+        "systemd_systemctl",
+    ] {
+        let capability = checks
+            .iter()
+            .find(|check| check["id"] == id)
+            .unwrap_or_else(|| panic!("missing check: {id}"));
+        assert_eq!(capability["status"], "unsupported", "{id}");
+    }
+    assert_eq!(fs::read_dir(home.path()).unwrap().count(), 0);
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_unsupported_workspace_operations_fail_without_creating_state() {
+    let home = tempfile::tempdir().unwrap();
+    let destination = home.path().join("destination");
+    let backup = cli_in_home(home.path())
+        .arg("backup")
+        .arg(&destination)
+        .output()
+        .unwrap();
+    let restore = cli_in_home(home.path())
+        .arg("restore")
+        .arg(home.path().join("unused-source"))
+        .arg(&destination)
+        .output()
+        .unwrap();
+    let proposal = cli_in_home(home.path())
+        .arg("--vault")
+        .arg(fixture())
+        .args(["--timezone", "Asia/Shanghai", "proposal", "list"])
+        .output()
+        .unwrap();
+    for (result, message) in [
+        (backup, "workspace backup is unavailable on this platform"),
+        (restore, "workspace restore is unavailable on this platform"),
+        (
+            proposal,
+            "the private proposal queue is unavailable on this platform",
+        ),
+    ] {
+        assert!(!result.status.success());
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        assert!(stderr.contains(message), "{stderr}");
+    }
+    assert_eq!(fs::read_dir(home.path()).unwrap().count(), 0);
 }

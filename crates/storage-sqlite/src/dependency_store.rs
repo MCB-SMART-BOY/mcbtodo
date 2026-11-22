@@ -3,7 +3,8 @@
 use std::collections::HashSet;
 
 use anyhow::Result;
-use mcbtodo_protocol::workflow::{RunSummary, ScheduleSummary};
+use mcbtodo_ports::workflow::InvalidDependency;
+use mcbtodo_workflow::{run::RunSummary, schedule::ScheduleSummary};
 use rusqlite::{Connection, OptionalExtension, params};
 use uuid::Uuid;
 
@@ -34,10 +35,6 @@ const MAX_FAN_OUT: u32 = 16;
 const MAX_DEPTH: u32 = 8;
 const MAX_DESCENDANTS: u32 = 128;
 
-#[derive(Debug, thiserror::Error)]
-#[error("{0}")]
-pub(crate) struct InvalidDependency(&'static str);
-
 pub(super) fn register(tx: &Connection, summary: &ScheduleSummary, upstream: &str) -> Result<()> {
     let downstream = &summary.revision;
     let (fan_out, duplicate): (u32, bool) = tx.query_row(
@@ -47,14 +44,10 @@ pub(super) fn register(tx: &Connection, summary: &ScheduleSummary, upstream: &st
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
     if duplicate {
-        return Err(
-            InvalidDependency("An enabled dependency already links these revisions").into(),
-        );
+        return Err(InvalidDependency::Duplicate.into());
     }
     if fan_out >= MAX_FAN_OUT {
-        return Err(
-            InvalidDependency("An upstream revision supports at most 16 dependency rules").into(),
-        );
+        return Err(InvalidDependency::FanOut.into());
     }
     let cycle: bool = tx.query_row(
         "WITH RECURSIVE reachable(revision) AS (
@@ -68,7 +61,7 @@ pub(super) fn register(tx: &Connection, summary: &ScheduleSummary, upstream: &st
         |row| row.get(0),
     )?;
     if cycle {
-        return Err(InvalidDependency("Dependency would create a revision cycle").into());
+        return Err(InvalidDependency::Cycle.into());
     }
     tx.execute(
         "INSERT INTO workflow_dependency_rules(schedule_id,upstream_revision,downstream_revision)

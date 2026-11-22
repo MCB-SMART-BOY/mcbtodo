@@ -26,14 +26,17 @@ jobs:
       - name: Set up Rust
         run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rustfmt --component clippy
 
+      - name: Install sandbox test dependencies
+        run: sudo apt-get update && sudo apt-get install --yes bubblewrap nushell
+
       - name: Check the workspace
         run: cargo xtask check
 
       - name: Validate the example Vault
         run: cargo run --locked -- --vault examples/vault --timezone Asia/Shanghai validate
 
-      - name: Package all publishable workspace crates
-        run: cargo package --workspace --exclude mcbtodo-xtask --locked --no-verify
+      - name: Build all publishable crate archives after extraction
+        run: cargo package --workspace --exclude mcbtodo-xtask --locked
 
       - name: Verify crate license metadata and archive contents
         run: cargo xtask verify-crate-packages
@@ -70,7 +73,7 @@ jobs:
           rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
 
       - name: Install sandbox smoke dependencies
-        run: sudo apt-get update && sudo apt-get install --yes bubblewrap nushell jq
+        run: sudo apt-get update && sudo apt-get install --yes bubblewrap nushell
 
       - name: Build release binaries
         run: cargo build --release --locked --workspace --bin mcbtodo --bin mcbtodo-daemon --bin mcbtodo-worker
@@ -90,6 +93,7 @@ jobs:
           package_dir="$(mktemp -d "$RUNNER_TEMP/mcbtodo-package.XXXXXXXX")"
           tar -xzf "$RUNNER_TEMP/mcbtodo-linux-$ARCH.tar.gz" -C "$package_dir"
           cmp deploy/systemd/mcbtodo-daemon.service "$package_dir/usr/lib/systemd/user/mcbtodo-daemon.service"
+          cmp LICENSE "$package_dir/usr/share/licenses/mcbtodo/LICENSE"
           test -x "$package_dir/usr/bin/mcbtodo-worker"
           cargo xtask smoke --bin-dir "$package_dir/usr/bin" --sandbox
 

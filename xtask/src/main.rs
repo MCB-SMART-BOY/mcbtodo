@@ -1,7 +1,13 @@
 mod agents;
+#[cfg(target_os = "linux")]
+mod codex_probe;
+#[cfg(target_os = "linux")]
 mod example;
 mod package;
+#[cfg(target_os = "linux")]
 mod smoke;
+#[cfg(target_os = "linux")]
+mod systemd_smoke;
 
 use std::{
     env,
@@ -49,6 +55,19 @@ enum Task {
     },
     /// Verify Apache-2.0 metadata and license inclusion for publishable crates.
     VerifyCratePackages,
+    /// Probe a trusted system Codex executable in an offline Linux namespace.
+    #[cfg(target_os = "linux")]
+    CodexProbe {
+        /// Absolute path to the Codex executable, without a version manager shim.
+        #[arg(long)]
+        codex: PathBuf,
+        /// Also verify the Workflow path using binaries in this directory.
+        #[arg(long)]
+        bin_dir: Option<PathBuf>,
+    },
+    #[cfg(target_os = "linux")]
+    #[command(hide = true)]
+    CodexFixture,
     /// Build the native Rust page-table workflow example.
     WorkflowExample {
         /// Destination directory relative to the workspace root, or an absolute path.
@@ -58,6 +77,8 @@ enum Task {
         #[arg(long)]
         inject_failure: bool,
     },
+    #[command(hide = true)]
+    WorkerFixture,
     /// Prepare or launch a project agent harness with a selected workflow.
     Agent {
         #[command(subcommand)]
@@ -67,6 +88,10 @@ enum Task {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    #[cfg(target_os = "linux")]
+    if let Task::CodexFixture = cli.command {
+        return codex_probe::run_fixture();
+    }
     let cwd = env::current_dir()?;
     let root = cwd
         .ancestors()
@@ -78,25 +103,31 @@ fn main() -> Result<()> {
         .context("run cargo xtask from the mcbtodo workspace or one of its subdirectories")?;
     match cli.command {
         Task::Check => check(root),
+        #[cfg(target_os = "linux")]
         Task::Smoke { bin_dir, sandbox } => smoke::run(root, &root.join(bin_dir), sandbox),
-        Task::SmokeSystemd { bin_dir } => {
-            let status = Command::new("bash")
-                .arg(root.join("deploy/systemd/smoke.sh"))
-                .arg(root.join(bin_dir))
-                .status()
-                .context("starting systemd user service smoke")?;
-            ensure!(
-                status.success(),
-                "systemd user service smoke exited with {status}"
-            );
-            Ok(())
-        }
+        #[cfg(not(target_os = "linux"))]
+        Task::Smoke { .. } => anyhow::bail!("workspace smoke requires Linux"),
+        #[cfg(target_os = "linux")]
+        Task::SmokeSystemd { bin_dir } => systemd_smoke::run(root, &root.join(bin_dir)),
+        #[cfg(not(target_os = "linux"))]
+        Task::SmokeSystemd { .. } => anyhow::bail!("smoke-systemd requires a Linux user manager"),
+        #[cfg(target_os = "linux")]
         Task::Package { bin_dir, out_dir } => {
             let archive = package::build(root, &root.join(bin_dir), &root.join(out_dir))?;
             println!("{}", archive.display());
             Ok(())
         }
+        #[cfg(not(target_os = "linux"))]
+        Task::Package { .. } => anyhow::bail!("packaging requires Linux"),
         Task::VerifyCratePackages => package::verify_crate_packages(root),
+        #[cfg(target_os = "linux")]
+        Task::CodexProbe { codex, bin_dir } => {
+            let bin_dir = bin_dir.map(|path| root.join(path));
+            codex_probe::run(&codex, bin_dir.as_deref())
+        }
+        #[cfg(target_os = "linux")]
+        Task::CodexFixture => unreachable!("fixture dispatched before workspace discovery"),
+        #[cfg(target_os = "linux")]
         Task::WorkflowExample {
             out_dir,
             inject_failure,
@@ -105,6 +136,14 @@ fn main() -> Result<()> {
             println!("{}", graph.display());
             Ok(())
         }
+        #[cfg(not(target_os = "linux"))]
+        Task::WorkflowExample { .. } => {
+            anyhow::bail!("the sandbox workflow example requires Linux")
+        }
+        #[cfg(target_os = "linux")]
+        Task::WorkerFixture => smoke::worker_fixture_malformed_result(),
+        #[cfg(not(target_os = "linux"))]
+        Task::WorkerFixture => anyhow::bail!("the Worker fixture requires Linux"),
         Task::Agent { command } => agents::run(root, command),
     }
 }

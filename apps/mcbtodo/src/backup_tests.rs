@@ -8,13 +8,22 @@ use anyhow::Result;
 use mcbtodo_domain::Id;
 use mcbtodo_platform::WorkspacePaths;
 use mcbtodo_platform::agent_policy::MAX_POLICY_BYTES;
+use mcbtodo_ports::workflow::{
+    WorkflowArtifact, WorkflowProgressStore, WorkflowRunCatalog, WorkflowScheduleStore,
+};
+use mcbtodo_storage_sqlite::{focus::FocusStore, run_store::RunStore};
 use mcbtodo_vault::{CompleteWorkUnit, Vault, VaultStore};
-use mcbtodo_workflow::{RevisionStore, ScriptSources, WorkflowDraft};
+use mcbtodo_workflow::{
+    RevisionStore, ScriptSources, WorkflowDraft,
+    schedule::{Missed, Overlap, ScheduleSummary, Trigger},
+};
 use rusqlite::Connection;
 use tempfile::tempdir;
+use uuid::Uuid;
 
 use super::{
     Destination, DirectoryIdentity, MANIFEST, PAYLOAD, backup, capture, inventory, restore,
+    validate,
 };
 use crate::proposal::{self, Operation, Queue};
 
@@ -54,24 +63,33 @@ fn round_trip_captures_committed_wal_data_and_published_workflows() -> Result<()
     fs::write(paths.prepare_cache()?.join("cache.txt"), "runtime cache")?;
 
     let database = paths.state_dir().join("focus.sqlite3");
-    fs::File::create_new(&database)?.set_permissions(fs::Permissions::from_mode(0o600))?;
+    FocusStore::open(&database)?;
     let db = Connection::open(&database)?;
-    db.execute_batch(
-        "PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;
-        CREATE TABLE focus_sessions (elapsed INTEGER); INSERT INTO focus_sessions VALUES (42);",
+    db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;")?;
+    db.execute(
+        "INSERT INTO focus_sessions (id, state, started_at, elapsed_ns)
+         VALUES (?1, 'running', '2027-01-15T08:00:00Z', 42)",
+        [uuid::Uuid::from_u128(1).to_string()],
     )?;
     assert!(database.with_extension("sqlite3-wal").is_file());
     let workflow = paths.state_dir().join("workflow.sqlite3");
-    fs::File::create_new(&workflow)?.set_permissions(fs::Permissions::from_mode(0o600))?;
-    Connection::open(workflow)?.execute_batch(
-        "CREATE TABLE workflow_runs (revision TEXT);
-         CREATE TABLE workflow_artifacts (data BLOB);
-         INSERT INTO workflow_artifacts VALUES (x'010203');",
+    let store = RunStore::open(&workflow)?;
+    let run = store.enqueue_if_absent(Uuid::from_u128(1), revision.hash(), None)?;
+    store.append_host_step(
+        &run,
+        r#"{"node":"report","status":"succeeded","outcome":null,"inputs":{},"outputs":{},"reason":"完成"}"#,
+        Some(&WorkflowArtifact {
+            bytes: vec![1, 2, 3],
+            media_type: "application/octet-stream",
+        }),
     )?;
+    drop(store);
+    Connection::open(workflow)?.pragma_update(None, "user_version", 0)?;
 
     let archive = root.path().join("archive");
     let destination = root.path().join("restored");
     backup(&paths, &archive)?;
+    let captured = WorkspacePaths::from_home(archive.join(PAYLOAD));
     fs::create_dir(&destination)?;
     restore(&archive, &destination)?;
 
@@ -97,12 +115,16 @@ fn round_trip_captures_committed_wal_data_and_published_workflows() -> Result<()
     );
     let restored_db = restored.state_dir().join("focus.sqlite3");
     assert_eq!(
+        fs::read(&restored_db)?,
+        fs::read(captured.focus_database_path())?
+    );
+    assert_eq!(
         fs::metadata(&restored_db)?.permissions().mode() & 0o777,
         0o600
     );
     assert_eq!(
         Connection::open(restored_db)?.query_row(
-            "SELECT elapsed FROM focus_sessions",
+            "SELECT elapsed_ns FROM focus_sessions WHERE state = 'running'",
             [],
             |row| row.get::<_, i64>(0),
         )?,
@@ -110,17 +132,23 @@ fn round_trip_captures_committed_wal_data_and_published_workflows() -> Result<()
     );
     let restored_workflow = restored.state_dir().join("workflow.sqlite3");
     assert_eq!(
+        fs::read(&restored_workflow)?,
+        fs::read(captured.workflow_database_path())?
+    );
+    assert_eq!(
         fs::metadata(&restored_workflow)?.permissions().mode() & 0o777,
         0o600
     );
     assert_eq!(
-        Connection::open(restored_workflow)?.query_row(
+        Connection::open(&restored_workflow)?.query_row(
             "SELECT data FROM workflow_artifacts",
             [],
             |row| row.get::<_, Vec<u8>>(0),
         )?,
         [1, 2, 3]
     );
+    let reopened = RunStore::open(&restored_workflow)?;
+    assert_eq!(reopened.get(run.id)?.unwrap().step_count, 1);
     for path in [
         restored.socket_path(),
         restored.cache_dir(),
@@ -141,7 +169,7 @@ fn agent_policy_round_trips_without_live_socket() -> Result<()> {
     let socket = paths.vault_root().join("adapter.sock");
     let _listener = std::os::unix::net::UnixListener::bind(&socket)?;
     let policy = format!(
-        "socket = 'vault/adapter.sock'\n[[allow]]\ncapability = 'test'\nrevision = '{}'\n",
+        "[providers]\nunix_socket = 'vault/adapter.sock'\n[[allow]]\ncapability = 'test'\nrevision = '{}'\n",
         "a".repeat(64)
     );
     fs::write(paths.agent_policy_path(), &policy)?;
@@ -168,7 +196,7 @@ fn backup_refuses_to_make_an_untrusted_agent_policy_active() -> Result<()> {
     let root = tempdir()?;
     let paths = initialize(&root.path().join("live"))?;
     let policy = paths.agent_policy_path();
-    fs::write(&policy, "socket = 'state/agent.sock'\n")?;
+    fs::write(&policy, "[providers]\nunix_socket = 'state/agent.sock'\n")?;
     fs::set_permissions(&policy, fs::Permissions::from_mode(0o660))?;
 
     let archive = root.path().join("archive");
@@ -189,7 +217,7 @@ fn backup_and_restore_reject_invalid_or_oversized_agent_policy() -> Result<()> {
     let root = tempdir()?;
     let paths = initialize(&root.path().join("live"))?;
     let policy_path = paths.agent_policy_path();
-    let valid = b"socket = 'state/agent.sock'\n";
+    let valid = b"[providers]\nunix_socket = 'state/agent.sock'\n";
     fs::write(&policy_path, valid)?;
     fs::set_permissions(&policy_path, fs::Permissions::from_mode(0o600))?;
     let archive = root.path().join("archive");
@@ -204,7 +232,7 @@ fn backup_and_restore_reject_invalid_or_oversized_agent_policy() -> Result<()> {
     oversized.resize(MAX_POLICY_BYTES + 1, b' ');
     for (bytes, message) in [
         (
-            b"socket = '/tmp/agent.sock'\n".as_slice(),
+            b"[providers]\nunix_socket = '/tmp/agent.sock'\n".as_slice(),
             "Agent socket must be a relative path",
         ),
         (&oversized, "agents.toml exceeds the size limit"),
@@ -516,6 +544,256 @@ fn corrupt_sqlite_does_not_publish_or_replace() -> Result<()> {
 }
 
 #[test]
+fn wal_mode_is_rejected_without_creating_staged_sidecars() -> Result<()> {
+    let root = tempdir()?;
+    let staged = initialize(&root.path().join("staged"))?;
+    let path = staged.focus_database_path();
+    fs::File::create_new(&path)?.set_permissions(fs::Permissions::from_mode(0o600))?;
+    Connection::open(&path)?
+        .execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE focus_sessions (elapsed INTEGER);")?;
+
+    let original = fs::read(&path)?;
+    assert!(!path.with_extension("sqlite3-wal").exists());
+    assert!(!path.with_extension("sqlite3-shm").exists());
+    let error = validate(&staged).unwrap_err();
+    assert!(format!("{error:#}").contains("SQLite snapshot is not standalone"));
+    assert_eq!(fs::read(&path)?, original);
+    assert!(!path.with_extension("sqlite3-wal").exists());
+    assert!(!path.with_extension("sqlite3-shm").exists());
+    Ok(())
+}
+
+#[test]
+fn restore_rejects_wrong_store_even_with_matching_manifest() -> Result<()> {
+    let root = tempdir()?;
+    let paths = initialize(&root.path().join("live"))?;
+    let archive = root.path().join("archive");
+    backup(&paths, &archive)?;
+    let payload = archive.join(PAYLOAD);
+    let captured = WorkspacePaths::from_home(payload.clone());
+    let path = captured.workflow_database_path();
+    Connection::open(&path)?.execute_batch("CREATE TABLE focus_sessions (elapsed INTEGER);")?;
+    serde_json::to_writer(
+        fs::File::create(archive.join(MANIFEST))?,
+        &inventory(&payload)?,
+    )?;
+
+    let destination = root.path().join("restored");
+    let error = restore(&archive, &destination).unwrap_err();
+    assert!(format!("{error:#}").contains("SQLite snapshot is missing the workflow_runs table"));
+    assert!(!destination.exists());
+    Ok(())
+}
+
+#[test]
+fn backup_and_restore_reject_unsupported_database_versions() -> Result<()> {
+    for (path, table, name) in [
+        (
+            WorkspacePaths::focus_database_path as fn(&WorkspacePaths) -> _,
+            "focus_sessions",
+            "focus",
+        ),
+        (
+            WorkspacePaths::workflow_database_path,
+            "workflow_runs",
+            "workflow",
+        ),
+    ] {
+        let root = tempdir()?;
+        let paths = initialize(&root.path().join("live"))?;
+        let archive = root.path().join("archive");
+        backup(&paths, &archive)?;
+        let payload = archive.join(PAYLOAD);
+        let captured = WorkspacePaths::from_home(payload.clone());
+        for database in [path(&paths), path(&captured)] {
+            fs::File::create_new(&database)?.set_permissions(fs::Permissions::from_mode(0o600))?;
+            Connection::open(&database)?.execute_batch(&format!(
+                "CREATE TABLE {table} (id TEXT); PRAGMA user_version = 2147483647;"
+            ))?;
+        }
+        serde_json::to_writer(
+            fs::File::create(archive.join(MANIFEST))?,
+            &inventory(&payload)?,
+        )?;
+
+        let diagnostic = format!("unsupported {name} database schema version 2147483647");
+        let rejected_archive = root.path().join("rejected-archive");
+        let error = backup(&paths, &rejected_archive).unwrap_err();
+        assert!(format!("{error:#}").contains(&diagnostic), "{error:#}");
+        assert!(!rejected_archive.exists());
+        let destination = root.path().join("restored");
+        let error = restore(&archive, &destination).unwrap_err();
+        assert!(format!("{error:#}").contains(&diagnostic), "{error:#}");
+        assert!(!destination.exists());
+    }
+    Ok(())
+}
+
+#[test]
+fn backup_and_restore_reject_malformed_older_focus_session() -> Result<()> {
+    let root = tempdir()?;
+    let live = initialize(&root.path().join("live"))?;
+    let database = live.focus_database_path();
+    FocusStore::open(&database)?;
+    Connection::open(&database)?.execute_batch(
+        "INSERT INTO focus_sessions (id, state, started_at, stopped_at, elapsed_ns) VALUES
+            ('00000000-0000-0000-0000-000000000001', 'stopped',
+             '2027-01-15T08:00:00Z', '2027-01-15T08:01:00Z', 42),
+            ('00000000-0000-0000-0000-000000000002', 'paused',
+             '2027-01-16T08:00:00Z', NULL, 42);",
+    )?;
+
+    let archive = root.path().join("archive");
+    backup(&live, &archive)?;
+    let payload = archive.join(PAYLOAD);
+    let captured = WorkspacePaths::from_home(payload.clone());
+    for path in [&database, &captured.focus_database_path()] {
+        let db = Connection::open(path)?;
+        assert_eq!(
+            db.execute(
+                "UPDATE focus_sessions SET started_at = 'invalid' WHERE state = 'stopped'",
+                [],
+            )?,
+            1
+        );
+        let integrity: String = db.pragma_query_value(None, "integrity_check", |row| row.get(0))?;
+        assert_eq!(integrity, "ok");
+    }
+    serde_json::to_writer(
+        fs::File::create(archive.join(MANIFEST))?,
+        &inventory(&payload)?,
+    )?;
+
+    let rejected_archive = root.path().join("rejected-archive");
+    let destination = root.path().join("restored");
+    let original_db = fs::read(&database)?;
+    let staged_db = fs::read(captured.focus_database_path())?;
+    for error in [
+        backup(&live, &rejected_archive).unwrap_err(),
+        restore(&archive, &destination).unwrap_err(),
+    ] {
+        let diagnostic = format!("{error:#}");
+        assert!(diagnostic.contains("focus session"), "{diagnostic}");
+        assert!(diagnostic.contains("started_at"), "{diagnostic}");
+    }
+    assert!(!rejected_archive.exists());
+    assert!(!destination.exists());
+    assert_eq!(fs::read(database)?, original_db);
+    assert_eq!(fs::read(captured.focus_database_path())?, staged_db);
+    Ok(())
+}
+
+#[test]
+fn backup_and_restore_reject_malformed_workflow_state() -> Result<()> {
+    let id = Uuid::from_u128(1);
+    let run_id = id.to_string();
+    for (corruption, expected_parts) in [
+        (
+            "UPDATE workflow_runs SET due_at = 'invalid'",
+            ["decoding saved workflow run", &run_id],
+        ),
+        (
+            "UPDATE workflow_runs SET due_ms = due_ms + 1",
+            ["inconsistent due time", &run_id],
+        ),
+        (
+            "UPDATE workflow_steps SET trace = '{}'",
+            ["Invalid trace for run", &run_id],
+        ),
+        (
+            "UPDATE workflow_schedules SET summary = '{}'",
+            ["decoding saved workflow schedule", &run_id],
+        ),
+        (
+            "UPDATE workflow_schedules SET next_ms = next_ms + 1",
+            ["inconsistent next occurrence", &run_id],
+        ),
+        (
+            "UPDATE workflow_schedules SET summary = json_set(summary, '$.trigger.seconds', 0)",
+            ["schedule interval must be positive", &run_id],
+        ),
+        (
+            "DELETE FROM workflow_artifacts",
+            [
+                "SQLite foreign key check failed in workflow_steps",
+                "missing workflow_artifacts record",
+            ],
+        ),
+    ] {
+        let root = tempdir()?;
+        let live = initialize(&root.path().join("live"))?;
+        let database = live.workflow_database_path();
+        let store = RunStore::open(&database)?;
+        let revision = "a".repeat(64);
+        let due = "2027-01-15T08:00:00.000001Z".parse()?;
+        let run = store.enqueue_if_absent(id, &revision, Some(due))?;
+        store.append_host_step(
+            &run,
+            r#"{"node":"report","status":"succeeded","outcome":null,"inputs":{},"outputs":{},"reason":"done"}"#,
+            Some(&WorkflowArtifact {
+                bytes: vec![1, 2, 3],
+                media_type: "application/octet-stream",
+            }),
+        )?;
+        store.insert_schedule(
+            &ScheduleSummary {
+                id,
+                revision,
+                trigger: Trigger::Interval {
+                    anchor: due,
+                    seconds: 60,
+                },
+                missed: Missed::RunOnce,
+                overlap: Overlap::Queue,
+                next_at: Some(due),
+                enabled: true,
+                missed_occurrences: 0,
+                overlap_skipped: 0,
+                cascade_skipped: 0,
+            },
+            None,
+        )?;
+        drop(store);
+
+        let archive = root.path().join("archive");
+        backup(&live, &archive)?;
+        let payload = archive.join(PAYLOAD);
+        let captured_db = WorkspacePaths::from_home(payload.clone()).workflow_database_path();
+        for path in [&database, &captured_db] {
+            let db = Connection::open(path)?;
+            db.pragma_update(None, "foreign_keys", false)?;
+            assert_eq!(db.execute(corruption, [])?, 1);
+            let integrity: String =
+                db.pragma_query_value(None, "integrity_check", |row| row.get(0))?;
+            assert_eq!(integrity, "ok");
+        }
+        serde_json::to_writer(
+            fs::File::create(archive.join(MANIFEST))?,
+            &inventory(&payload)?,
+        )?;
+
+        let original = fs::read(&database)?;
+        let archived = fs::read(&captured_db)?;
+        let rejected_archive = root.path().join("rejected-archive");
+        let destination = root.path().join("restored");
+        for error in [
+            backup(&live, &rejected_archive).unwrap_err(),
+            restore(&archive, &destination).unwrap_err(),
+        ] {
+            let diagnostic = format!("{error:#}");
+            for expected in expected_parts {
+                assert!(diagnostic.contains(expected), "{diagnostic}");
+            }
+        }
+        assert!(!rejected_archive.exists());
+        assert!(!destination.exists());
+        assert_eq!(fs::read(&database)?, original);
+        assert_eq!(fs::read(&captured_db)?, archived);
+    }
+    Ok(())
+}
+
+#[test]
 fn completion_event_round_trips_and_malformed_event_blocks_restore() -> Result<()> {
     let root = tempdir()?;
     let paths = initialize(&root.path().join("live"))?;
@@ -544,7 +822,8 @@ fn completion_event_round_trips_and_malformed_event_blocks_restore() -> Result<(
         fs::write(project.join(name), contents)?;
     }
     let timezone = paths.load_config()?.timezone;
-    let store = VaultStore::new(&vault_root, timezone);
+    let origin = paths.load_or_create_device_identity()?;
+    let store = VaultStore::new(&vault_root, timezone).with_completion_origin(origin);
     let vault = Vault::load(&vault_root, timezone)?;
     let id = Id::from_u128(0x30000000000040008000000000000002);
     store.complete_work_unit(CompleteWorkUnit {
@@ -563,10 +842,32 @@ fn completion_event_round_trips_and_malformed_event_blocks_restore() -> Result<(
     let database = ".mcbtodo-events.sqlite3";
     let expected = fs::read(vault_root.join(database))?;
     assert_eq!(fs::read(restored.vault_root().join(database))?, expected);
+    assert!(!restored.device_identity_path().exists());
+    let restored_origin = restored.load_or_create_device_identity()?;
+    assert_ne!(origin, restored_origin);
+    let restored_root = restored.vault_root();
+    let restored_store =
+        VaultStore::new(&restored_root, timezone).with_completion_origin(restored_origin);
+    assert_eq!(restored_store.work_unit_completed_events()?, events);
     assert_eq!(
-        VaultStore::new(restored.vault_root(), timezone).work_unit_completed_events()?,
-        events,
+        restored_store.work_unit_completion_export_page(0)?[0].origin_device_id,
+        Some(origin)
     );
+    let first_unit = restored_root.join("projects/rust-os/units/read-spec.md");
+    let source = fs::read_to_string(&first_unit)?.replace("status: completed", "status: todo");
+    fs::write(first_unit, source)?;
+    let vault = Vault::load(&restored_root, timezone)?;
+    let id = Id::from_u128(0x30000000000040008000000000000001);
+    restored_store.complete_work_unit(CompleteWorkUnit {
+        id,
+        expected_revision: vault.revision(id).unwrap().clone(),
+    })?;
+    let page = restored_store.work_unit_completion_export_page(0)?;
+    assert_eq!(page.len(), 2);
+    assert_eq!(page[0].event, events[0]);
+    assert_eq!(page[0].origin_device_id, Some(origin));
+    assert_eq!(page[1].event.work_unit_id, id);
+    assert_eq!(page[1].origin_device_id, Some(restored_origin));
 
     // Give the archive a valid checksummed SQLite file with invalid event contents.
     let payload = archive.join(PAYLOAD);
@@ -586,7 +887,7 @@ fn completion_event_round_trips_and_malformed_event_blocks_restore() -> Result<(
     let destination = root.path().join("empty");
     fs::create_dir(&destination)?;
     let error = restore(&archive, &destination).unwrap_err();
-    assert!(format!("{error:#}").contains("validating backup completion events"));
+    assert!(format!("{error:#}").contains("validating WorkUnit completion journal"));
     assert!(fs::read_dir(destination)?.next().is_none());
     Ok(())
 }

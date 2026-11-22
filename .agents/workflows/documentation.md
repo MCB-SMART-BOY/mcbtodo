@@ -10,6 +10,8 @@ records, examples, agent instructions, or AI workflows.
    Markdown with `rg --files -g '*.md'`; include user guides, examples,
    deployment docs, every harness instruction, every registered workflow,
    `CONTRIBUTING.md`, the GitHub PR template, and rights/contribution guidance.
+   Include `.github/ISSUE_TEMPLATE/`, `.github/CODEOWNERS`, and `SECURITY.md`
+   when reviewing repository intake and security-reporting documentation.
    For a repository-wide documentation request, inspect every project document
    in that inventory; do not treat an index update as a substitute for
    updating or verifying its sources. Example Vault records are user data,
@@ -96,6 +98,9 @@ records, examples, agent instructions, or AI workflows.
    claims, and contradictions. Keep current implementation, target design,
    and verified acceptance clearly distinct in each owning document. Do not
    mechanically rewrite fixture content that is not project documentation.
+   Do not claim private vulnerability reporting is operational unless the
+   GitHub repository setting is enabled; repository policy files cannot enable
+   that remote setting.
 9. Run `cargo xtask agent validate`, `cargo xtask check`, and the example Vault
    validation command from `.agents/instructions.md` when available. Report
    any check that cannot run and why.

@@ -6,7 +6,6 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
-license-file.workspace = true
 description = "Shared application use cases and query projections for mcbtodo."
 documentation = "https://docs.rs/mcbtodo-application"
 

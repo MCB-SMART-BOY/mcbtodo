@@ -57,7 +57,7 @@ impl Fixture {
     }
 
     fn runtime(&self) -> Result<Runtime> {
-        let mut runtime = Runtime::open_for_test(&self.paths.state_dir())?;
+        let mut runtime = Runtime::open_with_paths(&self.paths.state_dir(), self.paths.clone())?;
         runtime.completions = CompletionPoller::new(self.paths.clone());
         Ok(runtime)
     }
@@ -95,6 +95,17 @@ impl Fixture {
 
     fn events(&self) -> Result<Vec<WorkUnitCompleted>> {
         Ok(self.vault().work_unit_completed_events()?)
+    }
+
+    // These delivery tests create only local events. Wait for the fixture lock
+    // before handing the recorded page directly to the delivery store.
+    fn delivery_page(&self, after: i64) -> Result<Vec<(i64, WorkUnitCompleted)>> {
+        Ok(self
+            .vault()
+            .work_unit_completion_export_page(after)?
+            .into_iter()
+            .map(|record| (record.sequence, record.event))
+            .collect())
     }
 
     fn request(&self, id: Uuid) -> WorkflowRequest {
@@ -208,18 +219,52 @@ fn markdown_and_evidence_only_changes_do_not_queue_runs() -> Result<()> {
 }
 
 #[test]
+fn imported_completion_does_not_queue_a_run_or_hide_later_local_completions() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let mut runtime = fixture.runtime()?;
+    fixture.rule(&mut runtime, Uuid::new_v4())?;
+    let vault = fixture.vault();
+    let observed = Vault::load(&fixture.paths.vault_root(), chrono_tz::UTC)?
+        .revision(UNIT)
+        .context("missing unit")?
+        .digest();
+    let imported = WorkUnitCompleted {
+        event_id: Uuid::new_v4(),
+        work_unit_id: UNIT,
+        project_id: PROJECT,
+        parent_task_id: TASK,
+        occurred_at: Utc::now(),
+        previous_status: mcbtodo_domain::WorkUnitStatus::Todo,
+        evidence: Vec::new(),
+    };
+    assert!(vault.import_work_unit_completion(&imported, &observed, None)?);
+    fixture.set_status(UNIT, "todo")?;
+    fixture.complete(UNIT, &[])?;
+    poll_until(&mut runtime, |runtime| {
+        Ok(runtime.store.next_completion_cursor()? == Some(2))
+    })?;
+    let events = vault.work_unit_completion_export_page(0)?;
+    assert_eq!(events[0].event, imported);
+    assert_eq!(events[0].origin_device_id, None);
+    let runs = runtime.store.list(None)?.0;
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].source_event_id, Some(events[1].event.event_id));
+    Ok(())
+}
+
+#[test]
 fn disable_during_page_read_keeps_queued_runs_and_blocks_new_deliveries() -> Result<()> {
     let fixture = Fixture::new()?;
     let mut runtime = fixture.runtime()?;
     let id = Uuid::new_v4();
     fixture.rule(&mut runtime, id)?;
     fixture.complete(UNIT, &[])?;
-    let pages = fixture.vault().work_unit_completion_page(0)?;
+    let pages = fixture.delivery_page(0)?;
     runtime.store.deliver_completion_page(&pages)?;
-    let queued = runtime.store.next_pending()?.unwrap().id;
+    let queued = runtime.store.next_pending_at(Utc::now())?.unwrap().id;
     fixture.set_status(UNIT, "todo")?;
     fixture.complete(UNIT, &[])?;
-    let stale_page = fixture.vault().work_unit_completion_page(1)?;
+    let stale_page = fixture.delivery_page(1)?;
     let response = runtime.handle(WorkflowRequest::DisableSchedule { id });
     assert!(
         matches!(response, Response::Workflow(WorkflowResponse::Schedule(rule)) if !rule.enabled)
@@ -245,7 +290,7 @@ fn delivery_rolls_back_receipt_run_and_cursor_and_deduplicates_replayed_event() 
     let mut runtime = fixture.runtime()?;
     fixture.rule(&mut runtime, Uuid::new_v4())?;
     fixture.complete(UNIT, &[])?;
-    let page = fixture.vault().work_unit_completion_page(0)?;
+    let page = fixture.delivery_page(0)?;
     let db = Connection::open(fixture.workflow_db())?;
     db.execute_batch(
         "CREATE TRIGGER force_rollback BEFORE UPDATE OF cursor ON workflow_completion_rules
@@ -289,6 +334,35 @@ fn unrelated_full_page_does_not_hide_a_later_matching_event() -> Result<()> {
 }
 
 #[test]
+fn busy_journal_reader_backs_off_without_advancing_the_cursor() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let mut runtime = fixture.runtime()?;
+    fixture.rule(&mut runtime, Uuid::new_v4())?;
+    fixture.complete(UNIT, &[])?;
+    let eligible = fixture.events()?.last().unwrap().event_id;
+    let lock = fs::File::open(fixture.paths.vault_root().join(".mcbtodo-vault.lock"))?;
+    lock.lock()?;
+
+    poll_until(&mut runtime, |runtime| {
+        Ok(runtime
+            .wait_timeout()?
+            .is_some_and(|delay| delay > Duration::from_millis(500)))
+    })
+    .context("completion reader did not back off while the writer held the lock")?;
+    assert_eq!(runtime.store.next_completion_cursor()?, Some(0));
+    assert!(runtime.store.list(None)?.0.is_empty());
+    drop(lock);
+
+    poll_until(&mut runtime, |runtime| {
+        Ok(runtime.store.next_completion_cursor()? == Some(1))
+    })?;
+    let runs = runtime.store.list(None)?.0;
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].source_event_id, Some(eligible));
+    Ok(())
+}
+
+#[test]
 fn journal_read_failure_preserves_cursor_and_retries() -> Result<()> {
     let fixture = Fixture::new()?;
     let mut runtime = fixture.runtime()?;
@@ -321,6 +395,53 @@ fn journal_read_failure_preserves_cursor_and_retries() -> Result<()> {
 }
 
 #[test]
+fn injected_completion_store_uses_the_registered_cutoff() -> Result<()> {
+    use mcbtodo_ports::{CompletionEventStore, CompletionPage, CompletionReadError};
+
+    struct MemoryJournal(WorkUnitCompleted);
+
+    impl CompletionEventStore for MemoryJournal {
+        fn watermark(&self) -> Result<i64, CompletionReadError> {
+            Ok(41)
+        }
+
+        fn page(&self, after: i64) -> Result<CompletionPage, CompletionReadError> {
+            match after {
+                41 => Ok(vec![(42, self.0.clone())]),
+                42 => Ok(Vec::new()),
+                _ => Err(CompletionReadError::Storage(format!(
+                    "unexpected cursor {after}"
+                ))),
+            }
+        }
+    }
+
+    let fixture = Fixture::new()?;
+    let mut runtime = fixture.runtime()?;
+    let event = WorkUnitCompleted {
+        event_id: Uuid::new_v4(),
+        work_unit_id: UNIT,
+        project_id: PROJECT,
+        parent_task_id: TASK,
+        occurred_at: Utc::now(),
+        previous_status: mcbtodo_domain::WorkUnitStatus::Todo,
+        evidence: Vec::new(),
+    };
+    runtime.completions = CompletionPoller::with_store(MemoryJournal(event.clone()));
+    let schedule = fixture.rule(&mut runtime, Uuid::new_v4())?;
+    assert_eq!(runtime.store.next_completion_cursor()?, Some(41));
+    poll_until(&mut runtime, |runtime| {
+        Ok(runtime.store.next_completion_cursor()? == Some(42))
+    })?;
+    let runs = runtime.store.list(None)?.0;
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].source_event_id, Some(event.event_id));
+    assert_eq!(runs[0].schedule_id, Some(schedule.id));
+    assert!(fixture.events()?.is_empty());
+    Ok(())
+}
+
+#[test]
 fn busy_registration_can_retry_without_a_partial_rule() -> Result<()> {
     let fixture = Fixture::new()?;
     let mut runtime = fixture.runtime()?;
@@ -334,8 +455,10 @@ fn busy_registration_can_retry_without_a_partial_rule() -> Result<()> {
         let (send, receive) = mpsc::channel();
         scope.spawn(move || send.send(runtime.handle(request)).unwrap());
         let result = receive.recv_timeout(Duration::from_secs(2));
-        drop(lock);
-        result
+        // Unlock explicitly in case a concurrent process test has forked
+        // and briefly holds a copy of this descriptor before exec.
+        lock.unlock()?;
+        Ok::<_, anyhow::Error>(result?)
     })?;
     assert!(matches!(
         response,

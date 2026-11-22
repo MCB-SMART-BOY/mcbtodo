@@ -1,0 +1,9 @@
+# Protect repository control-plane files with review requests to the maintainer.
+/.github/ @MCB-SMART-BOY
+/.agents/ @MCB-SMART-BOY
+/AGENTS.md @MCB-SMART-BOY
+/CONTRIBUTING.md @MCB-SMART-BOY
+/Cargo.toml @MCB-SMART-BOY
+/Cargo.lock @MCB-SMART-BOY
+/docs/licensing.md @MCB-SMART-BOY
+/LICENSE @MCB-SMART-BOY

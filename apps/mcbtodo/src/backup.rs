@@ -16,12 +16,9 @@ use mcbtodo_platform::{
     WorkspacePaths,
     agent_policy::{AgentPolicy, MAX_POLICY_BYTES},
 };
-use mcbtodo_vault::{Vault, VaultStore};
+use mcbtodo_storage_sqlite::workspace_snapshot::{self, SnapshotKind};
+use mcbtodo_vault::VaultStore;
 use mcbtodo_workflow::RevisionStore;
-use rusqlite::{
-    Connection, OpenFlags,
-    backup::{Backup, StepResult},
-};
 use rustix::fs::{AtFlags, CWD, Dir, FileType, Mode, OFlags, RenameFlags};
 use sha2::{Digest, Sha256};
 
@@ -35,10 +32,13 @@ const REVISIONS: &str = "revisions";
 const DAEMON_LOCK: &str = "mcbtodo-daemon.lock";
 // Match VaultStore writers.
 const VAULT_LOCK: &str = ".mcbtodo-vault.lock";
-const DATABASES: [(&str, &str); 2] = [
-    ("focus.sqlite3", "focus_sessions"),
-    ("workflow.sqlite3", "workflow_runs"),
-];
+
+fn databases(paths: &WorkspacePaths) -> [(SnapshotKind, PathBuf); 2] {
+    [
+        (SnapshotKind::Focus, paths.focus_database_path()),
+        (SnapshotKind::Workflow, paths.workflow_database_path()),
+    ]
+}
 
 #[derive(Clone, Copy)]
 struct DirectoryIdentity {
@@ -160,9 +160,10 @@ fn capture(
     let captured_state = destination.state_dir();
     private_dirs(&captured_state)?;
     proposals.copy_to(destination)?;
-    for (name, _) in DATABASES {
-        snapshot_database(&state, &captured_state, name)
-            .with_context(|| format!("capturing SQLite database {name}"))?;
+    for ((_, source), (_, destination)) in databases(source).into_iter().zip(databases(destination))
+    {
+        snapshot_database(&source, &destination)
+            .with_context(|| format!("capturing SQLite database {}", source.display()))?;
     }
 
     let workflows = state.join(WORKFLOWS);
@@ -278,11 +279,12 @@ fn open_lock(directory: &File, name: &str) -> rustix::io::Result<File> {
     .map(File::from)
 }
 
-fn snapshot_database(source: &Path, destination: &Path, name: &str) -> Result<()> {
-    let database = source.join(name);
-    let metadata = metadata_if_present(&database)?;
+fn snapshot_database(source: &Path, destination: &Path) -> Result<()> {
+    let metadata = metadata_if_present(source)?;
     for suffix in ["-wal", "-shm", "-journal"] {
-        let sidecar = source.join(format!("{name}{suffix}"));
+        let mut sidecar = source.as_os_str().to_os_string();
+        sidecar.push(suffix);
+        let sidecar = PathBuf::from(sidecar);
         if let Some(meta) = metadata_if_present(&sidecar)? {
             check_private_file(&meta, &sidecar)?;
             ensure!(
@@ -293,27 +295,9 @@ fn snapshot_database(source: &Path, destination: &Path, name: &str) -> Result<()
         }
     }
     let Some(meta) = metadata else { return Ok(()) };
-    check_private_file(&meta, &database)?;
-    let from = open_database(&database, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    let path = destination.join(name);
-    private_file(&path, 0o600)?;
-    let mut to = open_database(&path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
-    ensure!(
-        Backup::new(&from, &mut to)?.step(-1)? == StepResult::Done,
-        "SQLite snapshot could not acquire its locks"
-    );
-    // The standalone snapshot must open without a WAL or shared memory file.
-    to.pragma_update(None, "journal_mode", "DELETE")?;
-    to.close().map_err(|(_, error)| error)?;
-    File::open(&path)?.sync_all()?;
-    Ok(())
-}
-
-fn open_database(path: &Path, access: OpenFlags) -> Result<Connection> {
-    let db = Connection::open_with_flags(path, access | OpenFlags::SQLITE_OPEN_NOFOLLOW)
-        .with_context(|| format!("opening SQLite database {}", path.display()))?;
-    db.pragma_update(None, "trusted_schema", false)?;
-    Ok(db)
+    check_private_file(&meta, source)?;
+    private_file(destination, 0o600)?;
+    workspace_snapshot::capture(source, destination)
 }
 
 fn validate(paths: &WorkspacePaths) -> Result<()> {
@@ -333,9 +317,9 @@ fn validate(paths: &WorkspacePaths) -> Result<()> {
         (workspace, vec![vault.clone(), state.clone()]),
         (
             &state,
-            DATABASES
-                .iter()
-                .map(|(name, _)| state.join(name))
+            databases(paths)
+                .into_iter()
+                .map(|(_, path)| path)
                 .chain([workflows.clone(), paths.proposals_dir()])
                 .collect(),
         ),
@@ -351,10 +335,9 @@ fn validate(paths: &WorkspacePaths) -> Result<()> {
         metadata_if_present(&vault.join(VAULT_LOCK))?.is_none(),
         "unexpected Vault write lock in backup"
     );
-    Vault::load(&vault, config.timezone).context("validating backup Vault")?;
     VaultStore::new(&vault, config.timezone)
-        .validate_completion_snapshot()
-        .context("validating backup completion events")?;
+        .validate_staged_snapshot()
+        .context("validating backup Vault")?;
     proposal::validate_snapshot(paths).context("validating backup proposals")?;
     if workflows.exists() {
         check_children(&workflows, std::slice::from_ref(&revisions))?;
@@ -369,33 +352,12 @@ fn validate(paths: &WorkspacePaths) -> Result<()> {
                 .with_context(|| format!("validating published revision {hash}"))?;
         }
     }
-    for (name, expected_table) in DATABASES {
-        let database = state.join(name);
+    for (kind, database) in databases(paths) {
         if database.exists() {
-            validate_database(&database, expected_table)
-                .with_context(|| format!("validating SQLite snapshot {name}"))?;
+            kind.validate(&database)
+                .with_context(|| format!("validating SQLite snapshot {}", database.display()))?;
         }
     }
-    Ok(())
-}
-
-fn validate_database(path: &Path, table: &str) -> Result<()> {
-    ensure!(
-        path.is_file(),
-        "expected database file at {}",
-        path.display()
-    );
-    let db = open_database(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    let mode: String = db.pragma_query_value(None, "journal_mode", |row| row.get(0))?;
-    ensure!(mode == "delete", "SQLite snapshot is not standalone");
-    let result: String = db.pragma_query_value(None, "integrity_check", |row| row.get(0))?;
-    ensure!(result == "ok", "SQLite integrity check failed: {result}");
-    let matching: bool = db.query_row(
-        "SELECT EXISTS (SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?1)",
-        [table],
-        |row| row.get(0),
-    )?;
-    ensure!(matching, "SQLite snapshot is missing the {table} table");
     Ok(())
 }
 
@@ -565,7 +527,7 @@ fn inventory(root: &Path) -> Result<BTreeMap<String, String>> {
                 ensure!(kind.is_file(), "unexpected file type at {}", path.display());
                 let mut digest = Sha256::new();
                 io::copy(&mut File::open(&path)?, &mut digest)?;
-                format!("{:x}", digest.finalize())
+                hex::encode(digest.finalize())
             };
             entries.insert(name, value);
         }

@@ -312,13 +312,20 @@ impl State {
         paths: &WorkspacePaths,
         request: Submission,
     ) {
-        if let Err(error) = crate::require_default_reminder_vault(paths, root) {
-            self.message = format!("{error:#}");
-            return;
-        }
         let Schedule::Reminder { at, target_id } = request.schedule else {
             unreachable!("create_reminder receives a reminder submission");
         };
+        let is_default_vault = paths.is_default_vault(root);
+        if !matches!(is_default_vault, Ok(true)) {
+            self.message = match is_default_vault {
+                Ok(false) => {
+                    "Background reminders are only supported for the default Vault".to_owned()
+                }
+                Err(error) => format!("Reminder failed · {error:#}"),
+                Ok(true) => unreachable!(),
+            };
+            return;
+        }
         let id = Id::new_v4();
         let saved = VaultCommands::new(root, vault.timezone()).create_reminder(
             id,

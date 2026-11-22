@@ -11,11 +11,14 @@ and executable names describe their user-facing role:
 | `mcbtodo` | `apps/mcbtodo` | `mcbtodo` |
 | `mcbtodo-daemon` | `apps/mcbtodo-daemon` | `mcbtodo-daemon` |
 | `mcbtodo-worker` | `apps/mcbtodo-worker` | `mcbtodo-worker` |
+| `mcbtodo-agent-codex` | `crates/agent-codex` | Library |
 | `mcbtodo-application` | `crates/application` | Library |
 | `mcbtodo-domain` | `crates/domain` | Library |
 | `mcbtodo-execution` | `crates/execution` | Library |
 | `mcbtodo-platform` | `crates/platform` | Library |
+| `mcbtodo-ports` | `crates/ports` | Library |
 | `mcbtodo-protocol` | `crates/protocol` | Library |
+| `mcbtodo-storage-sqlite` | `crates/storage-sqlite` | Library |
 | `mcbtodo-vault` | `crates/vault` | Library |
 | `mcbtodo-workflow` | `crates/workflow` | Library |
 | `mcbtodo-xtask` | `xtask` | `xtask` (repository-only development tool) |

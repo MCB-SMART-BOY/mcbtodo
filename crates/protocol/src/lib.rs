@@ -8,6 +8,7 @@ pub mod worker;
 pub mod workflow;
 
 pub use client::request;
+pub use mcbtodo_ports::focus::TimerState;
 pub use wire::ProtocolError;
 
 use chrono::{DateTime, NaiveDate, Utc};
@@ -68,15 +69,6 @@ pub struct TimerStatus {
     pub state: TimerState,
     /// The active session, or the most recently stopped session when idle.
     pub session: Option<FocusSession>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TimerState {
-    Idle,
-    Running,
-    Paused,
-    NeedsReview,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

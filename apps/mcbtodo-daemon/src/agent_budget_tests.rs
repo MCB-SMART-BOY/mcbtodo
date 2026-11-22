@@ -1,6 +1,6 @@
 use std::{
     fs,
-    io::{Read, Write},
+    io::{self, Read, Write},
     os::unix::net::{UnixListener, UnixStream},
 };
 
@@ -41,6 +41,17 @@ literals:
 const WALL_MS: u64 = 60_000;
 const TEST_TIMEOUT: Duration = Duration::from_secs(5);
 
+const CAPACITY_WORKFLOW: &str = r#"
+schema: mcbtodo.workflow/v1
+id: agent-capacity
+name: Agent capacity
+entry: call
+capabilities:
+  - {kind: agent.invoke, scope: summarize}
+nodes:
+  call: {kind: agent, capability: summarize, outputs: {}}
+"#;
+
 struct Fixture {
     _home: tempfile::TempDir,
     paths: WorkspacePaths,
@@ -50,12 +61,16 @@ struct Fixture {
 
 impl Fixture {
     fn new(authorized: bool) -> Result<Self> {
+        Self::with_workflow(authorized, CHAIN)
+    }
+
+    fn with_workflow(authorized: bool, workflow: &str) -> Result<Self> {
         let home = tempfile::tempdir()?;
         let paths = WorkspacePaths::from_home(home.path().to_owned());
         paths.initialize()?;
         let state_dir = paths.state_dir();
         let graph = home.path().join("budget.yaml");
-        fs::write(&graph, CHAIN)?;
+        fs::write(&graph, workflow)?;
         let revision = RevisionStore::new(&state_dir)
             .publish(&graph)?
             .hash()
@@ -64,7 +79,7 @@ impl Fixture {
             fs::write(
                 paths.agent_policy_path(),
                 format!(
-                    "socket = \"state/agent.sock\"\ntimeout_seconds = 30\n\
+                    "timeout_seconds = 30\n[providers]\nunix_socket = \"state/agent.sock\"\n\
                      [[allow]]\ncapability = \"summarize\"\nrevision = \"{revision}\"\n"
                 ),
             )?;
@@ -81,6 +96,18 @@ impl Fixture {
 
     fn open(&self) -> Result<Runtime> {
         Runtime::open_with_paths(&self.paths.state_dir(), self.paths.clone())
+    }
+
+    fn open_with_slots(&self, slots: u8) -> Result<Runtime> {
+        Runtime::new(
+            &self.paths.state_dir(),
+            self.paths.clone(),
+            mcbtodo_storage_sqlite::run_store::RunStore::open(
+                &self.paths.workflow_database_path(),
+            )?,
+            crate::worker_process::LinuxWorkerLauncher,
+            slots,
+        )
     }
 
     fn enqueue(&self, runtime: &mut Runtime) -> Result<Uuid> {
@@ -111,7 +138,7 @@ impl Fixture {
         )?)
     }
 
-    fn accept_request(&self) -> Result<UnixStream> {
+    fn accept_request(&self, runtime: &mut Runtime) -> Result<UnixStream> {
         let deadline = Instant::now() + TEST_TIMEOUT;
         let mut socket = loop {
             match self.listener.accept() {
@@ -119,6 +146,7 @@ impl Fixture {
                 Err(err)
                     if err.kind() == io::ErrorKind::WouldBlock && Instant::now() < deadline =>
                 {
+                    runtime.tick()?;
                     thread::sleep(Duration::from_millis(2));
                 }
                 Err(err) => return Err(err).context("waiting for local test adapter connection"),
@@ -139,8 +167,11 @@ impl Fixture {
         Ok(socket)
     }
 
-    fn reply(&self) -> Result<()> {
-        let mut socket = self.accept_request()?;
+    fn reply(&self, runtime: &mut Runtime) -> Result<()> {
+        Self::send_reply(self.accept_request(runtime)?)
+    }
+
+    fn send_reply(mut socket: UnixStream) -> Result<()> {
         let body = br#"{"schema":"mcbtodo.agent/v1","outputs":{}}"#;
         socket.write_all(&(body.len() as u32).to_be_bytes())?;
         socket.write_all(body)?;
@@ -160,18 +191,22 @@ impl Fixture {
         let Progress::Next { job, .. } = runtime.progress(&run, &revision)? else {
             bail!("expected the first Agent job");
         };
-        let reserved = runtime.store.claim_agent(&run, &job.node, || Ok(false))?;
-        runtime.finish_job(
-            &runtime.run(id)?,
-            &job,
-            JobResult {
-                outcome: NodeOutcome::Succeeded {
-                    outputs: Default::default(),
-                },
-                artifact: None,
-            },
-            reserved - Duration::from_millis(elapsed_ms),
-        )
+        let AgentAttemptClaim {
+            attempt,
+            execution_window: reserved,
+        } = runtime
+            .store
+            .claim_agent(worker_claim(&run, &job.node)?, false)?;
+        runtime.store.mark_started(&attempt)?;
+        let step = job.complete(NodeOutcome::Succeeded {
+            outputs: Default::default(),
+        })?;
+        runtime.store.commit_result(AttemptResult {
+            attempt: &attempt,
+            trace: &encode_trace(&step)?,
+            artifact: None,
+            agent_unused: reserved - Duration::from_millis(elapsed_ms),
+        })
     }
 }
 
@@ -197,14 +232,230 @@ fn wait_at(runtime: &mut Runtime, id: Uuid, node: &str) -> Result<RunSummary> {
 }
 
 #[test]
+fn occupied_worker_keeps_the_next_agent_pending_without_claiming_budget() -> Result<()> {
+    let fixture = Fixture::with_workflow(true, CAPACITY_WORKFLOW)?;
+    let mut runtime = fixture.open()?;
+    let first = fixture.enqueue(&mut runtime)?;
+    let active_socket = fixture.accept_request(&mut runtime)?;
+    let second = fixture.enqueue(&mut runtime)?;
+    runtime.tick()?;
+    assert_eq!(runtime.run(first)?.state, RunState::Running);
+    assert_eq!(runtime.run(second)?.state, RunState::Pending);
+    let attempts: i64 = fixture.db()?.query_row(
+        "SELECT count(*) FROM workflow_attempts WHERE run_id=?1",
+        [second.to_string()],
+        |row| row.get(0),
+    )?;
+    assert_eq!(attempts, 0);
+    assert_eq!(fixture.usage(second)?, (0, 0));
+    fixture.assert_no_call();
+
+    drop(active_socket);
+    fixture.reply(&mut runtime)?;
+    assert_eq!(
+        wait_until(&mut runtime, second, |run| run.state == RunState::Succeeded)?.step_count,
+        1
+    );
+    assert_eq!(runtime.run(first)?.state, RunState::OutcomeUnknown);
+    assert_eq!(fixture.usage(second)?.0, 1);
+    fixture.assert_no_call();
+    Ok(())
+}
+
+#[test]
+fn two_worker_slots_bound_claims_and_isolate_cancellation() -> Result<()> {
+    let fixture = Fixture::with_workflow(true, CAPACITY_WORKFLOW)?;
+    let mut runtime = fixture.open_with_slots(2)?;
+    let first = fixture.enqueue(&mut runtime)?;
+    let first_socket = fixture.accept_request(&mut runtime)?;
+    let second = fixture.enqueue(&mut runtime)?;
+    let second_socket = fixture.accept_request(&mut runtime)?;
+    assert_eq!(runtime.run(first)?.state, RunState::Running);
+    assert_eq!(runtime.run(second)?.state, RunState::Running);
+    let third = fixture.enqueue(&mut runtime)?;
+    runtime.tick()?;
+    assert_eq!(runtime.run(third)?.state, RunState::Pending);
+    assert_eq!(fixture.usage(third)?, (0, 0));
+    let attempts: i64 = fixture.db()?.query_row(
+        "SELECT count(*) FROM workflow_attempts WHERE run_id=?1",
+        [third.to_string()],
+        |row| row.get(0),
+    )?;
+    assert_eq!(attempts, 0);
+    fixture.assert_no_call();
+
+    assert!(matches!(
+        runtime.handle(WorkflowRequest::Cancel { run_id: first }),
+        Response::Workflow(WorkflowResponse::Run(run)) if run.state == RunState::Cancelling
+    ));
+    assert_eq!(
+        wait_until(&mut runtime, first, |run| run.state
+            == RunState::OutcomeUnknown)?
+        .step_count,
+        0
+    );
+    drop(first_socket);
+
+    fixture.reply(&mut runtime)?;
+    assert_eq!(
+        wait_until(&mut runtime, third, |run| run.state == RunState::Succeeded)?.step_count,
+        1
+    );
+    assert_eq!(runtime.run(second)?.state, RunState::Running);
+    Fixture::send_reply(second_socket)?;
+    assert_eq!(
+        wait_until(&mut runtime, second, |run| run.state == RunState::Succeeded)?.step_count,
+        1
+    );
+    assert_eq!(fixture.usage(second)?.0, 1);
+    assert_eq!(fixture.usage(third)?.0, 1);
+    fixture.assert_no_call();
+    Ok(())
+}
+
+#[test]
+fn restart_fences_both_started_workers_and_preserves_pending_work() -> Result<()> {
+    let fixture = Fixture::with_workflow(true, CAPACITY_WORKFLOW)?;
+    let mut runtime = fixture.open_with_slots(2)?;
+    let first = fixture.enqueue(&mut runtime)?;
+    let first_socket = fixture.accept_request(&mut runtime)?;
+    let second = fixture.enqueue(&mut runtime)?;
+    let second_socket = fixture.accept_request(&mut runtime)?;
+    let third = fixture.enqueue(&mut runtime)?;
+    drop(runtime);
+    for mut socket in [first_socket, second_socket] {
+        let mut byte = [0];
+        assert_eq!(socket.read(&mut byte)?, 0);
+    }
+
+    let mut recovered = fixture.open_with_slots(2)?;
+    for id in [first, second] {
+        let run = recovered.run(id)?;
+        assert_eq!(run.state, RunState::OutcomeUnknown);
+        assert_eq!(run.step_count, 0);
+        assert_eq!(fixture.usage(id)?.0, 1);
+    }
+    assert_eq!(recovered.run(third)?.state, RunState::Pending);
+    fixture.reply(&mut recovered)?;
+    assert_eq!(
+        wait_until(&mut recovered, third, |run| run.state
+            == RunState::Succeeded)?
+        .step_count,
+        1
+    );
+    fixture.assert_no_call();
+    Ok(())
+}
+
+#[test]
+fn agent_disconnect_after_receiving_request_is_uncertain_and_not_replayed() -> Result<()> {
+    assert_uncertain_agent_reply(&Fixture::new(true)?, None, true)
+}
+
+#[test]
+fn malformed_agent_reply_keeps_provider_identity_without_payload() -> Result<()> {
+    assert_uncertain_agent_reply(
+        &Fixture::new(true)?,
+        Some(br#"{"schema":"mcbtodo.agent/v1","outputs":{"note":["private provider data"]}}"#),
+        true,
+    )
+}
+
+#[test]
+fn agent_reply_with_undeclared_output_is_uncertain_and_not_replayed() -> Result<()> {
+    assert_uncertain_agent_reply(
+        &Fixture::new(true)?,
+        Some(br#"{"schema":"mcbtodo.agent/v1","outputs":{"unexpected":"value"}}"#),
+        false,
+    )
+}
+
+#[test]
+fn agent_output_budget_accepts_exact_bytes_and_fences_overflow() -> Result<()> {
+    let workflow = CHAIN.replace(
+        "first: {kind: agent, capability: summarize, outputs: {}}",
+        "first: {kind: agent, capability: summarize, outputs: {title: string}}",
+    );
+    let fixture = Fixture::with_workflow(true, &workflow)?;
+    let policy_path = fixture.paths.agent_policy_path();
+    let policy = fs::read_to_string(&policy_path)?;
+    let output = r#"{"title":"任务"}"#;
+    let response = format!(r#"{{"schema":"mcbtodo.agent/v1","outputs":{output}}}"#);
+    let output_bytes = output.len();
+    fs::write(
+        &policy_path,
+        format!("max_output_bytes = {}\n{policy}", output_bytes - 1),
+    )?;
+    assert_uncertain_agent_reply(&fixture, Some(response.as_bytes()), true)?;
+
+    fs::write(
+        policy_path,
+        format!("max_output_bytes = {output_bytes}\n{policy}"),
+    )?;
+    let mut runtime = fixture.open()?;
+    let id = fixture.enqueue(&mut runtime)?;
+    {
+        let mut socket = fixture.accept_request(&mut runtime)?;
+        socket.write_all(&u32::try_from(response.len())?.to_be_bytes())?;
+        socket.write_all(response.as_bytes())?;
+    }
+    fixture.reply(&mut runtime)?;
+    let run = wait_until(&mut runtime, id, |run| run.state == RunState::Waiting)?;
+    assert_eq!(run.current_node.as_deref(), Some("review"));
+    assert_eq!(run.step_count, 2);
+    Ok(())
+}
+
+fn assert_uncertain_agent_reply(
+    fixture: &Fixture,
+    response: Option<&[u8]>,
+    expect_provider_detail: bool,
+) -> Result<()> {
+    let mut runtime = fixture.open()?;
+    let id = fixture.enqueue(&mut runtime)?;
+    wait_at(&mut runtime, id, "first")?;
+    {
+        let mut socket = fixture.accept_request(&mut runtime)?;
+        if let Some(response) = response {
+            socket.write_all(&u32::try_from(response.len())?.to_be_bytes())?;
+            socket.write_all(response)?;
+        }
+    }
+
+    let terminal = wait_until(&mut runtime, id, |run| {
+        matches!(run.state, RunState::Failed | RunState::OutcomeUnknown) || run.step_count != 0
+    })?;
+    assert_eq!(terminal.state, RunState::OutcomeUnknown);
+    if expect_provider_detail {
+        assert_eq!(
+            terminal.detail.as_deref(),
+            Some("Agent provider mcbtodo-local-agent did not yield a trustworthy result")
+        );
+    }
+    assert_eq!(terminal.step_count, 0);
+    assert!(runtime.store.history(id)?.is_empty());
+    assert_eq!(fixture.usage(id)?, (1, WALL_MS));
+    drop(runtime);
+
+    let mut runtime = fixture.open()?;
+    runtime.tick()?;
+    let reopened = runtime.run(id)?;
+    assert_eq!(reopened.state, RunState::OutcomeUnknown);
+    assert_eq!(reopened.detail, terminal.detail);
+    assert_eq!(fixture.usage(id)?, (1, WALL_MS));
+    fixture.assert_no_call();
+    Ok(())
+}
+
+#[test]
 fn agent_budget_call_cap_is_shared_across_nodes_and_survives_restart() -> Result<()> {
     let fixture = Fixture::new(true)?;
     let mut runtime = fixture.open()?;
     let id = fixture.enqueue(&mut runtime)?;
     wait_at(&mut runtime, id, "first")?;
-    fixture.reply()?;
+    fixture.reply(&mut runtime)?;
     wait_at(&mut runtime, id, "second")?;
-    fixture.reply()?;
+    fixture.reply(&mut runtime)?;
     assert_eq!(
         wait_at(&mut runtime, id, "review")?.state,
         RunState::Waiting
@@ -215,19 +466,21 @@ fn agent_budget_call_cap_is_shared_across_nodes_and_survives_restart() -> Result
     drop(runtime);
 
     let mut runtime = fixture.open()?;
+    let review = runtime.run(id)?.approval_review();
     let response = runtime.handle(WorkflowRequest::Decide {
         run_id: id,
         node: "review".into(),
         approved: true,
+        review,
     });
     assert!(matches!(
         response,
         Response::Workflow(WorkflowResponse::Run(_))
     ));
     wait_at(&mut runtime, id, "third")?;
-    fixture.reply()?;
+    fixture.reply(&mut runtime)?;
     wait_at(&mut runtime, id, "fourth")?;
-    fixture.reply()?;
+    fixture.reply(&mut runtime)?;
     let failed = wait_until(&mut runtime, id, |run| run.state == RunState::Failed)?;
     assert!(
         failed
@@ -235,7 +488,7 @@ fn agent_budget_call_cap_is_shared_across_nodes_and_survives_restart() -> Result
             .unwrap()
             .contains("Agent call budget exhausted")
     );
-    let history = runtime.history(id)?;
+    let history = runtime.store.history(id)?;
     assert_eq!(
         history
             .iter()
@@ -249,9 +502,9 @@ fn agent_budget_call_cap_is_shared_across_nodes_and_survives_restart() -> Result
 
     let another = fixture.enqueue(&mut runtime)?;
     wait_at(&mut runtime, another, "first")?;
-    fixture.reply()?;
+    fixture.reply(&mut runtime)?;
     wait_at(&mut runtime, another, "second")?;
-    fixture.reply()?;
+    fixture.reply(&mut runtime)?;
     assert_eq!(
         wait_at(&mut runtime, another, "review")?.state,
         RunState::Waiting
@@ -267,13 +520,13 @@ fn agent_budget_deadline_cancels_worker_without_replaying_uncertain_call() -> Re
     let id = fixture.enqueue(&mut runtime)?;
     // Inject time already spent on the first node to exercise a short residual
     // deadline without a long test sleep.
-    fixture.record_first_call(&mut runtime, id, WALL_MS - 500)?;
-    assert_eq!(fixture.usage(id)?, (1, WALL_MS - 500));
+    fixture.record_first_call(&mut runtime, id, WALL_MS - 3_000)?;
+    assert_eq!(fixture.usage(id)?, (1, WALL_MS - 3_000));
     drop(runtime);
 
     let mut runtime = fixture.open()?;
     wait_at(&mut runtime, id, "second")?;
-    let mut socket = fixture.accept_request()?;
+    let mut socket = fixture.accept_request(&mut runtime)?;
     assert_eq!(
         socket.read(&mut [0])?,
         0,
@@ -282,11 +535,10 @@ fn agent_budget_deadline_cancels_worker_without_replaying_uncertain_call() -> Re
     let unknown = wait_until(&mut runtime, id, |run| {
         run.state == RunState::OutcomeUnknown
     })?;
+    let detail = unknown.detail.unwrap();
     assert!(
-        unknown
-            .detail
-            .unwrap()
-            .contains("Worker exceeded its Agent execution budget")
+        detail.contains("Worker exceeded its Agent execution budget"),
+        "unexpected uncertain-outcome detail: {detail}"
     );
     assert_eq!(fixture.usage(id)?, (2, WALL_MS));
     fixture.assert_no_call();
@@ -300,10 +552,10 @@ fn agent_budget_interrupted_claim_is_never_refunded_or_replayed() -> Result<()> 
     let id = fixture.enqueue(&mut runtime)?;
     fixture.record_first_call(&mut runtime, id, 25)?;
     let run = runtime.run(id)?;
-    assert_eq!(
-        runtime.store.claim_agent(&run, "second", || Ok(false))?,
-        Duration::from_millis(WALL_MS - 25),
-    );
+    let claim = runtime
+        .store
+        .claim_agent(worker_claim(&run, "second")?, true)?;
+    assert_eq!(claim.execution_window, Duration::from_millis(WALL_MS - 25));
     assert_eq!(runtime.run(id)?.state, RunState::Running);
     drop(runtime);
 
@@ -311,6 +563,58 @@ fn agent_budget_interrupted_claim_is_never_refunded_or_replayed() -> Result<()> 
     runtime.tick()?;
     assert_eq!(runtime.run(id)?.state, RunState::OutcomeUnknown);
     assert_eq!(fixture.usage(id)?, (2, WALL_MS));
+    fixture.assert_no_call();
+    Ok(())
+}
+
+#[test]
+fn agent_attempt_claim_failure_rolls_back_the_budget_and_run_state() -> Result<()> {
+    let fixture = Fixture::new(true)?;
+    let mut runtime = fixture.open()?;
+    let id = fixture.enqueue(&mut runtime)?;
+    fixture.db()?.execute_batch(
+        "CREATE TRIGGER reject_agent_claim BEFORE INSERT ON workflow_attempts
+         BEGIN SELECT RAISE(ABORT, 'test attempt insert failure'); END;",
+    )?;
+
+    let error = runtime.tick().unwrap_err();
+    assert!(format!("{error:#}").contains("test attempt insert failure"));
+    assert!(runtime.workers.is_empty());
+    assert_eq!(fixture.usage(id)?, (0, 0));
+    assert_eq!(runtime.run(id)?.state, RunState::Pending);
+    fixture.assert_no_call();
+    drop(runtime);
+
+    fixture
+        .db()?
+        .execute_batch("DROP TRIGGER reject_agent_claim")?;
+    let mut runtime = fixture.open()?;
+    assert_eq!(runtime.run(id)?.state, RunState::Pending);
+    wait_at(&mut runtime, id, "first")?;
+    fixture.reply(&mut runtime)?;
+    assert_eq!(fixture.usage(id)?.0, 1);
+    Ok(())
+}
+
+#[test]
+fn agent_budget_rejects_a_stale_claim_without_charging_or_dispatching() -> Result<()> {
+    let fixture = Fixture::new(true)?;
+    let mut runtime = fixture.open()?;
+    let id = fixture.enqueue(&mut runtime)?;
+    let before = runtime.run(id)?;
+    fixture.record_first_call(&mut runtime, id, 25)?;
+
+    let store: &dyn WorkflowRunStore = runtime.store.as_ref();
+    let result = store.claim_agent(worker_claim(&before, "first")?, false);
+    let Err(error) = result else {
+        bail!("stale claim acquired Agent execution rights");
+    };
+    assert!(error.to_string().contains("step count mismatch"));
+    assert_eq!(fixture.usage(id)?, (1, 25));
+    let after = runtime.run(id)?;
+    assert_eq!(after.state, RunState::Pending);
+    assert_eq!(after.step_count, 1);
+    assert!(runtime.workers.is_empty());
     fixture.assert_no_call();
     Ok(())
 }
@@ -324,8 +628,11 @@ fn agent_budget_authorization_denial_is_an_attempt_without_adapter_contact() -> 
     let (attempts, elapsed) = fixture.usage(id)?;
     assert_eq!(attempts, 1);
     assert!(elapsed < WALL_MS);
-    let step = runtime.store.step(id, 0)?.context("missing denial trace")?;
-    assert_eq!(step["trace"]["status"], "failed");
+    let step = runtime
+        .store
+        .recorded_step(id, 0)?
+        .context("missing denial trace")?;
+    assert_eq!(step.trace.status, NodeStatus::Failed);
     fixture.assert_no_call();
     Ok(())
 }

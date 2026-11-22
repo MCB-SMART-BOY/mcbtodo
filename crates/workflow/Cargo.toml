@@ -6,7 +6,6 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
-license-file.workspace = true
 description = "Workflow compilation, traversal, and scheduling primitives for mcbtodo."
 documentation = "https://docs.rs/mcbtodo-workflow"
 
@@ -16,6 +15,7 @@ workspace = true
 [dependencies]
 chrono.workspace = true
 chrono-tz.workspace = true
+hex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde-saphyr.workspace = true

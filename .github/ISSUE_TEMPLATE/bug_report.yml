@@ -1,0 +1,53 @@
+name: Bug report
+description: Report a reproducible problem with mcbtodo.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include credentials, private Vault data, or security vulnerability details.
+        Security reports must use GitHub's private vulnerability reporting, not a public issue.
+        If the private reporting option is unavailable, do not disclose vulnerability details publicly.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Problem
+      description: What happened, and what did you expect to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+      description: Include the smallest sequence of commands or interactions that reproduces the problem.
+      placeholder: |
+        1. Run ...
+        2. Select ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Provide the version or commit being tested.
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: Include operating system and architecture.
+      placeholder: Linux x86_64
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output
+      description: Remove secrets and private user data before posting.
+      render: text
+    validations:
+      required: false

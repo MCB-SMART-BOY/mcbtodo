@@ -2,7 +2,8 @@
 
 use anyhow::Result;
 use mcbtodo_domain::WorkUnitCompleted;
-use mcbtodo_protocol::workflow::ScheduleSummary;
+use mcbtodo_ports::workflow::CompletionDeliveryStore;
+use mcbtodo_workflow::schedule::ScheduleSummary;
 use rusqlite::{Connection, params};
 use uuid::Uuid;
 
@@ -46,8 +47,8 @@ pub(super) fn register(
     Ok(())
 }
 
-impl RunStore {
-    pub fn next_completion_cursor(&self) -> Result<Option<i64>> {
+impl CompletionDeliveryStore for RunStore {
+    fn next_completion_cursor(&self) -> Result<Option<i64>> {
         Ok(self.0.query_row(
             "SELECT min(cursor) FROM workflow_completion_rules",
             [],
@@ -58,7 +59,7 @@ impl RunStore {
     /// The page starts after the smallest active cursor at read time. This
     /// transaction rechecks the live rules because registration or disable
     /// may have run while the Vault reader was off-thread.
-    pub fn deliver_completion_page(&self, page: &[(i64, WorkUnitCompleted)]) -> Result<()> {
+    fn deliver_completion_page(&self, page: &[(i64, WorkUnitCompleted)]) -> Result<()> {
         let Some((last, _)) = page.last() else {
             return Ok(());
         };

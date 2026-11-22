@@ -45,8 +45,9 @@ fn rendered_text(
     state: &State,
     vault: &Vault,
 ) -> String {
+    let model = screen_model::ScreenModel::project(state, vault);
     terminal
-        .draw(|frame| render::draw(frame, state, vault))
+        .draw(|frame| render::draw(frame, &model, theme::Theme::default()))
         .unwrap()
         .buffer
         .content()
@@ -129,6 +130,39 @@ fn removes_deleted_calendar_markdown_from_projection() {
     fs::remove_file(path).unwrap();
     await_refresh(&mut watch, root, &mut state, &mut vault);
     assert!(vault.calendar().is_empty());
+}
+
+#[test]
+fn external_recurring_event_edits_refresh_the_calendar_snapshot() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    fs::create_dir(root.join("calendar")).unwrap();
+    let path = root.join("calendar/review.md");
+    let event = "\
+---
+schema: mcbtodo.calendar-event/v1
+id: 00000000-0000-4000-8000-000000000001
+when: {kind: date_span, start: '2026-11-20', through: '2026-11-20'}
+recurrence:
+  start: '2026-11-20'
+  frequency: weekly
+  dst: {gap: skip, fold: earlier}
+---
+
+# Weekly review
+";
+    fs::write(&path, event).unwrap();
+    let (mut watch, mut state, mut vault) = session(root);
+    state.switch(View::Day, &vault);
+
+    fs::write(&path, event.replace("Weekly review", "Revised review")).unwrap();
+    await_refresh(&mut watch, root, &mut state, &mut vault);
+
+    assert_eq!(
+        calendar::day(&vault, state.day).unwrap()[0].title,
+        "Revised review"
+    );
+    assert_eq!(state.source(&vault), Some(path.as_path()));
 }
 
 #[test]

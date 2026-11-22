@@ -12,7 +12,7 @@ pub(super) fn window_start(date: NaiveDate) -> NaiveDate {
     super::calendar::monday_of(date)
 }
 
-pub(super) fn entries(vault: &Vault, date: NaiveDate) -> Vec<CalendarItem> {
+pub(super) fn entries(vault: &Vault, date: NaiveDate) -> anyhow::Result<Vec<CalendarItem>> {
     let start = window_start(date);
     let through = start
         .checked_add_days(Days::new(WINDOW_DAYS - 1))
@@ -21,11 +21,10 @@ pub(super) fn entries(vault: &Vault, date: NaiveDate) -> Vec<CalendarItem> {
         vault,
         DateSpan::new(start, through).expect("ordered timeline window"),
     )
-    .expect("timeline window is bounded")
 }
 
-pub(super) fn cell(entry: &CalendarItem, date: NaiveDate, vault: &Vault) -> &'static str {
-    if !entry.on_day(date, vault.timezone()) {
+pub(super) fn cell(entry: &CalendarItem, date: NaiveDate, timezone: chrono_tz::Tz) -> &'static str {
+    if !entry.on_day(date, timezone) {
         return "  ";
     }
     match (entry.kind, entry.occurrence) {
@@ -33,7 +32,7 @@ pub(super) fn cell(entry: &CalendarItem, date: NaiveDate, vault: &Vault) -> &'st
         (CalendarKind::ActivePeriod, _) => "..",
         (CalendarKind::TaskOccurrence, _) => "TT",
         (_, Occurrence::Span(Span::DateTimeSpan(span))) => {
-            if span.start().with_timezone(&vault.timezone()).date_naive() == date {
+            if span.start().with_timezone(&timezone).date_naive() == date {
                 ">>"
             } else {
                 "=="

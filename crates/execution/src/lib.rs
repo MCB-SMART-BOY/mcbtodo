@@ -3,6 +3,16 @@
 #[cfg(target_os = "linux")]
 pub mod agent;
 #[cfg(target_os = "linux")]
+pub mod codex_config;
+#[cfg(target_os = "linux")]
+pub mod codex_host;
+#[cfg(target_os = "linux")]
+mod model_relay;
+#[cfg(target_os = "linux")]
+pub mod notification;
+#[cfg(target_os = "linux")]
 pub mod sandbox;
+#[cfg(target_os = "linux")]
+mod unix_agent;
 #[cfg(target_os = "linux")]
 pub mod workflow_script;

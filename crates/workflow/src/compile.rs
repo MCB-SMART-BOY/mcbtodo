@@ -104,7 +104,7 @@ pub fn compile(
             let bytes = sources
                 .get(path)
                 .ok_or_else(|| invalid(format!("missing script source `{path}`")))?;
-            Ok((path.to_owned(), format!("{:x}", Sha256::digest(bytes))))
+            Ok((path.to_owned(), hex::encode(Sha256::digest(bytes))))
         })
         .collect::<Result<BTreeMap<_, _>, WorkflowError>>()?;
     let revision_hash = revision_hash(definition_data.clone(), &script_hashes)?;
@@ -517,7 +517,7 @@ fn revision_hash(
         }
     }
     let canonical = serde_json::to_vec(&(definition, scripts))?;
-    Ok(format!("{:x}", Sha256::digest(canonical)))
+    Ok(hex::encode(Sha256::digest(canonical)))
 }
 
 fn identifier(value: &str) -> bool {

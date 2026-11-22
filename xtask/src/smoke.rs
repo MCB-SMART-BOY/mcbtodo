@@ -1,7 +1,11 @@
 use std::{
     fs,
-    io::{ErrorKind, Read, Write},
-    os::unix::{fs::PermissionsExt, net::UnixListener},
+    io::{ErrorKind, Read, Write, stdin, stdout},
+    num::NonZeroU16,
+    os::unix::{
+        fs::PermissionsExt,
+        net::{UnixListener, UnixStream},
+    },
     path::{Path, PathBuf},
     process::{Child, Command, Output, Stdio},
     thread,
@@ -11,10 +15,12 @@ use std::{
 use anyhow::{Context, Result, bail, ensure};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chrono::{TimeDelta, Utc};
-use mcbtodo_platform::WorkspacePaths;
+use mcbtodo_platform::{HomeViewPolicy, TuiTheme, WorkspacePaths};
+use mcbtodo_protocol::worker::{self, DaemonMessage, WorkerMessage};
 use rustix::{
     fs::{OFlags, fcntl_setfl},
     io::Errno,
+    process::{Pid, Signal, kill_process},
     pty::{OpenptFlags, ioctl_tiocgptpeer, openpt, unlockpt},
     termios::{Winsize, tcsetwinsize},
 };
@@ -70,8 +76,42 @@ pub(crate) fn run(root: &Path, bin_dir: &Path, sandbox: bool) -> Result<()> {
     let home = temp.path().join("home");
     fs::create_dir(&home)?;
     let smoke = Smoke { bin_dir, home };
-    smoke.cli(&["init"])?;
+    let empty_path = temp.path().join("empty-path");
+    fs::create_dir(&empty_path)?;
+    let mut first_run = smoke.command("mcbtodo");
+    first_run.env("PATH", &empty_path);
+    Smoke::drive_terminal(first_run, TERMINAL_SIZE, &[("Month", "q")])?;
     verify_first_run(&smoke)?;
+    let settings_home = temp.path().join("settings-home");
+    fs::create_dir(&settings_home)?;
+    Smoke {
+        bin_dir,
+        home: settings_home,
+    }
+    .edit_settings_in_tui()?;
+    let mut compact_tui = smoke.command("mcbtodo");
+    compact_tui
+        .env("PATH", empty_path)
+        .env("NO_COLOR", "1")
+        .args(["tui", "--date", "2026-11-20"]);
+    Smoke::drive_terminal(
+        compact_tui,
+        TerminalSize {
+            rows: NonZeroU16::new(6).unwrap(),
+            columns: NonZeroU16::new(28).unwrap(),
+        },
+        &[
+            ("Fri 20", "?"),
+            ("Search Projects", "\x1b[F"),
+            ("q   Quit", "\x1b[H"),
+            ("Search Projects", "\x1b"),
+            ("Fri 20", " "),
+            ("c create", "\x1b[F"),
+            ("? help", "\x1b[H"),
+            ("c create", "\x1b"),
+            ("Fri 20", "q"),
+        ],
+    )?;
     exercise_packaged_worker_rejects_malformed_prepare(bin_dir)?;
     let paths = smoke.paths();
     let vault = paths.vault_root();
@@ -80,6 +120,7 @@ pub(crate) fn run(root: &Path, bin_dir: &Path, sandbox: bool) -> Result<()> {
     fs::remove_dir_all(rust_os.join("units"))?;
     smoke.cli(&["validate"])?;
     exercise_packaged_supervisor_rejects_malformed_worker(temp.path(), bin_dir, root)?;
+    exercise_packaged_supervisor_rejects_malformed_result(temp.path(), bin_dir, root)?;
     let (applied_proposal, mcp_workflow_revision) = exercise_planning(&smoke, &rust_os)?;
 
     let graph = temp.path().join("graph.yaml");
@@ -155,8 +196,8 @@ pub(crate) fn run(root: &Path, bin_dir: &Path, sandbox: bool) -> Result<()> {
     smoke.await_run(id, "waiting")?;
     daemon.stop()?;
     daemon = smoke.start_daemon()?;
-    smoke.await_run(id, "waiting")?;
-    smoke.cli(&["workflow", "approve", id, "review"])?;
+    let waiting = smoke.await_run(id, "waiting")?;
+    smoke.approve_workflow(id, "review", &waiting)?;
     smoke.await_run(id, "succeeded")?;
     let step = smoke.json(&["workflow", "trace", id, "2"])?;
     ensure!(
@@ -173,6 +214,7 @@ pub(crate) fn run(root: &Path, bin_dir: &Path, sandbox: bool) -> Result<()> {
     let failed_check = if sandbox {
         let failed_check = exercise_sandbox(root, temp.path(), &smoke)?;
         exercise_interrupted_worker(temp.path(), &smoke, &mut daemon)?;
+        exercise_packaged_worker_crash_after_effect(temp.path(), &smoke, &mut daemon)?;
         Some(failed_check)
     } else {
         exercise_cron(&smoke, revision)?;
@@ -200,20 +242,38 @@ pub(crate) fn run(root: &Path, bin_dir: &Path, sandbox: bool) -> Result<()> {
     );
     restored.cli(&["proposal", "apply", &applied_proposal])?;
     let mut restored_daemon = restored.start_daemon()?;
+    let restored_report = restored.json(&["timer", "report", "--date", report_day, "--json"])?;
+    ensure!(
+        restored_report == report,
+        "backup changed the focus report: expected {report}, got {restored_report}"
+    );
     restored.await_run(id, "succeeded")?;
     restored.await_run(&downstream, "succeeded")?;
     ensure!(
         restored.await_run(&completion, "succeeded")?["source_event_id"] == source_event,
         "backup did not preserve the completion trigger's source event"
     );
-    let notifications = restored.json(&["notifications"])?;
-    ensure!(
-        notifications["notifications"]
-            .as_array()
-            .is_some_and(|entries| entries
+    let mut before: Option<String> = None;
+    let mut found_notification = false;
+    loop {
+        let page = if let Some(cursor) = &before {
+            restored.json(&["notifications", "--before", cursor])?
+        } else {
+            restored.json(&["notifications"])?
+        };
+        found_notification |= page["notifications"].as_array().is_some_and(|entries| {
+            entries
                 .iter()
-                .any(|entry| { entry["run_id"] == id && entry["state"] == "succeeded" })),
-        "backup did not preserve the terminal workflow notification"
+                .any(|entry| entry["run_id"] == id && entry["state"] == "succeeded")
+        });
+        let Some(cursor) = page["next_before"].as_str() else {
+            break;
+        };
+        before = Some(cursor.to_owned());
+    }
+    ensure!(
+        found_notification,
+        "backup did not preserve the terminal workflow notification for run {id}"
     );
     ensure!(
         restored.cli(&["workflow", "artifact", id, "2"])? == "# Approved",
@@ -589,8 +649,8 @@ literals:
 
     let source = smoke.json(&["workflow", "run", upstream])?;
     let source_id = source["id"].as_str().context("upstream run has no ID")?;
-    smoke.await_run(source_id, "waiting")?;
-    smoke.cli(&["workflow", "approve", source_id, "review"])?;
+    let waiting = smoke.await_run(source_id, "waiting")?;
+    smoke.approve_workflow(source_id, "review", &waiting)?;
     smoke.await_run(source_id, "succeeded")?;
 
     let find_child = || -> Result<String> {
@@ -902,7 +962,9 @@ fn exercise_packaged_supervisor_rejects_malformed_worker(
     let worker = fault_bin.join("mcbtodo-worker");
     fs::write(
         &worker,
-        b"#!/bin/sh\nprintf '%s' \"$$\" > \"$HOME/worker.pid\"\nprintf '\\000\\000\\000\\001x'\nsleep 30\n",
+        b"#!/bin/sh\nprintf '%s\\n' \"$$\" > \"$HOME/worker.pid\"\n\
+          until [ -e \"$HOME/send-readiness\" ]; do sleep 0.05; done\n\
+          printf '\\000\\000\\000\\001x'\nsleep 30\n",
     )?;
     fs::set_permissions(&worker, fs::Permissions::from_mode(0o700))?;
 
@@ -935,6 +997,18 @@ nodes:
     let id = queued["id"]
         .as_str()
         .context("malformed Worker run has no ID")?;
+    let pid = wait_for_worker_pid(&pid_file)?;
+    // Hold Ready until the CLI completes a timer round trip. A synchronous
+    // handshake cannot process those IPC messages before its startup deadline.
+    smoke.cli(&["timer", "start"])?;
+    smoke.cli(&["timer", "pause"])?;
+    let paused = smoke.json(&["timer", "status", "--json"])?;
+    ensure!(
+        paused["state"] == "paused"
+            && smoke.json(&["workflow", "inspect", id])?["state"] == "running",
+        "Daemon did not service timer IPC while awaiting Worker Ready"
+    );
+    fs::write(smoke.home.join("send-readiness"), b"")?;
     let failed = smoke.await_run(id, "failed")?;
     ensure!(
         failed["step_count"] == 0
@@ -943,17 +1017,146 @@ nodes:
                 .is_some_and(|detail| detail.contains("Worker failed readiness handshake")),
         "packaged Daemon accepted a malformed Worker readiness frame: {failed}"
     );
-    ensure!(
-        pid_file.exists(),
-        "malformed Worker did not start its persistent process"
-    );
-    let pid: u32 = fs::read_to_string(&pid_file)?.parse()?;
     let proc_entry = Path::new("/proc").join(pid.to_string());
     ensure!(
         !proc_entry.exists(),
         "packaged Daemon did not terminate and reap malformed Worker {pid}"
     );
     daemon.stop()?;
+    Ok(())
+}
+
+fn wait_for_worker_pid(pid_file: &Path) -> Result<u32> {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        match fs::read_to_string(pid_file) {
+            Ok(contents) if contents.ends_with('\n') => {
+                return contents.trim().parse().context("parsing Worker pid");
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => return Err(error).context("reading Worker pid"),
+        }
+        ensure!(Instant::now() < deadline, "Worker did not write its pid");
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn exercise_packaged_supervisor_rejects_malformed_result(
+    temp: &Path,
+    bin_dir: &Path,
+    root: &Path,
+) -> Result<()> {
+    let fixture_dir = temp.join("malformed-result-fixture");
+    let home = fixture_dir.join("home");
+    let fault_bin = fixture_dir.join("bin");
+    fs::create_dir_all(&home)?;
+    fs::create_dir(&fault_bin)?;
+    for binary in ["mcbtodo", "mcbtodo-daemon"] {
+        let source = bin_dir.join(binary);
+        let target = fault_bin.join(binary);
+        fs::copy(&source, &target).with_context(|| format!("copying {}", source.display()))?;
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o755))?;
+    }
+
+    let pid_file = home.join("worker.pid");
+    let xtask = std::env::current_exe().context("locating xtask worker fixture")?;
+    let worker = fault_bin.join("mcbtodo-worker");
+    fs::write(
+        &worker,
+        format!(
+            "#!/bin/sh\nprintf '%s' \"$$\" > \"$HOME/worker.pid\"\nexec {} worker-fixture\n",
+            shell_quote(&xtask)
+        ),
+    )?;
+    fs::set_permissions(&worker, fs::Permissions::from_mode(0o700))?;
+
+    let smoke = Smoke {
+        bin_dir: &fault_bin,
+        home,
+    };
+    smoke.cli(&["init"])?;
+    copy_fixture(&root.join("examples/vault"), &smoke.paths().vault_root())?;
+
+    let graph_dir = fixture_dir.join("graph");
+    fs::create_dir(&graph_dir)?;
+    fs::write(graph_dir.join("noop.sh"), b"exit 0\n")?;
+    let graph = graph_dir.join("workflow.yaml");
+    fs::write(
+        &graph,
+        r#"schema: mcbtodo.workflow/v1
+id: malformed-worker-result
+name: Malformed Worker result
+entry: run
+nodes:
+  run: {kind: script, runner: bash, source: noop.sh, timeout_seconds: 5, capabilities: [], outputs: {}}
+"#,
+    )?;
+    let revision = smoke.cli(&["workflow", "publish", path_arg(&graph)?])?;
+    let revision = revision.trim();
+    let mut daemon = smoke.start_daemon()?;
+    smoke.cli(&["workflow", "authorize-script", revision, "run"])?;
+    let queued = smoke.json(&["workflow", "run", revision])?;
+    let id = queued["id"]
+        .as_str()
+        .context("malformed Result run has no ID")?;
+    let uncertain = smoke.await_run(id, "outcome_unknown")?;
+    ensure!(
+        uncertain["step_count"] == 0
+            && uncertain["detail"]
+                .as_str()
+                .is_some_and(|detail| detail.contains("Worker protocol failed")),
+        "packaged Daemon accepted a malformed post-start Worker Result: {uncertain}"
+    );
+    let trace = smoke
+        .command("mcbtodo")
+        .args(["workflow", "trace", id, "0"])
+        .output()
+        .context("querying the step after malformed Worker Result")?;
+    ensure!(
+        !trace.status.success()
+            && String::from_utf8_lossy(&trace.stderr).contains("No recorded step at index 0"),
+        "malformed Worker Result produced or exposed a step trace: {}",
+        String::from_utf8_lossy(&trace.stderr)
+    );
+    ensure!(pid_file.exists(), "malformed Result Worker did not start");
+    let pid: u32 = fs::read_to_string(&pid_file)?.parse()?;
+    ensure!(
+        !Path::new("/proc").join(pid.to_string()).exists(),
+        "packaged Daemon did not terminate and reap malformed Result Worker {pid}"
+    );
+    daemon.stop()?;
+    Ok(())
+}
+
+fn shell_quote(path: &Path) -> String {
+    format!("'{}'", path.display().to_string().replace('\'', "'\\''"))
+}
+
+pub(crate) fn worker_fixture_malformed_result() -> Result<()> {
+    let mut input = stdin().lock();
+    let DaemonMessage::Prepare { identity, .. } = worker::read(&mut input)? else {
+        bail!("fixture expected a Prepare message");
+    };
+    worker::write(
+        &mut stdout().lock(),
+        &WorkerMessage::Ready {
+            identity: identity.clone(),
+        },
+    )?;
+    let DaemonMessage::Start {
+        identity: started_identity,
+    } = worker::read(&mut input)?
+    else {
+        bail!("fixture expected a Start message");
+    };
+    ensure!(
+        started_identity == identity,
+        "fixture Start identity did not match Prepare"
+    );
+    let mut output = stdout().lock();
+    output.write_all(&[0, 0, 0, 1, b'x'])?;
+    output.flush()?;
     Ok(())
 }
 
@@ -1019,6 +1222,132 @@ nodes:
     ensure!(
         retry == recovered && smoke.await_run(id, "outcome_unknown")? == recovered,
         "resubmitting the interrupted run changed its recovery state: {retry}"
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn exercise_packaged_worker_crash_after_effect(
+    temp: &Path,
+    smoke: &Smoke<'_>,
+    daemon: &mut Daemon,
+) -> Result<()> {
+    const MARKER: &[u8] = br#"{"marker":"worker-crash-after-effect"}"#;
+
+    let graph = temp.join("worker-crash-after-effect.yaml");
+    fs::write(
+        &graph,
+        "\
+schema: mcbtodo.workflow/v1
+id: worker-crash-after-effect
+name: Worker crash after external effect
+entry: test
+nodes:
+  test: {kind: script, runner: bash, source: worker-crash-after-effect.sh, timeout_seconds: 30, capabilities: []}
+",
+    )?;
+    fs::write(
+        temp.join("worker-crash-after-effect.sh"),
+        b"printf '{\"marker\":\"worker-crash-after-effect\"}' > \"$PROD_OUTPUT_JSON\"\nwhile :; do sleep 1; done\n",
+    )?;
+    let revision = smoke.cli(&["workflow", "publish", path_arg(&graph)?])?;
+    let revision = revision.trim();
+    smoke.cli(&["workflow", "authorize-script", revision, "test"])?;
+    let queued = smoke.json(&["workflow", "run", revision])?;
+    let id = queued["id"]
+        .as_str()
+        .context("packaged Worker crash run has no ID")?;
+    smoke.await_run(id, "running")?;
+
+    let state = smoke.paths().state_dir();
+    let find_markers = || -> Result<Vec<PathBuf>> {
+        let mut markers = Vec::new();
+        for entry in fs::read_dir(&state)? {
+            let entry = entry?;
+            if entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("script-sandbox-")
+                && fs::read(entry.path().join("output.json")).is_ok_and(|bytes| bytes == MARKER)
+            {
+                markers.push(entry.path().join("output.json"));
+            }
+        }
+        Ok(markers)
+    };
+    let mut marker_paths = Vec::new();
+    poll("packaged Worker script side effect", || {
+        marker_paths = find_markers()?;
+        ensure!(
+            marker_paths.len() <= 1,
+            "packaged Worker repeated its external marker before fault injection"
+        );
+        Ok(marker_paths.len() == 1)
+    })?;
+
+    let worker_pid = process_tree(daemon.0.id())?
+        .into_iter()
+        .find(|pid| {
+            fs::read_link(Path::new("/proc").join(pid.to_string()).join("exe"))
+                .ok()
+                .and_then(|path| path.file_name().map(|name| name == "mcbtodo-worker"))
+                .unwrap_or(false)
+        })
+        .context("could not identify the packaged Worker in the Daemon process tree")?;
+    let worker_pid_number = worker_pid;
+    let worker_descendants = process_tree(worker_pid_number)?;
+    ensure!(
+        !worker_descendants.is_empty(),
+        "packaged Worker had no observable sandbox process tree after the marker"
+    );
+    let worker_pid =
+        Pid::from_raw(worker_pid_number as i32).context("invalid packaged Worker PID")?;
+    kill_process(worker_pid, Signal::KILL)
+        .context("killing packaged Worker after its side effect")?;
+
+    ensure!(
+        daemon.0.try_wait()?.is_none(),
+        "Daemon exited when only the packaged Worker was killed"
+    );
+    let unknown = smoke.await_run(id, "outcome_unknown")?;
+    ensure!(
+        unknown["step_count"] == 0,
+        "packaged Worker crash committed a step after its external side effect: {unknown}"
+    );
+    ensure!(
+        marker_paths
+            .iter()
+            .all(|path| fs::read(path).is_ok_and(|bytes| bytes == MARKER)),
+        "the external marker disappeared after the Worker crash"
+    );
+
+    poll("packaged Worker process tree to be reaped", || {
+        Ok(!process_is_running(worker_pid_number)
+            && worker_descendants
+                .iter()
+                .all(|pid| !process_is_running(*pid)))
+    })?;
+    daemon.stop()?;
+    *daemon = smoke
+        .start_daemon()
+        .context("restarting daemon after packaged Worker crash")?;
+    let recovered = smoke.await_run(id, "outcome_unknown")?;
+    ensure!(
+        recovered["step_count"] == 0,
+        "restart recovery committed a step for the uncertain Worker attempt: {recovered}"
+    );
+    let retry = smoke.json(&["workflow", "run", revision, "--run-id", id])?;
+    ensure!(
+        retry == recovered && smoke.await_run(id, "outcome_unknown")? == recovered,
+        "resubmitting the uncertain packaged Worker run changed its state: {retry}"
+    );
+    let markers_after_restart = find_markers()?;
+    ensure!(
+        markers_after_restart.len() == 1
+            && markers_after_restart
+                .iter()
+                .all(|path| fs::read(path).is_ok_and(|bytes| bytes == MARKER)),
+        "the packaged Worker side effect was replayed after Daemon restart"
     );
     Ok(())
 }
@@ -1123,7 +1452,8 @@ fn exercise_agent(
     let listener = UnixListener::bind(paths.state_dir().join("agent.sock"))?;
     listener.set_nonblocking(true)?;
     let policy = paths.agent_policy_path();
-    fs::write(&policy, "socket = \"state/agent.sock\"\n")?;
+    let providers = "[providers]\nunix_socket = \"state/agent.sock\"\n";
+    fs::write(&policy, providers)?;
     let run = smoke.json(&["workflow", "run", revision])?;
     let id = run["id"].as_str().context("denied Agent run has no ID")?;
     smoke.await_run(id, "failed")?;
@@ -1138,7 +1468,7 @@ fn exercise_agent(
     fs::write(
         policy,
         format!(
-            "socket = \"state/agent.sock\"\ntimeout_seconds = 5\n\
+            "timeout_seconds = 5\n{providers}\
              [[allow]]\ncapability = \"analyze_test_failure\"\nrevision = \"{revision}\"\n"
         ),
     )?;
@@ -1176,6 +1506,20 @@ fn exercise_agent(
 }
 
 fn mock_agent(listener: &UnixListener, summary: &str, title: &str) -> Result<()> {
+    let (mut stream, request) = receive_agent_request(listener)?;
+    ensure!(
+        request
+            == json!({
+                "schema": "mcbtodo.agent/v1",
+                "capability": "analyze_test_failure",
+                "inputs": {"summary": summary}
+            }),
+        "Agent received unexpected input: {request}"
+    );
+    send_agent_result(&mut stream, json!({"title": title}))
+}
+
+fn receive_agent_request(listener: &UnixListener) -> Result<(UnixStream, Value)> {
     let mut stream = None;
     poll("workflow Agent connection", || match listener.accept() {
         Ok((client, _)) => {
@@ -1194,23 +1538,405 @@ fn mock_agent(listener: &UnixListener, summary: &str, title: &str) -> Result<()>
     ensure!((1..=16_384).contains(&length), "invalid Agent request size");
     let mut payload = vec![0; length];
     stream.read_exact(&mut payload)?;
-    let request: Value = serde_json::from_slice(&payload)?;
-    ensure!(
-        request
-            == json!({
-                "schema": "mcbtodo.agent/v1",
-                "capability": "analyze_test_failure",
-                "inputs": {"summary": summary}
-            }),
-        "Agent received unexpected input: {request}"
-    );
+    Ok((stream, serde_json::from_slice(&payload)?))
+}
+
+fn send_agent_result(stream: &mut UnixStream, outputs: Value) -> Result<()> {
     let reply = serde_json::to_vec(&json!({
         "schema": "mcbtodo.agent/v1",
-        "outputs": {"title": title}
+        "outputs": outputs
     }))?;
+    ensure!(reply.len() <= 16_384, "Agent response exceeds wire limit");
     stream.write_all(&(reply.len() as u32).to_be_bytes())?;
     stream.write_all(&reply)?;
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn exercise_codex_workflow(bin_dir: &Path, codex: &Path) -> Result<()> {
+    use crate::codex_probe::{
+        FIXTURE_CAPABILITY, FIXTURE_PROMPT, FIXTURE_TITLE, read_model_request, write_model_reply,
+    };
+
+    const GRAPH: &str = r#"
+schema: mcbtodo.workflow/v1
+id: codex-workflow-probe
+name: Codex Workflow probe
+entry: agent
+capabilities:
+  - {kind: agent.invoke, scope: codex-fixture}
+nodes:
+  agent:
+    kind: agent
+    capability: codex-fixture
+    inputs: {sample: string}
+    outputs: {title: string}
+  review: {kind: approval}
+  report: {kind: action, action: report.create}
+  declined: {kind: action, action: report.create}
+edges:
+  - {from: agent, to: review}
+  - {from: review, to: report, when: approved}
+  - {from: review, to: declined, when: rejected}
+bindings:
+  - {from: {node: agent, port: title}, to: {node: report, port: summary}}
+literals:
+  - {to: {node: agent, port: sample}, value: "混合 text"}
+  - {to: {node: declined, port: summary}, value: "Declined"}
+"#;
+
+    let temp = tempfile::tempdir()?;
+    let smoke = Smoke {
+        bin_dir,
+        home: temp.path().join("home"),
+    };
+    fs::create_dir(&smoke.home)?;
+    smoke.cli(&["init"])?;
+    let graph_path = temp.path().join("codex.yaml");
+    let graph_arg = path_arg(&graph_path)?;
+    fs::write(&graph_path, GRAPH)?;
+    let revision = smoke.cli(&["workflow", "publish", graph_arg])?;
+    let revision = revision.trim();
+    fs::write(
+        &graph_path,
+        GRAPH.replace(
+            "name: Codex Workflow probe",
+            "name: Codex Workflow revision 2",
+        ),
+    )?;
+    let revised = smoke.cli(&["workflow", "publish", graph_arg])?;
+    let revised = revised.trim();
+    ensure!(revision != revised, "fixture publications share a revision");
+    fs::write(
+        &graph_path,
+        GRAPH.replace(
+            "name: Codex Workflow probe",
+            "name: Unix Agent Workflow revision 3",
+        ),
+    )?;
+    let unix_revision = smoke.cli(&["workflow", "publish", graph_arg])?;
+    let unix_revision = unix_revision.trim();
+    ensure!(
+        revision != unix_revision && revised != unix_revision,
+        "fixture publications share a revision"
+    );
+
+    let paths = smoke.paths();
+    let listener = UnixListener::bind(paths.state_dir().join("codex-probe.sock"))?;
+    listener.set_nonblocking(true)?;
+    let unix_listener = UnixListener::bind(paths.state_dir().join("agent-probe.sock"))?;
+    unix_listener.set_nonblocking(true)?;
+    let assert_no_connection = || {
+        ensure!(
+            listener
+                .accept()
+                .is_err_and(|error| error.kind() == ErrorKind::WouldBlock),
+            "an unauthorized or already executed run reached the Agent socket"
+        );
+        Ok(())
+    };
+    let assert_no_unix_connection = || {
+        ensure!(
+            unix_listener
+                .accept()
+                .is_err_and(|error| error.kind() == ErrorKind::WouldBlock),
+            "a failed selected-provider call reached the Unix Agent socket"
+        );
+        Ok(())
+    };
+    let policy = format!(
+        "timeout_seconds = 5\n[providers]\nunix_socket = \"state/agent-probe.sock\"\n\
+             codex = \"state/codex-probe.sock\"\n\
+             [[allow]]\ncapability = \"{FIXTURE_CAPABILITY}\"\n\
+             revision = \"{revision}\"\nprovider = \"codex\"\n\
+             [[allow]]\ncapability = \"{FIXTURE_CAPABILITY}\"\n\
+             revision = \"{unix_revision}\"\nprovider = \"unix_socket\"\n"
+    );
+    let policy_path = paths.agent_policy_path();
+    let output_bytes = json!({"title": FIXTURE_TITLE}).to_string().len();
+    fs::write(
+        &policy_path,
+        format!(
+            "max_output_bytes = {output_bytes}\n{}",
+            policy.replace("state/codex-probe.sock", "state/old-codex.sock")
+        ),
+    )?;
+    let codex_config = |executable: &Path| -> Result<String> {
+        toml::to_string(&json!({
+            "executable": executable.to_str().context("Codex path must be UTF-8")?,
+            "capability": FIXTURE_CAPABILITY,
+            "instructions": FIXTURE_PROMPT,
+            "outputs": {"title": "string"}
+        }))
+        .context("serialize Codex probe configuration")
+    };
+    let provider_path = paths.codex_provider_path();
+    fs::write(&provider_path, codex_config(codex)?)?;
+    let mut daemon = smoke.start_daemon()?;
+    let queue = |revision| -> Result<String> {
+        let run = smoke.json(&["workflow", "run", revision])?;
+        Ok(run["id"]
+            .as_str()
+            .context("Codex run has no ID")?
+            .to_owned())
+    };
+    let denied = queue(revised)?;
+    smoke.await_run(&denied, "failed")?;
+    let denial = smoke.json(&["workflow", "trace", &denied, "0"])?;
+    ensure!(
+        denial["trace"]["reason"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("not authorized for this revision")),
+        "unexpected Codex denial: {denial}"
+    );
+    assert_no_connection()?;
+    assert_no_unix_connection()?;
+
+    // The running Daemon must use the newly saved endpoint on the next attempt.
+    smoke.drive_tui(
+        "UTC",
+        &[
+            ("NORMAL", " \r"),
+            ("Settings", "\x1bOR"),
+            ("unix_socket Default", "\x1b[B"),
+            ("codex 0 grants move", "\x1b[17~"),
+            ("state/old-codex.sock", "\x1b[3~state/codex-probe.sock\r"),
+            ("Agent endpoint saved", "\x1b"),
+            ("Settings", "\x1b"),
+            ("Actions", "\x1b"),
+            ("NORMAL", "q"),
+        ],
+    )?;
+
+    let accept = || -> Result<UnixStream> {
+        let mut stream = None;
+        poll("Codex model connection", || match listener.accept() {
+            Ok((client, _)) => {
+                stream = Some(client);
+                Ok(true)
+            }
+            Err(error) if error.kind() == ErrorKind::WouldBlock => Ok(false),
+            Err(error) => Err(error.into()),
+        })?;
+        let stream = stream.context("Codex model connection is missing")?;
+        stream.set_read_timeout(Some(Duration::from_secs(4)))?;
+        stream.set_write_timeout(Some(Duration::from_secs(2)))?;
+        Ok(stream)
+    };
+    let receive = || -> Result<UnixStream> {
+        let mut stream = accept()?;
+        read_model_request(&mut stream)?;
+        Ok(stream)
+    };
+
+    fs::write(&provider_path, "unrecognized = true\n")?;
+    let invalid_config = queue(revision)?;
+    smoke.await_run(&invalid_config, "failed")?;
+    let trace = smoke.json(&["workflow", "trace", &invalid_config, "0"])?;
+    ensure!(
+        trace["trace"]["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("Invalid codex.toml")),
+        "missing configuration failure: {trace}"
+    );
+    assert_no_connection()?;
+    assert_no_unix_connection()?;
+
+    // An executable that exits before answering initialize must fail without
+    // sending a model request or reaching the Unix Agent endpoint.
+    fs::write(&provider_path, codex_config(Path::new("/usr/bin/true"))?)?;
+    let no_handshake = queue(revision)?;
+    let mut model_stream = accept()?;
+    ensure!(
+        model_stream.read(&mut [0])? == 0,
+        "an executable that skipped initialize reached model dispatch"
+    );
+    smoke.await_run(&no_handshake, "failed")?;
+    assert_no_connection()?;
+    assert_no_unix_connection()?;
+    fs::write(&provider_path, codex_config(codex)?)?;
+
+    // The same production policy can select the Unix adapter for a distinct
+    // revision. This verifies exact routing and keeps the selected-provider
+    // failure path from falling back to another endpoint.
+    let unix_id = queue(unix_revision)?;
+    let (mut unix_stream, unix_request) = receive_agent_request(&unix_listener)?;
+    ensure!(
+        unix_request
+            == json!({
+                "schema": "mcbtodo.agent/v1",
+                "capability": FIXTURE_CAPABILITY,
+                "inputs": {"sample": "混合 text"}
+            }),
+        "Unix Agent received unexpected input: {unix_request}"
+    );
+    send_agent_result(&mut unix_stream, json!({"title": FIXTURE_TITLE}))?;
+    let unix_waiting = smoke.await_run(&unix_id, "waiting")?;
+    ensure!(
+        unix_waiting["revision"] == unix_revision,
+        "Unix Agent run used the wrong revision: {unix_waiting}"
+    );
+    smoke.approve_workflow(&unix_id, "review", &unix_waiting)?;
+    let unix_succeeded = smoke.await_run(&unix_id, "succeeded")?;
+    let unix_report_index = unix_succeeded["step_count"]
+        .as_u64()
+        .and_then(|count| count.checked_sub(1))
+        .context("Unix Agent workflow did not record a final report step")?
+        .to_string();
+    ensure!(
+        smoke.cli(&["workflow", "artifact", &unix_id, &unix_report_index])? == FIXTURE_TITLE,
+        "approved Unix Agent report lost the result"
+    );
+
+    let id = queue(revision)?;
+    let mut stream = receive()
+        .with_context(|| format!("initial production Codex model request for run {id}"))?;
+    write_model_reply(&mut stream)?;
+    stream.shutdown(std::net::Shutdown::Write)?;
+    drop(stream);
+    let waiting = smoke.await_run(&id, "waiting")?;
+    let trace = smoke.json(&["workflow", "trace", &id, "0"])?;
+    ensure!(
+        waiting["revision"] == revision
+            && trace["trace"]["node"] == "agent"
+            && trace["trace"]["outputs"] == json!({"title": FIXTURE_TITLE}),
+        "Workflow did not record the correlated Codex result before approval: {waiting}, {trace}"
+    );
+    smoke.approve_workflow(&id, "review", &waiting)?;
+    let succeeded = smoke.await_run(&id, "succeeded")?;
+    let report_index = succeeded["step_count"]
+        .as_u64()
+        .and_then(|count| count.checked_sub(1))
+        .context("Codex workflow did not record a final report step")?
+        .to_string();
+    ensure!(
+        smoke.cli(&["workflow", "artifact", &id, &report_index])? == FIXTURE_TITLE,
+        "approved report lost the Codex result"
+    );
+
+    let mut uncertain_runs = Vec::new();
+    fs::write(
+        &policy_path,
+        format!("max_output_bytes = {}\n{policy}", output_bytes - 1),
+    )?;
+    let over_budget_id = queue(revision)?;
+    {
+        let mut stream = receive().context("receive the over-budget Codex request")?;
+        write_model_reply(&mut stream)?;
+        stream.shutdown(std::net::Shutdown::Write)?;
+    }
+    let over_budget = smoke.await_run(&over_budget_id, "outcome_unknown")?;
+    ensure!(
+        over_budget["step_count"] == 0
+            && over_budget["detail"]
+                == "Agent provider mcbtodo-codex did not yield a trustworthy result",
+        "over-budget Codex output must leave the run uncertain without committing a step: {over_budget}"
+    );
+    uncertain_runs.push((over_budget_id, over_budget));
+    fs::write(&policy_path, policy)?;
+
+    for mode in ["disconnect", "stall", "crash"] {
+        let uncertain_id = queue(revision)?;
+        let stream = receive()?;
+        let keep_open = match mode {
+            "disconnect" => {
+                drop(stream);
+                None
+            }
+            "crash" => {
+                let server = process_tree(daemon.0.id())?
+                    .into_iter()
+                    .find(|pid| {
+                        fs::read(format!("/proc/{pid}/cmdline")).is_ok_and(|cmdline| {
+                            cmdline.starts_with(b"/bin/codex\0")
+                                && cmdline
+                                    .split(|byte| *byte == 0)
+                                    .any(|arg| arg == b"stdio://")
+                        })
+                    })
+                    .context("find the production Codex app-server")?;
+                kill_process(
+                    Pid::from_raw(server.try_into()?).context("invalid Codex PID")?,
+                    Signal::KILL,
+                )?;
+                poll("Codex app-server exit", || Ok(!process_is_running(server)))?;
+                Some(stream)
+            }
+            _ => Some(stream),
+        };
+        let uncertain = smoke.await_run(&uncertain_id, "outcome_unknown")?;
+        ensure!(
+            uncertain["step_count"] == 0,
+            "uncertain Codex run produced a step for {mode:?}: {uncertain}"
+        );
+        if matches!(mode, "disconnect" | "crash") {
+            ensure!(
+                uncertain["detail"]
+                    == "Agent provider mcbtodo-codex did not yield a trustworthy result",
+                "expected an Agent outcome diagnostic for {mode:?}: {uncertain}"
+            );
+        }
+        drop(keep_open);
+        uncertain_runs.push((uncertain_id, uncertain));
+    }
+
+    let cancelled_id = queue(revision)?;
+    let mut stream = receive()?;
+    smoke.cli(&["workflow", "cancel", &cancelled_id])?;
+    let cancelled = smoke.await_run(&cancelled_id, "outcome_unknown")?;
+    ensure!(
+        cancelled["step_count"] == 0,
+        "cancelling a dispatched Codex call produced a step: {cancelled}"
+    );
+    ensure!(
+        stream.read(&mut [0])? == 0,
+        "the cancelled attempt still has an open model connection"
+    );
+    let write = write_model_reply(&mut stream);
+    ensure!(
+        write.is_err_and(
+            |error| error.downcast_ref::<std::io::Error>().is_some_and(|error| {
+                matches!(
+                    error.kind(),
+                    ErrorKind::BrokenPipe | ErrorKind::ConnectionReset
+                )
+            })
+        ) && smoke.await_run(&cancelled_id, "outcome_unknown")? == cancelled,
+        "the host did not fence a late Codex result"
+    );
+    drop(stream);
+
+    let interrupted_id = queue(revision)?;
+    let mut stream = receive()?;
+    let descendants = process_tree(daemon.0.id())?;
+    ensure!(
+        descendants.len() >= 3,
+        "missing Worker, namespace supervisor or app-server at model dispatch"
+    );
+    daemon.stop()?;
+    poll("orphaned Codex process tree to exit", || {
+        Ok(descendants.iter().all(|pid| !process_is_running(*pid)))
+    })?;
+    ensure!(
+        stream.read(&mut [0])? == 0,
+        "daemon death left the Codex model connection open"
+    );
+    let _daemon = smoke.start_daemon()?;
+    uncertain_runs.push((cancelled_id, cancelled));
+    let interrupted = smoke.await_run(&interrupted_id, "outcome_unknown")?;
+    ensure!(
+        interrupted["step_count"] == 0,
+        "daemon death produced a Codex step: {interrupted}"
+    );
+    uncertain_runs.push((interrupted_id, interrupted));
+    for (id, original) in uncertain_runs {
+        smoke.json(&["workflow", "run", revision, "--run-id", &id])?;
+        ensure!(
+            smoke.await_run(&id, "outcome_unknown")? == original,
+            "Codex result uncertainty was lost after restart and submission of run {id}"
+        );
+    }
+    assert_no_connection()
 }
 
 struct Smoke<'a> {
@@ -1291,7 +2017,9 @@ impl Smoke<'_> {
     }
 
     fn approve_proposal(&self, id: &str, expect_success: bool) -> Result<String> {
-        let (mut child, mut master) = self.terminal(&["proposal", "apply", id])?;
+        let mut command = self.command("mcbtodo");
+        command.args(["proposal", "apply", id]);
+        let (mut child, mut master) = Self::terminal(command, TERMINAL_SIZE)?;
         let mut transcript = Vec::new();
         let mut sent = false;
         poll("interactive proposal approval", || {
@@ -1324,7 +2052,7 @@ impl Smoke<'_> {
         self.drive_tui(
             "UTC",
             &[
-                ("\x1b[?1049h", " a"),
+                ("NORMAL", " a"),
                 ("Enter review", select.as_str()),
                 ("Graph Diff", "a"),
                 ("Type 'apply' to confirm: ", "apply\n"),
@@ -1347,9 +2075,8 @@ impl Smoke<'_> {
         self.drive_tui(
             "UTC",
             &[
-                ("\x1b[?1049h", " a"),
+                ("NORMAL", " a"),
                 ("Enter review", select.as_str()),
-                // Ratatui may split adjacent words with cursor updates on a PTY.
                 ("snapshot", "a"),
                 ("Type 'apply' to confirm: ", "apply\n"),
                 ("Enter review", "\x1b"),
@@ -1379,7 +2106,6 @@ impl Smoke<'_> {
                 ("09:00–11:00  Implement page mapping", " ug"),
                 ("page table [blocked]", " uf"),
                 ("Selected", &open_trace),
-                // Ratatui can split adjacent words across incremental cursor updates.
                 ("\"FAIL", "\x1b"),
                 ("Selected", decision),
                 ("Confirm decision", "yq"),
@@ -1388,20 +2114,306 @@ impl Smoke<'_> {
     }
 
     fn drive_tui(&self, timezone: &str, steps: &[(&str, &str)]) -> Result<()> {
-        let (mut child, mut master) =
-            self.terminal(&["--timezone", timezone, "tui", "--date", "2026-11-20"])?;
+        let mut command = self.command("mcbtodo");
+        command.args(["--timezone", timezone, "tui", "--date", "2026-11-20"]);
+        Self::drive_terminal(command, TERMINAL_SIZE, steps)?;
+        Ok(())
+    }
+
+    fn edit_settings_in_tui(&self) -> Result<()> {
+        let paths = self.paths();
+        paths.initialize()?;
+        fs::write(paths.config_path(), "home_view = 'month'\n")?;
+        let separate_config = [
+            (
+                paths.agent_policy_path(),
+                "[providers]\nunix_socket = 'state/agent.sock'\n",
+            ),
+            (
+                paths.codex_provider_path(),
+                "# Optional provider configuration\n",
+            ),
+            (paths.keymap_path(), "[keys]\nmove_up = 'k'\n"),
+        ];
+        for (path, contents) in &separate_config {
+            fs::write(path, contents)?;
+        }
+
+        let mut command = self.command("mcbtodo");
+        command
+            .env_remove("NO_COLOR")
+            // A stale environment setting must not block opening Settings.
+            .env("MCBTODO_TUI_THEME", "unused")
+            .args(["--timezone", "Asia/Shanghai", "tui", "--date", "2026-11-20"]);
+        let terminal = Self::drive_terminal(
+            command,
+            TERMINAL_SIZE,
+            &[
+                ("Asia/Shanghai", " \r"),
+                ("General", ""),
+                ("Appearance", ""),
+                ("Session timezone override active", ""),
+                ("> TZ UTC", "\x1b[3~Asia/Tokyo\t"),
+                ("Applies on restart", ""),
+                ("> Home Month", "\x1b[C\t"),
+                ("Applies on save", ""),
+                ("> Theme Default", "\x1b[C\x1bOR"),
+                ("unix_socket Default · 0 grants", "\r"),
+                ("Health unchecked", "\x1b"),
+                ("> Theme High contrast", "\r"),
+                ("Restart without --timezone to apply", " uw"),
+                ("Week", "q"),
+            ],
+        )?;
+        ensure!(
+            terminal.screen().cell(2, 0).is_some_and(|cell| {
+                cell.contents() == "┌" && cell.fgcolor() == vt100::Color::Idx(15)
+            }),
+            "TUI did not apply the high contrast theme in the current session"
+        );
+        let saved = paths.load_config()?;
+        ensure!(
+            saved.timezone.name() == "Asia/Tokyo"
+                && saved.home_view == HomeViewPolicy::RestoreLastView
+                && saved.tui_theme == TuiTheme::HighContrast,
+            "TUI did not save the selected settings"
+        );
+        ensure!(
+            paths.read_state_file(&paths.last_view_path())? == "week",
+            "TUI did not record Week after enabling restore last view"
+        );
+        let mut command = self.command("mcbtodo");
+        command.env("NO_COLOR", "1");
+        let terminal = Self::drive_terminal(
+            command,
+            TERMINAL_SIZE,
+            &[
+                ("Week", ""),
+                ("Asia/Tokyo", " \r"),
+                ("Applies on restart", ""),
+                ("> TZ Asia/Tokyo", "\x1b[A"),
+                ("> Theme High contrast", ""),
+                ("NO_COLOR active", "\x1b[C"),
+                ("> Theme Monochrome", "\x1b[C"),
+                ("> Theme Default", "\r"),
+                ("Settings saved", "q"),
+            ],
+        )?;
+        ensure!(
+            terminal.screen().cell(2, 0).is_some_and(
+                |cell| cell.contents() == "┌" && cell.fgcolor() == vt100::Color::Default
+            ),
+            "TUI did not retain the monochrome session override after saving"
+        );
+        ensure!(
+            paths.load_config()?.tui_theme == TuiTheme::Default,
+            "TUI did not save the new theme preference under a session override"
+        );
+        for (path, contents) in &separate_config {
+            ensure!(
+                fs::read(path)? == contents.as_bytes(),
+                "TUI Settings changed {}",
+                path.display()
+            );
+        }
+
+        let saved_preferences = fs::read(paths.config_path())?;
+        Self::drive_terminal(
+            self.command("mcbtodo"),
+            TERMINAL_SIZE,
+            &[
+                ("Week", " \r"),
+                ("Settings", "\x1bOQ"),
+                ("> Quit q", "Q"),
+                ("> Quit Q", "\r"),
+                ("Key bindings saved", "\x1b"),
+                ("Actions", "\x1b"),
+                // The Actions menu also displays Week in its title.
+                ("No timed entries", "Q"),
+            ],
+        )?;
+        ensure!(
+            fs::read_to_string(paths.keymap_path())?.contains("quit = \"Q\""),
+            "the keyboard settings did not persist the new quit binding"
+        );
+        ensure!(
+            fs::read(paths.config_path())? == saved_preferences,
+            "keyboard settings changed config.toml"
+        );
+        for (path, contents) in &separate_config[..2] {
+            ensure!(
+                fs::read(path)? == contents.as_bytes(),
+                "keyboard settings changed {}",
+                path.display()
+            );
+        }
+        Self::drive_terminal(
+            self.command("mcbtodo"),
+            TERMINAL_SIZE,
+            &[
+                ("Week", " \r"),
+                ("Settings", "\x1bOR"),
+                ("F4 Codex settings", "\x1bOS"),
+                ("Enter replace", "/optional/codex\t"),
+                ("Workflow capability name", "summary\t"),
+                ("Instructions sent to the provider", "Summarize tasks\t"),
+                ("name=type", "title=string\r"),
+                ("Codex settings saved", "\x1b"),
+                ("> TZ Asia/Tokyo", "\x1b"),
+                ("Actions", "\x1b"),
+                ("No timed entries", "Q"),
+            ],
+        )?;
+        let provider_text = fs::read_to_string(paths.codex_provider_path())?;
+        let provider: toml::Table = toml::from_str(&provider_text)?;
+        ensure!(
+            provider["executable"].as_str() == Some("/optional/codex")
+                && provider["capability"].as_str() == Some("summary")
+                && provider["instructions"].as_str() == Some("Summarize tasks")
+                && provider["outputs"]["title"].as_str() == Some("string"),
+            "TUI did not publish the edited Codex settings"
+        );
+        ensure!(
+            fs::read(paths.config_path())? == saved_preferences
+                && fs::read_to_string(paths.agent_policy_path())? == separate_config[0].1,
+            "Codex settings changed preferences or Agent policy"
+        );
+        let revision = "a".repeat(64);
+        let policy = format!(
+            "{}codex = 'state/model.sock'\n[[allow]]\ncapability = 'summary'\nrevision = '{revision}'\n",
+            separate_config[0].1
+        );
+        fs::write(paths.agent_policy_path(), policy)?;
+        Self::drive_terminal(
+            self.command("mcbtodo"),
+            TERMINAL_SIZE,
+            &[
+                ("Week", " \r"),
+                ("Settings", "\x1bOR"),
+                ("unix_socket Default · 1 grants", "\x1b[B"),
+                ("1 grant moves · Enter", "\r"),
+                ("codex Default · 1 grants", "\x1b[17~"),
+                ("state/model.sock", "\x1b[3~state/edited.sock\r"),
+                ("Agent endpoint saved", "\x1b"),
+                ("> TZ Asia/Tokyo", "\x1b"),
+                ("Actions", "\x1b"),
+                ("No timed entries", "Q"),
+            ],
+        )?;
+        let policy: toml::Table = toml::from_str(&fs::read_to_string(paths.agent_policy_path())?)?;
+        ensure!(
+            policy["provider"].as_str() == Some("codex")
+                && policy["providers"]["codex"].as_str() == Some("state/edited.sock")
+                && policy["providers"]["unix_socket"].as_str() == Some("state/agent.sock")
+                && policy["allow"][0]["revision"].as_str() == Some(revision.as_str())
+                && fs::read(paths.config_path())? == saved_preferences
+                && fs::read_to_string(paths.codex_provider_path())? == provider_text,
+            "TUI did not save Agent routing independently"
+        );
+        fs::write(paths.agent_policy_path(), separate_config[0].1)?;
+
+        let invalid_keymap = "[keys]\nquit = 'r'\n";
+        fs::write(paths.keymap_path(), invalid_keymap)?;
+        Self::drive_terminal(
+            self.command("mcbtodo"),
+            TERMINAL_SIZE,
+            &[("Default keys active", "q")],
+        )?;
+        ensure!(
+            fs::read_to_string(paths.keymap_path())? == invalid_keymap,
+            "opening the TUI rewrote the invalid keymap"
+        );
+        Self::drive_terminal(
+            self.command("mcbtodo"),
+            TERMINAL_SIZE,
+            &[
+                ("Default keys active", " \r"),
+                ("Settings", "\x1bOQ"),
+                ("Invalid keymap", ""),
+                ("Enter replace", "Q\r"),
+                ("Key bindings saved", "\x1b"),
+                ("Actions", "\x1b"),
+                ("No timed entries", "Q"),
+            ],
+        )?;
+        Self::drive_terminal(self.command("mcbtodo"), TERMINAL_SIZE, &[("Week", "Q")])?;
+        ensure!(
+            fs::read_to_string(paths.keymap_path())?.contains("quit = \"Q\""),
+            "the keyboard settings did not repair the invalid keymap"
+        );
+
+        let last_view = paths.last_view_path();
+        fs::remove_file(&last_view)?;
+        fs::create_dir(&last_view)?;
+        Self::drive_terminal(
+            self.command("mcbtodo"),
+            TERMINAL_SIZE,
+            &[("Saved view unavailable", "Q")],
+        )?;
+        Self::drive_terminal(
+            self.command("mcbtodo"),
+            TERMINAL_SIZE,
+            &[
+                ("Month", " \r"),
+                ("> TZ Asia/Tokyo", "\t"),
+                ("> Home Restore last view", "\x1b[C\r"),
+                ("Settings saved", "Q"),
+            ],
+        )?;
+        ensure!(
+            paths.load_config()?.home_view == HomeViewPolicy::Month && last_view.is_dir(),
+            "TUI should let Settings disable restore without replacing unusable view state"
+        );
+
+        let invalid_config = "timezone = 'invalid'\n";
+        fs::write(paths.config_path(), invalid_config)?;
+        Self::drive_terminal(
+            self.command("mcbtodo"),
+            TERMINAL_SIZE,
+            &[("Invalid config.toml", "\x1b")],
+        )?;
+        ensure!(
+            fs::read_to_string(paths.config_path())? == invalid_config,
+            "cancelling startup repair rewrote config.toml"
+        );
+        Self::drive_terminal(
+            self.command("mcbtodo"),
+            TERMINAL_SIZE,
+            &[
+                ("Invalid config.toml", "\x1b[3~not-a-zone\r"),
+                ("Invalid IANA timezone", "\x1b[15~"),
+                ("Settings reloaded", "\x1b[3~Asia/Shanghai\r"),
+                ("Month", ""),
+                ("Asia/Shanghai", "Q"),
+            ],
+        )?;
+        ensure!(
+            paths.load_config()?.timezone.name() == "Asia/Shanghai",
+            "startup repair did not persist the corrected timezone"
+        );
+        Ok(())
+    }
+
+    fn drive_terminal(
+        command: Command,
+        size: TerminalSize,
+        steps: &[(&str, &str)],
+    ) -> Result<vt100::Parser> {
+        let (mut child, mut master) = Self::terminal(command, size)?;
+        let mut terminal = size.parser();
         for &(marker, keys) in steps {
-            let mut transcript = Vec::new();
+            let mut chunk = Vec::new();
             poll(marker, || {
-                read_terminal(&mut master, &mut transcript)?;
-                let screen = String::from_utf8_lossy(&transcript);
+                read_terminal(&mut master, &mut chunk)?;
+                terminal.process(&chunk);
+                chunk.clear();
                 ensure!(child.0.try_wait()?.is_none(), "TUI exited early");
-                Ok(screen.contains(marker))
+                Ok(terminal.screen().contents().contains(marker))
             })
             .with_context(|| {
                 format!(
                     "TUI screen waiting for {marker}: {}",
-                    String::from_utf8_lossy(&transcript)
+                    terminal.screen().contents()
                 )
             })?;
             master.write_all(keys.as_bytes())?;
@@ -1413,38 +2425,27 @@ impl Smoke<'_> {
             ensure!(status.success(), "TUI exited with {status}");
             Ok(true)
         })
+        .with_context(|| {
+            let mut remaining = Vec::new();
+            if read_terminal(&mut master, &mut remaining).is_ok() {
+                terminal.process(&remaining);
+            }
+            format!("TUI screen at exit wait: {}", terminal.screen().contents())
+        })?;
+        Ok(terminal)
     }
 
     fn create_time_block_in_tui(&self) -> Result<()> {
-        let (mut child, mut master) =
-            self.terminal(&["--timezone", "Asia/Shanghai", "tui", "--date", "2026-11-20"])?;
-        let mut transcript = Vec::new();
-        for (marker, keys) in [
-            ("\x1b[?1049h", " tb"),
-            ("Find WorkUnit", "Implement page mapping\r09:00\r11:00\rq"),
-        ] {
-            poll(marker, || {
-                read_terminal(&mut master, &mut transcript)?;
-                ensure!(
-                    child.0.try_wait()?.is_none(),
-                    "TUI exited early: {}",
-                    String::from_utf8_lossy(&transcript)
-                );
-                Ok(String::from_utf8_lossy(&transcript).contains(marker))
-            })?;
-            master.write_all(keys.as_bytes())?;
-        }
-        poll("TUI exit after creating a time block", || {
-            read_terminal(&mut master, &mut transcript)?;
-            let Some(status) = child.0.try_wait()? else {
-                return Ok(false);
-            };
-            ensure!(status.success(), "TUI exited with {status}");
-            Ok(true)
-        })
+        self.drive_tui(
+            "Asia/Shanghai",
+            &[
+                ("NORMAL", " tb"),
+                ("Find WorkUnit", "Implement page mapping\r09:00\r11:00\rq"),
+            ],
+        )
     }
 
-    fn terminal(&self, args: &[&str]) -> Result<(Daemon, fs::File)> {
+    fn terminal(mut command: Command, size: TerminalSize) -> Result<(Daemon, fs::File)> {
         let flags = OpenptFlags::RDWR | OpenptFlags::NOCTTY | OpenptFlags::CLOEXEC;
         let master = openpt(flags).context("opening a pseudoterminal for the smoke test")?;
         unlockpt(&master)?;
@@ -1452,16 +2453,14 @@ impl Smoke<'_> {
         tcsetwinsize(
             &terminal,
             Winsize {
-                ws_col: 100,
-                ws_row: 30,
+                ws_col: size.columns.get(),
+                ws_row: size.rows.get(),
                 ws_xpixel: 0,
                 ws_ypixel: 0,
             },
         )?;
         fcntl_setfl(&master, OFlags::NONBLOCK)?;
-        let child = self
-            .command("mcbtodo")
-            .args(args)
+        let child = command
             .env("TERM", "xterm-256color")
             .stdin(terminal.try_clone()?)
             .stdout(terminal.try_clone()?)
@@ -1480,9 +2479,23 @@ impl Smoke<'_> {
             if let Some(status) = daemon.0.try_wait()? {
                 bail!("mcbtodo-daemon quit with {status}");
             }
-            Ok(self.cli(&["timer", "status"]).is_ok())
+            if self.cli(&["timer", "status"]).is_err() {
+                return Ok(false);
+            }
+            if let Some(status) = daemon.0.try_wait()? {
+                bail!("mcbtodo-daemon exited during its readiness handshake with {status}");
+            }
+            Ok(true)
         })?;
         Ok(daemon)
+    }
+
+    fn approve_workflow(&self, id: &str, node: &str, inspected: &Value) -> Result<()> {
+        let review = inspected["approval_review"]
+            .as_str()
+            .context("waiting run is missing its approval review")?;
+        self.cli(&["workflow", "approve", id, node, "--review", review])?;
+        Ok(())
     }
 
     fn await_run(&self, id: &str, state: &str) -> Result<Value> {
@@ -1534,6 +2547,33 @@ fn poll(label: &str, mut predicate: impl FnMut() -> Result<bool>) -> Result<()> 
     }
 }
 
+#[derive(Clone, Copy)]
+struct TerminalSize {
+    rows: NonZeroU16,
+    columns: NonZeroU16,
+}
+
+const TERMINAL_SIZE: TerminalSize = TerminalSize {
+    rows: NonZeroU16::new(30).unwrap(),
+    columns: NonZeroU16::new(100).unwrap(),
+};
+
+impl TerminalSize {
+    fn parser(self) -> vt100::Parser {
+        vt100::Parser::new(self.rows, self.columns, 0)
+    }
+}
+
+#[test]
+fn terminal_markers_follow_cursor_updates_and_current_screen() {
+    let mut terminal = TERMINAL_SIZE.parser();
+    terminal.process(b"\x1b[?1049h\x1b[3;3HGra h Diff");
+    terminal.process(b"\x1b[3;6Hp");
+    assert!(terminal.screen().contents().contains("Graph Diff"));
+    terminal.process(b"\x1b[2J");
+    assert!(!terminal.screen().contents().contains("Graph Diff"));
+}
+
 fn read_terminal(master: &mut fs::File, transcript: &mut Vec<u8>) -> Result<()> {
     const MAX_TRANSCRIPT: u64 = 128 * 1024;
     let remaining = MAX_TRANSCRIPT.saturating_sub(transcript.len() as u64);
@@ -1555,7 +2595,7 @@ fn path_arg(path: &Path) -> Result<&str> {
     path.to_str().context("expected a UTF-8 smoke test path")
 }
 
-fn copy_fixture(source: &Path, destination: &Path) -> Result<()> {
+pub(crate) fn copy_fixture(source: &Path, destination: &Path) -> Result<()> {
     for entry in fs::read_dir(source)? {
         let entry = entry?;
         let target = destination.join(entry.file_name());

@@ -5,6 +5,7 @@
 mod compile;
 mod definition;
 pub mod publication;
+pub mod run;
 pub mod schedule;
 mod simulate;
 mod traverse;

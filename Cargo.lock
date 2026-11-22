@@ -100,6 +100,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d902e3d592a523def97af8f317b08ce16b7ab854c1985a0c671e6f15cebc236"
 
 [[package]]
+name = "arrayvec"
+version = "0.7.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
+
+[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -562,6 +568,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
+name = "hex"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
+
+[[package]]
 name = "iana-time-zone"
 version = "0.1.65"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -766,11 +778,15 @@ dependencies = [
  "chrono-tz",
  "clap",
  "crossterm",
+ "hex",
  "icalendar",
  "mcbtodo-application",
  "mcbtodo-domain",
+ "mcbtodo-execution",
  "mcbtodo-platform",
+ "mcbtodo-ports",
  "mcbtodo-protocol",
+ "mcbtodo-storage-sqlite",
  "mcbtodo-vault",
  "mcbtodo-workflow",
  "ratatui",
@@ -782,6 +798,16 @@ dependencies = [
  "tempfile",
  "toml",
  "uuid",
+]
+
+[[package]]
+name = "mcbtodo-agent-codex"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "mcbtodo-ports",
+ "rustix",
+ "serde_json",
 ]
 
 [[package]]
@@ -809,15 +835,17 @@ dependencies = [
  "clap",
  "mcbtodo-application",
  "mcbtodo-domain",
+ "mcbtodo-execution",
  "mcbtodo-platform",
+ "mcbtodo-ports",
  "mcbtodo-protocol",
+ "mcbtodo-storage-sqlite",
  "mcbtodo-vault",
  "mcbtodo-workflow",
  "rusqlite",
  "rustix",
  "serde",
  "serde_json",
- "sha2",
  "tempfile",
  "thiserror",
  "toml",
@@ -840,13 +868,16 @@ name = "mcbtodo-execution"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "mcbtodo-agent-codex",
  "mcbtodo-platform",
+ "mcbtodo-ports",
  "mcbtodo-workflow",
  "rustix",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror",
+ "toml",
 ]
 
 [[package]]
@@ -855,10 +886,27 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono-tz",
+ "mcbtodo-ports",
  "rustix",
  "serde",
  "tempfile",
  "toml",
+ "uuid",
+]
+
+[[package]]
+name = "mcbtodo-ports"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "chrono-tz",
+ "mcbtodo-domain",
+ "mcbtodo-workflow",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "uuid",
 ]
 
 [[package]]
@@ -866,8 +914,32 @@ name = "mcbtodo-protocol"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "mcbtodo-platform",
+ "mcbtodo-ports",
+ "mcbtodo-workflow",
  "serde",
  "serde_json",
+ "tempfile",
+ "thiserror",
+ "uuid",
+]
+
+[[package]]
+name = "mcbtodo-storage-sqlite"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "chrono-tz",
+ "hex",
+ "mcbtodo-domain",
+ "mcbtodo-platform",
+ "mcbtodo-ports",
+ "mcbtodo-workflow",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
  "tempfile",
  "thiserror",
  "uuid",
@@ -880,7 +952,9 @@ dependencies = [
  "anyhow",
  "chrono",
  "chrono-tz",
+ "hex",
  "mcbtodo-domain",
+ "mcbtodo-storage-sqlite",
  "rusqlite",
  "rustix",
  "serde",
@@ -898,9 +972,11 @@ dependencies = [
  "anyhow",
  "mcbtodo-execution",
  "mcbtodo-platform",
+ "mcbtodo-ports",
  "mcbtodo-protocol",
  "mcbtodo-workflow",
  "serde_json",
+ "tempfile",
  "uuid",
 ]
 
@@ -910,6 +986,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "chrono-tz",
+ "hex",
  "serde",
  "serde-saphyr",
  "serde_json",
@@ -926,13 +1003,18 @@ dependencies = [
  "base64",
  "chrono",
  "clap",
+ "hex",
+ "mcbtodo-agent-codex",
  "mcbtodo-platform",
+ "mcbtodo-ports",
+ "mcbtodo-protocol",
  "rustix",
  "serde",
  "serde_json",
  "sha2",
  "tempfile",
  "toml",
+ "vt100",
 ]
 
 [[package]]
@@ -1659,6 +1741,27 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "vt100"
+version = "0.18.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eb05cdd19ae8707bf6a0a269972c07e6358103a7079faec749dec318a5b3dc23"
+dependencies = [
+ "itoa",
+ "unicode-width",
+ "vte",
+]
+
+[[package]]
+name = "vte"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a5924018406ce0063cd67f8e008104968b74b563ee1b85dde3ed1f7cb87d3dbd"
+dependencies = [
+ "arrayvec",
+ "memchr",
+]
 
 [[package]]
 name = "wasi"

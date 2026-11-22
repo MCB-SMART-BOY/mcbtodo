@@ -32,13 +32,12 @@ fn start(entry: &CalendarItem, zone: Tz) -> Option<DateTime<Tz>> {
     }
 }
 
-pub(super) fn day(vault: &Vault, date: NaiveDate) -> Vec<CalendarItem> {
+pub(super) fn day(vault: &Vault, date: NaiveDate) -> anyhow::Result<Vec<CalendarItem>> {
     let zone = vault.timezone();
     let window = DateSpan::new(date, date).expect("a calendar date is a valid span");
-    let mut entries =
-        project_calendar(vault, window).expect("single-day calendar projection is bounded");
+    let mut entries = project_calendar(vault, window)?;
     entries.sort_by_key(|entry| (lane(entry), start(entry, zone)));
-    entries
+    Ok(entries)
 }
 
 pub(super) fn day_label(entry: &CalendarItem, date: NaiveDate, zone: Tz) -> String {
@@ -122,6 +121,7 @@ pub(super) struct Week {
     pub(super) monday: NaiveDate,
     pub(super) days: [NaiveDate; 7],
     pub(super) hours: Vec<u32>,
+    timezone: Tz,
     entries: Vec<CalendarItem>,
     columns: [Vec<usize>; 7],
 }
@@ -131,13 +131,18 @@ pub(super) fn monday_of(date: NaiveDate) -> NaiveDate {
 }
 
 impl Week {
-    pub(super) fn new(vault: &Vault, date: NaiveDate) -> Self {
+    pub(super) fn new(vault: &Vault, date: NaiveDate) -> anyhow::Result<Self> {
         let monday = monday_of(date);
-        let days = std::array::from_fn(|offset| monday + Days::new(offset as u64));
+        let days: [NaiveDate; 7] = std::array::from_fn(|offset| monday + Days::new(offset as u64));
         let range = DateSpan::new(monday, days[6]).expect("week in display years");
         let zone = vault.timezone();
-        let mut entries =
-            project_calendar(vault, range).expect("weekly calendar projection is bounded");
+        let entries = project_calendar(vault, range)?;
+        Ok(Self::from_entries(date, zone, entries))
+    }
+
+    pub(super) fn from_entries(date: NaiveDate, zone: Tz, mut entries: Vec<CalendarItem>) -> Self {
+        let monday = monday_of(date);
+        let days = std::array::from_fn(|offset| monday + Days::new(offset as u64));
         entries.sort_by_key(|entry| (lane(entry), start(entry, zone)));
         let mut columns = std::array::from_fn(|_| Vec::new());
         let mut occupied = [false; 24];
@@ -156,9 +161,14 @@ impl Week {
             monday,
             days,
             hours,
+            timezone: zone,
             entries,
             columns,
         }
+    }
+
+    pub(super) fn timezone(&self) -> Tz {
+        self.timezone
     }
 
     pub(super) fn column(&self, day_index: usize) -> WeekDay<'_> {

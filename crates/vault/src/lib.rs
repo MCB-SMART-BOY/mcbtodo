@@ -1,8 +1,8 @@
-mod completion_journal;
 mod document;
 mod persistence;
 mod watch;
 
+pub use mcbtodo_storage_sqlite::completion_journal::CompletionEventRecord;
 pub use persistence::{
     AddWorkUnitGraph, BindWorkflow, CaptureInboxEntry, CaptureTask, CompleteWorkUnit, CreateEvent,
     CreateProject, CreateReminder, CreateTimeBlock, CreateWorkUnit, GRAPH_STAGE_PREFIX,
@@ -19,14 +19,11 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail, ensure};
-use chrono::Days;
 use chrono_tz::Tz;
 use document::Metadata;
 use mcbtodo_domain::{
     CalendarEntry, CalendarEvent, GraphError, Id, InboxEntry, Project, Task, TaskGraph, TaskStatus,
-    WorkUnit, WorkUnitStatus,
-    recurrence::Reminder,
-    time::{DateSpan, Span},
+    WorkUnit, WorkUnitStatus, recurrence::Reminder, time::DateSpan,
 };
 
 #[derive(Debug)]
@@ -185,26 +182,16 @@ impl Vault {
             let Some(rule) = doc.data.recurrence else {
                 continue;
             };
-            let Span::DateSpan(template) = doc.data.when else {
-                bail!(
-                    "{}: recurring events currently require a date-span template",
-                    doc.path.display()
-                );
-            };
-            let duration_days = (template.through() - template.start()).num_days();
-            for day in rule.occurrence_dates(window)? {
-                let through = day
-                    .checked_add_days(Days::new(duration_days as u64))
-                    .context("recurring event end date is out of range")?;
-                let occurrence = DateSpan::new(day, through)?;
-                if occurrence.overlaps(window) {
-                    entries.push(CalendarEntry::event(
-                        *id,
-                        &doc.title,
-                        Span::DateSpan(occurrence),
-                        doc.data.availability,
-                    ));
-                }
+            for occurrence in rule
+                .overlapping_events(doc.data.when, window, self.timezone)
+                .with_context(|| format!("projecting recurring event {}", doc.path.display()))?
+            {
+                entries.push(CalendarEntry::event(
+                    *id,
+                    &doc.title,
+                    occurrence,
+                    doc.data.availability,
+                ));
             }
         }
         Ok(entries)
@@ -251,6 +238,15 @@ impl Vault {
     /// The exact document revision observed when this snapshot was loaded.
     pub fn revision(&self, id: Id) -> Option<&Revision> {
         self.revisions.get(&id)
+    }
+
+    /// Compare exact source revisions and paths, including documents omitted from projections.
+    pub fn has_same_documents(&self, other: &Self) -> bool {
+        self.revisions == other.revisions
+            && self
+                .revisions
+                .keys()
+                .all(|&id| self.source(id) == other.source(id))
     }
 
     pub fn is_work_unit(&self, id: Id) -> bool {
@@ -424,17 +420,9 @@ impl Documents {
         }
         for event in self.events.values() {
             if let Some(rule) = event.data.recurrence {
-                let Span::DateSpan(span) = event.data.when else {
-                    bail!(
-                        "{}: recurring events require a date-span template",
-                        event.path.display()
-                    );
-                };
-                ensure!(
-                    rule.start() == span.start(),
-                    "{} recurrence start must match the event's start date",
-                    event.path.display()
-                );
+                rule.validate_event(event.data.when).with_context(|| {
+                    format!("validating recurring event {}", event.path.display())
+                })?;
             }
         }
         for task in self.tasks.values() {

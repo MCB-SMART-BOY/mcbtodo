@@ -16,6 +16,10 @@ sudo tar -xzf target/dist/mcbtodo-linux-$(uname -m).tar.gz -C /
 执行尝试启动并监督该 Worker，因此该二进制必须与 Daemon 一起安装在
 `/usr/bin/`。Worker 不是独立的 systemd 服务，也不单独常驻。
 
+服务默认启动一个 Worker 槽。需要并行执行时，可在服务覆盖配置中为
+`mcbtodo-daemon` 增加 `--worker-slots 2`，允许值为 1 到 4。槽位全部占用时，
+后续工作保持 `pending`，重启恢复和 `outcome_unknown` 语义不变。
+
 ```sh
 mcbtodo init
 systemctl --user daemon-reload
@@ -35,7 +39,7 @@ journalctl --user-unit mcbtodo-daemon.service -b -n 50
 - 若日志提示状态目录缺失，先以服务用户运行 `mcbtodo init`。若提示目录权限错误，检查 `~/.mcbtodo/state` 的属主和权限。该目录应为当前用户所有，权限为 `0700`。
 - 若日志提示已有守护进程持有锁，先停止在终端中手动启动的 `mcbtodo-daemon`，再重启用户服务。
 
-从仓库根目录可运行实际的用户服务冒烟测试。它使用独立的临时状态目录，验证计时检查点、服务自动重启以及 Markdown 和 JSON 报告。需要 `jq`、可用的 Bubblewrap（`bwrap`）和可访问的 systemd 用户管理器。
+从仓库根目录可运行实际的用户服务冒烟测试。`xtask` 用 Bubblewrap（`bwrap`）挂载临时 home，在 systemd 用户管理器中启动临时服务，验证计时检查点、服务自动重启以及 Markdown 和 JSON 报告。JSON 由 Rust 解析。
 
 ```sh
 cargo build --release --locked --workspace --bin mcbtodo --bin mcbtodo-daemon --bin mcbtodo-worker

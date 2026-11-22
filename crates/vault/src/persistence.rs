@@ -15,14 +15,11 @@ use mcbtodo_domain::{
     TimeBlock, WorkUnit, WorkUnitCompleted, WorkUnitStatus, WorkflowRevisionHash,
     recurrence::Reminder, time::Deadline,
 };
+use mcbtodo_storage_sqlite::completion_journal::{CompletionJournal, PendingCompletion};
 use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
 
-use crate::{
-    Vault,
-    completion_journal::{CompletionJournal, PendingCompletion},
-    document, is_kind,
-};
+use crate::{CompletionEventRecord, Vault, document, is_kind};
 
 mod graph_batch;
 pub use graph_batch::{AddWorkUnitGraph, GRAPH_STAGE_PREFIX, NewWorkUnit};
@@ -40,13 +37,15 @@ impl Revision {
 
     /// Returns the lowercase hexadecimal SHA-256 digest of the exact Markdown bytes.
     pub fn digest(&self) -> String {
-        format!("{:x}", Sha256::digest(self.0.as_bytes()))
+        hex::encode(Sha256::digest(self.0.as_bytes()))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+
+    use rusqlite::Connection;
 
     use super::*;
 
@@ -60,10 +59,15 @@ mod tests {
         before: Revision,
         after: Revision,
         event: WorkUnitCompleted,
+        origin: Id,
     }
 
     impl InterruptedCompletion {
         fn prepare() -> Self {
+            Self::prepare_with_delivery(true)
+        }
+
+        fn prepare_with_delivery(trigger_workflows: bool) -> Self {
             let root = tempfile::tempdir().unwrap();
             let project = root.path().join("projects/project");
             fs::create_dir_all(project.join("tasks")).unwrap();
@@ -100,8 +104,15 @@ mod tests {
             };
             let _lock = lock(root.path()).unwrap();
             let journal = CompletionJournal::open(root.path(), true).unwrap().unwrap();
+            let origin = Id::new_v4();
             journal
-                .prepare(&event, &before.digest(), &after.digest())
+                .prepare(
+                    &event,
+                    &before.digest(),
+                    &after.digest(),
+                    Some(origin),
+                    trigger_workflows,
+                )
                 .unwrap();
             assert!(journal.events().unwrap().is_empty());
             Self {
@@ -110,6 +121,7 @@ mod tests {
                 before,
                 after,
                 event,
+                origin,
             }
         }
 
@@ -145,7 +157,7 @@ mod tests {
 
     fn assert_staged_validation_preserves_files(store: &VaultStore) -> Result<()> {
         let before = staged_files(&store.root);
-        let result = store.validate_completion_snapshot();
+        let result = store.validate_staged_snapshot();
         assert!(
             before == staged_files(&store.root),
             "snapshot files changed"
@@ -158,6 +170,17 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let store = VaultStore::new(root.path(), chrono_tz::UTC);
         assert_staged_validation_preserves_files(&store).unwrap();
+    }
+
+    #[test]
+    fn completion_snapshot_rejects_invalid_markdown_without_an_event_store() {
+        let root = tempfile::tempdir().unwrap();
+        let calendar = root.path().join("calendar");
+        fs::create_dir(&calendar).unwrap();
+        fs::write(calendar.join("invalid.md"), "Missing front matter").unwrap();
+        let store = VaultStore::new(root.path(), chrono_tz::UTC);
+        let error = assert_staged_validation_preserves_files(&store).unwrap_err();
+        assert!(format!("{error:#}").contains("invalid.md"));
     }
 
     #[test]
@@ -249,7 +272,8 @@ mod tests {
         let rollback = interrupted.root.path().join(ROLLBACK);
         let mut db = rusqlite::Connection::open(&database).unwrap();
         let tx = db.transaction().unwrap();
-        let invalid_event = "uncommitted invalid event";
+        // Valid JSON so SQLite can index it, but not a valid completion event.
+        let invalid_event = r#"{"uncommitted":"invalid event"}"#;
         tx.execute(
             "UPDATE work_unit_completions SET event = ?1",
             [invalid_event],
@@ -339,10 +363,155 @@ mod tests {
     fn completion_page_reconciles_a_pending_publication() {
         let interrupted = InterruptedCompletion::prepare();
         interrupted.publish_markdown();
+        let records = interrupted
+            .store()
+            .with_completion_origin(Id::new_v4())
+            .work_unit_completion_export_page(0)
+            .unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].origin_device_id, Some(interrupted.origin));
         assert_eq!(
             interrupted.store().work_unit_completion_page(0).unwrap(),
             [(1, interrupted.event)]
         );
+    }
+
+    #[test]
+    fn version_one_pending_completion_migrates_without_assigning_an_origin() {
+        let interrupted = InterruptedCompletion::prepare();
+        let database = interrupted.root.path().join(DATABASE);
+        let old_db = Connection::open(&database).unwrap();
+        old_db
+            .execute_batch(
+                "DROP INDEX completion_event_identity;
+                 DROP INDEX completion_workflow_delivery;
+                 ALTER TABLE work_unit_completions DROP COLUMN trigger_workflows;
+                 ALTER TABLE work_unit_completions DROP COLUMN origin_device_id;
+                 PRAGMA user_version = 1;",
+            )
+            .unwrap();
+        drop(old_db);
+        interrupted.publish_markdown();
+        interrupted.validate_staged().unwrap();
+        let store = interrupted.store().with_completion_origin(Id::new_v4());
+        let page = store.work_unit_completion_export_page(0).unwrap();
+        assert_eq!(page.len(), 1);
+        assert_eq!(page[0].sequence, 1);
+        assert_eq!(page[0].event, interrupted.event);
+        assert_eq!(page[0].observed_revision, interrupted.before.digest());
+        assert_eq!(page[0].origin_device_id, None);
+        let current_db = Connection::open(database).unwrap();
+        let version: i64 = current_db
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 3);
+        assert_eq!(
+            store.work_unit_completion_page(0).unwrap(),
+            [(1, interrupted.event)]
+        );
+    }
+
+    #[test]
+    fn version_two_journal_retains_origin_and_workflow_delivery() {
+        let interrupted = InterruptedCompletion::prepare();
+        let database = interrupted.root.path().join(DATABASE);
+        Connection::open(&database)
+            .unwrap()
+            .execute_batch(
+                "DROP INDEX completion_event_identity;
+             DROP INDEX completion_workflow_delivery;
+             ALTER TABLE work_unit_completions DROP COLUMN trigger_workflows;
+             PRAGMA user_version = 2;",
+            )
+            .unwrap();
+        interrupted.publish_markdown();
+        let store = interrupted.store();
+        assert_eq!(
+            store.work_unit_completion_export_page(0).unwrap()[0].origin_device_id,
+            Some(interrupted.origin)
+        );
+        assert_eq!(
+            store.work_unit_completion_page(0).unwrap(),
+            [(1, interrupted.event)]
+        );
+    }
+
+    #[test]
+    fn import_recovers_both_pending_states_without_workflow_delivery() {
+        for already_published in [false, true] {
+            let interrupted = InterruptedCompletion::prepare_with_delivery(false);
+            if already_published {
+                interrupted.publish_markdown();
+            }
+            let store = interrupted.store();
+            let revision = interrupted.before.digest();
+            let origin = Some(interrupted.origin);
+            assert_eq!(
+                store
+                    .import_work_unit_completion(&interrupted.event, &revision, origin)
+                    .unwrap(),
+                !already_published
+            );
+            assert!(
+                !store
+                    .import_work_unit_completion(&interrupted.event, &revision, origin)
+                    .unwrap()
+            );
+            assert_eq!(
+                fs::read_to_string(interrupted.path).unwrap(),
+                &*interrupted.after.0
+            );
+            assert!(store.work_unit_completion_page(0).unwrap().is_empty());
+            let page = store.work_unit_completion_export_page(0).unwrap();
+            assert_eq!(page.len(), 1);
+            assert_eq!(page[0].event, interrupted.event);
+            assert_eq!(page[0].origin_device_id, origin);
+        }
+    }
+
+    #[test]
+    fn import_cannot_change_evidence_or_use_a_stale_revision() {
+        let interrupted = InterruptedCompletion::prepare();
+        let store = interrupted.store();
+        let mut event = interrupted.event.clone();
+        event.evidence.push(EvidenceRef {
+            run_id: Id::new_v4(),
+            step_index: 0,
+        });
+        let revision = interrupted.before.digest();
+        assert!(matches!(
+            store.import_work_unit_completion(&event, &revision, None),
+            Err(WriteError::InvalidDocument(error)) if error.to_string().contains("evidence references")
+        ));
+        assert!(matches!(
+            store.import_work_unit_completion(&interrupted.event, "invalid", None),
+            Err(WriteError::StaleRevision { id: UNIT })
+        ));
+        assert!(
+            store
+                .work_unit_completion_export_page(0)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            fs::read_to_string(interrupted.path).unwrap(),
+            &*interrupted.before.0
+        );
+    }
+
+    #[test]
+    fn completion_snapshot_rejects_a_malformed_origin_identity() {
+        let interrupted = InterruptedCompletion::prepare();
+        interrupted.publish_markdown();
+        let db = Connection::open(interrupted.root.path().join(DATABASE)).unwrap();
+        db.execute(
+            "UPDATE work_unit_completions SET origin_device_id = 'invalid'",
+            [],
+        )
+        .unwrap();
+        drop(db);
+        let error = interrupted.validate_staged().unwrap_err();
+        assert!(format!("{error:#}").contains("invalid completion origin device identity"));
     }
 
     #[test]
@@ -366,7 +535,7 @@ mod tests {
             let before = interrupted.before.digest();
             let after = interrupted.after.digest();
             for (_, event) in &expected {
-                journal.prepare(event, &before, &after).unwrap();
+                journal.prepare(event, &before, &after, None, true).unwrap();
                 journal.commit().unwrap();
             }
         }
@@ -610,6 +779,9 @@ pub enum WriteError {
         before: String,
         after: String,
     },
+    CompletionIdentityConflict {
+        event_id: Id,
+    },
     InvalidVault(anyhow::Error),
     InvalidDocument(anyhow::Error),
     Storage(anyhow::Error),
@@ -646,6 +818,12 @@ impl fmt::Display for WriteError {
                 write!(f, "reminder Task or WorkUnit target {id} was not found")
             }
             Self::StaleRevision { id } => write!(f, "stale revision for document {id}"),
+            Self::CompletionIdentityConflict { event_id } => {
+                write!(
+                    f,
+                    "completion event {event_id} already exists with different content"
+                )
+            }
             Self::DuplicateId { id } => write!(f, "document ID {id} already exists"),
             Self::DestinationExists { path } => write!(f, "{} already exists", path.display()),
             Self::Blocked { id } => write!(f, "work unit {id} has incomplete prerequisites"),
@@ -706,6 +884,7 @@ impl Error for WriteError {
 pub struct VaultStore {
     root: PathBuf,
     timezone: Tz,
+    completion_origin: Option<Id>,
 }
 
 impl VaultStore {
@@ -713,7 +892,14 @@ impl VaultStore {
         Self {
             root: root.into(),
             timezone,
+            completion_origin: None,
         }
+    }
+
+    /// Attributes new WorkUnit completions to the calling installation.
+    pub fn with_completion_origin(mut self, origin_device_id: Id) -> Self {
+        self.completion_origin = Some(origin_device_id);
+        self
     }
 
     /// Captures a Task under its Project's `tasks/<uuid>.md` without replacing an existing file.
@@ -939,12 +1125,7 @@ impl VaultStore {
         let revision = request.expected_revision;
         check_revision(&vault, id, &revision)?;
         let path = unit.path.clone();
-        match unit.data.status {
-            WorkUnitStatus::Completed => (),
-            WorkUnitStatus::Cancelled => return Err(WriteError::Cancelled { id }),
-            _ if vault.graph.blocked(id) => return Err(WriteError::Blocked { id }),
-            _ => (),
-        }
+        ensure_completion_allowed(&vault, id, unit.data.status)?;
         let mut added = Vec::new();
         for &reference in evidence {
             if !unit.data.evidence.contains(&reference) && !added.contains(&reference) {
@@ -971,37 +1152,83 @@ impl VaultStore {
             previous_status: unit.data.status,
             evidence: unit.data.evidence.iter().copied().chain(added).collect(),
         };
-        let journal = match lock.completions.as_ref() {
-            Some(journal) => journal,
-            None => &CompletionJournal::open(&lock.root, true)
+        publish_completion(
+            &lock,
+            PersistedDocument { id, path, revision },
+            next_revision,
+            &event,
+            self.completion_origin,
+            true,
+        )
+    }
+
+    /// Replays a historical completion against its exact pre-completion
+    /// Markdown. Returns false when the identical fact is already committed.
+    /// Imported facts do not trigger local workflows or add evidence links.
+    pub fn import_work_unit_completion(
+        &self,
+        event: &WorkUnitCompleted,
+        observed_revision: &str,
+        origin_device_id: Option<Id>,
+    ) -> Result<bool, WriteError> {
+        let (lock, vault) = self.locked_snapshot()?;
+        if let Some(journal) = &lock.completions
+            && let Some(existing) = journal
+                .committed_event(event.event_id)
                 .map_err(WriteError::Storage)?
-                .expect("create requested"),
-        };
-        check_on_disk(&path, id, &revision)?;
-        // The database directory entry must survive a crash before Markdown is published.
-        sync_directory(open_directory(&lock.root).map_err(WriteError::Storage)?)
-            .map_err(|error| storage(error, "syncing", &lock.root))?;
-        journal
-            .prepare(&event, &revision.digest(), &next_revision.digest())
-            .context("preparing WorkUnit completion event")
-            .map_err(WriteError::Storage)?;
-        match replace(path, id, &revision, next_revision) {
-            Ok(document) => match journal.commit() {
-                Ok(()) => Ok(document),
-                Err(error) => Err(WriteError::PublishedButNotSynced {
-                    document,
-                    source: io::Error::other(error.context("committing WorkUnit completion event")),
-                }),
-            },
-            Err(error @ WriteError::PublishedButNotSynced { .. }) => Err(error),
-            Err(error) => {
-                journal
-                    .abort()
-                    .with_context(|| format!("{error}. Could not clear the prepared completion"))
-                    .map_err(WriteError::Storage)?;
-                Err(error)
-            }
+        {
+            return if existing.event == *event
+                && existing.observed_revision == observed_revision
+                && existing.origin_device_id == origin_device_id
+            {
+                Ok(false)
+            } else {
+                Err(WriteError::CompletionIdentityConflict {
+                    event_id: event.event_id,
+                })
+            };
         }
+
+        let id = event.work_unit_id;
+        let unit = vault
+            .units
+            .get(&id)
+            .ok_or(WriteError::WorkUnitNotFound { id })?;
+        let revision = vault.revision(id).expect("loaded WorkUnit has a revision");
+        if revision.digest() != observed_revision {
+            return Err(WriteError::StaleRevision { id });
+        }
+        ensure_completion_allowed(&vault, id, unit.data.status)?;
+        if unit.data.status == WorkUnitStatus::Completed
+            || unit.data.status != event.previous_status
+            || unit.data.project_id != event.project_id
+            || unit.data.parent_task_id != event.parent_task_id
+        {
+            return Err(WriteError::InvalidDocument(anyhow!(
+                "completion event does not describe a transition from WorkUnit {id}'s current state"
+            )));
+        }
+        if unit.data.evidence != event.evidence {
+            return Err(WriteError::InvalidDocument(anyhow!(
+                "import cannot change the local evidence references for WorkUnit {id}"
+            )));
+        }
+
+        let updated = document::complete_unit(&revision.0, &unit.data, &[])
+            .map_err(WriteError::InvalidDocument)?;
+        publish_completion(
+            &lock,
+            PersistedDocument {
+                id,
+                path: unit.path.clone(),
+                revision: revision.clone(),
+            },
+            Revision::from_source(updated),
+            event,
+            origin_device_id,
+            false,
+        )?;
+        Ok(true)
     }
 
     /// Reads committed completion events in publication order, reconciling any
@@ -1025,15 +1252,41 @@ impl VaultStore {
         }
     }
 
-    /// Reconciles interrupted publication and returns up to 64 committed events
-    /// whose sequence exceeds `after`, in ascending sequence order.
+    /// Reconciles interrupted publication and returns up to 64 committed local
+    /// events for workflow delivery after `after`, in ascending sequence order.
+    /// Reports [`io::ErrorKind::WouldBlock`] when the Vault writer lock is held.
     pub fn work_unit_completion_page(
         &self,
         after: i64,
     ) -> Result<Vec<(i64, WorkUnitCompleted)>, WriteError> {
-        let lock = self.lock_completion_reader(lock)?;
+        self.read_completion_page(after, try_lock, true)
+            .map(|page| {
+                page.into_iter()
+                    .map(|record| (record.sequence, record.event))
+                    .collect()
+            })
+    }
+
+    /// Returns a bounded completion page with the original observed Markdown revisions.
+    /// Waits for the Vault writer lock before reading.
+    pub fn work_unit_completion_export_page(
+        &self,
+        after: i64,
+    ) -> Result<Vec<CompletionEventRecord>, WriteError> {
+        self.read_completion_page(after, lock, false)
+    }
+
+    fn read_completion_page(
+        &self,
+        after: i64,
+        acquire_lock: fn(&Path) -> Result<File>,
+        workflow_only: bool,
+    ) -> Result<Vec<CompletionEventRecord>, WriteError> {
+        let lock = self.lock_completion_reader(acquire_lock)?;
         match lock.completions.as_ref() {
-            Some(journal) => journal.page(after).map_err(WriteError::Storage),
+            Some(journal) => journal
+                .page(after, workflow_only)
+                .map_err(WriteError::Storage),
             None => Ok(Vec::new()),
         }
     }
@@ -1052,17 +1305,16 @@ impl VaultStore {
         Ok(lock)
     }
 
-    /// Validates completion events in a private, stable Vault staging directory.
+    /// Validates Markdown and completion events in a private, stable staging directory.
     ///
     /// This takes no Vault lock and does not modify the snapshot. SQLite recovery
     /// runs on a disposable copy. A pending completion may match either the
-    /// before or after Markdown digest. Call [`Vault::load`] for general Markdown
-    /// validation, including when the event database is absent.
-    pub fn validate_completion_snapshot(&self) -> Result<()> {
+    /// before or after digest of a document in the validated Markdown snapshot.
+    pub fn validate_staged_snapshot(&self) -> Result<()> {
+        let vault = Vault::load(&self.root, self.timezone).context("validating staged Markdown")?;
         if let Some(pending) = CompletionJournal::validate_snapshot(&self.root)
             .context("validating WorkUnit completion journal")?
         {
-            let vault = Vault::load(&self.root, self.timezone)?;
             match_pending_completion(&vault, pending)?;
         }
         Ok(())
@@ -1335,6 +1587,67 @@ impl VaultStore {
             completions,
             _lock: lock,
         })
+    }
+}
+
+fn ensure_completion_allowed(
+    vault: &Vault,
+    id: Id,
+    status: WorkUnitStatus,
+) -> Result<(), WriteError> {
+    match status {
+        WorkUnitStatus::Completed => Ok(()),
+        WorkUnitStatus::Cancelled => Err(WriteError::Cancelled { id }),
+        _ if vault.graph.blocked(id) => Err(WriteError::Blocked { id }),
+        _ => Ok(()),
+    }
+}
+
+fn publish_completion(
+    lock: &LockedRoot,
+    current: PersistedDocument,
+    next_revision: Revision,
+    event: &WorkUnitCompleted,
+    origin_device_id: Option<Id>,
+    trigger_workflows: bool,
+) -> Result<PersistedDocument, WriteError> {
+    let PersistedDocument { path, id, revision } = current;
+    let journal = match lock.completions.as_ref() {
+        Some(journal) => journal,
+        None => &CompletionJournal::open(&lock.root, true)
+            .map_err(WriteError::Storage)?
+            .expect("create requested"),
+    };
+    check_on_disk(&path, id, &revision)?;
+    // The database directory entry must survive a crash before Markdown is published.
+    sync_directory(open_directory(&lock.root).map_err(WriteError::Storage)?)
+        .map_err(|error| storage(error, "syncing", &lock.root))?;
+    journal
+        .prepare(
+            event,
+            &revision.digest(),
+            &next_revision.digest(),
+            origin_device_id,
+            trigger_workflows,
+        )
+        .context("preparing WorkUnit completion event")
+        .map_err(WriteError::Storage)?;
+    match replace(path, id, &revision, next_revision) {
+        Ok(document) => match journal.commit() {
+            Ok(()) => Ok(document),
+            Err(error) => Err(WriteError::PublishedButNotSynced {
+                document,
+                source: io::Error::other(error.context("committing WorkUnit completion event")),
+            }),
+        },
+        Err(error @ WriteError::PublishedButNotSynced { .. }) => Err(error),
+        Err(error) => {
+            journal
+                .abort()
+                .with_context(|| format!("{error}. Could not clear the prepared completion"))
+                .map_err(WriteError::Storage)?;
+            Err(error)
+        }
     }
 }
 

@@ -1,6 +1,8 @@
 use super::*;
+#[cfg(unix)]
 use crate::proposal;
 use mcbtodo_vault::Vault;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
 const PROJECT: &str = "10000000-0000-4000-8000-000000000001";
@@ -108,10 +110,14 @@ fn modern_stdio_reads_fixture_projections_without_a_handshake() {
     assert_eq!(result(4)["resultType"], "complete");
     assert_eq!(result(4)["_meta"][SERVER_INFO]["name"], "mcbtodo");
     let tools = result(5)["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 15);
+    assert_eq!(tools.len(), if cfg!(unix) { 15 } else { 6 });
     for tool in tools {
         let posts_proposal = tool["name"].as_str().unwrap().starts_with("propose_");
+        assert!(!posts_proposal || cfg!(unix));
         assert_eq!(tool["annotations"]["readOnlyHint"], !posts_proposal);
+    }
+    if !cfg!(unix) {
+        return;
     }
     let schema =
         |name: &str| tools.iter().find(|tool| tool["name"] == name).unwrap()["inputSchema"].clone();
@@ -179,6 +185,7 @@ fn list_inbox_returns_revision_and_metadata_without_mutating_markdown() {
     assert_eq!(inbox_tool["inputSchema"]["additionalProperties"], false);
 }
 
+#[cfg(unix)]
 #[test]
 fn workflow_draft_tool_captures_exact_base64_sources_idempotently_for_review() {
     let home = tempfile::tempdir().unwrap();
@@ -254,6 +261,7 @@ bindings:
     assert_eq!(tool["annotations"]["readOnlyHint"], false);
 }
 
+#[cfg(unix)]
 #[test]
 fn inbox_triage_proposal_is_revision_bound_idempotent_and_review_only() {
     let temp = tempfile::tempdir().unwrap();
@@ -391,6 +399,7 @@ fn stdio_rejects_batched_and_oversized_messages() {
     assert_eq!(responses[1]["error"]["code"], -32600);
 }
 
+#[cfg(unix)]
 #[test]
 fn proposals_are_idempotent_and_do_not_change_the_vault() {
     let home = tempfile::tempdir().unwrap();
@@ -507,6 +516,7 @@ fn graph_diff_previews_parallel_units_and_rejects_cycles_without_writes() {
     assert_eq!(vault.task_graph().order().len(), 3);
 }
 
+#[cfg(unix)]
 #[test]
 fn graph_diff_submission_replays_the_review_and_rejects_reused_request_ids() {
     let home = tempfile::tempdir().unwrap();
@@ -549,6 +559,7 @@ fn graph_diff_submission_replays_the_review_and_rejects_reused_request_ids() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn scheduling_proposal_requires_a_current_revision_and_matching_local_offsets() {
     let home = tempfile::tempdir().unwrap();
@@ -606,6 +617,7 @@ fn scheduling_proposal_requires_a_current_revision_and_matching_local_offsets() 
     assert_eq!(std::fs::read(&document).unwrap(), before);
 }
 
+#[cfg(unix)]
 #[test]
 fn reminder_proposals_validate_schedule_target_revision_and_are_idempotent() {
     let home = tempfile::tempdir().unwrap();
@@ -662,6 +674,7 @@ fn reminder_proposals_validate_schedule_target_revision_and_are_idempotent() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn reminder_proposals_reject_external_vaults() {
     let home = tempfile::tempdir().unwrap();
@@ -695,6 +708,7 @@ fn reminder_proposals_reject_external_vaults() {
     assert_eq!(response[0]["result"]["isError"], true);
 }
 
+#[cfg(unix)]
 #[test]
 fn deadline_proposals_are_idempotent_revision_checked_and_leave_vault_unchanged() {
     let home = tempfile::tempdir().unwrap();
@@ -806,4 +820,22 @@ fn deadline_proposals_are_idempotent_revision_checked_and_leave_vault_unchanged(
             .deadline(PROJECT.parse().unwrap()),
         before_deadline
     );
+}
+
+#[cfg(not(unix))]
+#[test]
+fn unsupported_proposal_tool_reports_the_capability_error_without_creating_state() {
+    let home = tempfile::tempdir().unwrap();
+    let paths = WorkspacePaths::from_home(home.path().to_owned());
+    let responses = exchange_in(
+        fixture(),
+        &paths,
+        &[call(1, "propose_capture_task", json!({}))],
+    );
+    assert_eq!(responses[0]["result"]["isError"], true);
+    assert_eq!(
+        responses[0]["result"]["content"][0]["text"],
+        "The private proposal queue is unavailable on this platform."
+    );
+    assert!(!paths.data_dir().exists());
 }

@@ -423,7 +423,7 @@ fn valid_hash(hash: &str) -> bool {
 }
 
 fn digest(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    hex::encode(Sha256::digest(bytes))
 }
 
 fn invalid_data(

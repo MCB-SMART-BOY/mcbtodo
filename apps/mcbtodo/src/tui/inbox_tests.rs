@@ -3,6 +3,7 @@ use std::fs;
 use super::{calendar_tests::screen, *};
 
 const PROJECT: &str = include_str!("../../../../examples/vault/projects/rust-os/project.md");
+const TITLE: &str = "整理笔记 Review ideas";
 
 fn vault_with_inbox() -> (tempfile::TempDir, Vault, Id) {
     let temp = tempfile::tempdir().unwrap();
@@ -14,7 +15,7 @@ fn vault_with_inbox() -> (tempfile::TempDir, Vault, Id) {
     fs::write(
         root.join(format!("inbox/{id}.md")),
         format!(
-            "---\nschema: mcbtodo.inbox-entry/v1\nid: {id}\ncaptured_at: \"2026-11-20T08:00:00Z\"\ntags:\n  - idea\n---\n# Unsorted thought\n\nKeep this note.\n"
+            "---\nschema: mcbtodo.inbox-entry/v1\nid: {id}\ncaptured_at: \"2026-11-20T08:00:00Z\"\ntags:\n  - idea\n---\n# {TITLE}\n\nKeep this note.\n"
         ),
     )
     .unwrap();
@@ -29,8 +30,9 @@ fn inbox_view_lists_entries_and_triage_uses_the_observed_revision() {
     state.switch(View::Inbox, &vault);
 
     let text = screen(&state, &vault, 80, 18);
-    assert!(text.contains("Unsorted thought"), "{text}");
+    assert!(text.contains(TITLE), "{text}");
     assert!(text.contains("#idea"), "{text}");
+    assert!(text.contains("2026-11-20 16:00"), "{text}");
 
     state.handle(
         KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE),
@@ -78,6 +80,49 @@ fn inbox_view_lists_entries_and_triage_uses_the_observed_revision() {
 }
 
 #[test]
+fn inbox_keeps_title_and_assignment_controls_in_a_short_terminal() {
+    let (_temp, vault, inbox_id) = vault_with_inbox();
+    let mut state = State::new("2026-11-20".parse().unwrap());
+    state.switch(View::Inbox, &vault);
+
+    let text = screen(&state, &vault, 24, 5);
+    let rows: Vec<_> = text.lines().collect();
+    assert!(rows[2].starts_with("│› 整理笔记 Review"), "{text}");
+    assert!(rows[2].ends_with('│'), "{text}");
+    assert_eq!(state.selected_document(&vault), Some(inbox_id));
+
+    state.handle(
+        KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE),
+        &vault,
+    );
+    let text = screen(&state, &vault, 24, 5);
+    let rows: Vec<_> = text.lines().collect();
+    assert!(rows[0].ends_with("PICKER"), "{text}");
+    assert!(rows[2].contains("› Rust OS"), "{text}");
+    assert!(
+        rows[4].contains("Enter assign") && rows[4].contains("Esc"),
+        "{text}"
+    );
+}
+
+#[test]
+fn inbox_picker_without_projects_offers_only_cancel() {
+    let (temp, vault, _) = vault_with_inbox();
+    fs::remove_dir_all(temp.path().join("projects/rust-os")).unwrap();
+    let vault = Vault::load(temp.path(), vault.timezone()).unwrap();
+    let mut state = State::new("2026-11-20".parse().unwrap());
+    state.switch(View::Inbox, &vault);
+    state.handle(
+        KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE),
+        &vault,
+    );
+    let text = screen(&state, &vault, 24, 5);
+    let rows: Vec<_> = text.lines().collect();
+    assert!(rows[2].contains("No Projects available"), "{text}");
+    assert_eq!(rows[4].trim(), "Esc cancel");
+}
+
+#[test]
 fn inbox_project_picker_cancels_without_writing() {
     let (_temp, vault, _) = vault_with_inbox();
     let mut state = State::new("2026-11-20".parse().unwrap());
@@ -101,11 +146,7 @@ fn inbox_triage_refuses_to_overwrite_an_external_edit() {
     let revision = vault.revision(inbox_id).unwrap().clone();
     let path = vault.source(inbox_id).unwrap().to_owned();
     let source = fs::read_to_string(&path).unwrap();
-    fs::write(
-        &path,
-        source.replace("Unsorted thought", "Edited elsewhere"),
-    )
-    .unwrap();
+    fs::write(&path, source.replace(TITLE, "Edited elsewhere")).unwrap();
 
     let mut state = State::new("2026-11-20".parse().unwrap());
     state.triage_inbox(temp.path(), &mut vault, inbox_id, project_id, revision);

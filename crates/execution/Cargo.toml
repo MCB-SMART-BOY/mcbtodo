@@ -6,21 +6,21 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
-license-file.workspace = true
 description = "Sandbox and Agent execution adapters for mcbtodo workflows."
 documentation = "https://docs.rs/mcbtodo-execution"
 
-[dependencies]
+[target.'cfg(target_os = "linux")'.dependencies]
 anyhow.workspace = true
+mcbtodo-agent-codex.workspace = true
 mcbtodo-platform.workspace = true
+mcbtodo-ports.workspace = true
 mcbtodo-workflow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
-
-[target.'cfg(target_os = "linux")'.dependencies]
-rustix = { workspace = true, features = ["event", "fs", "net", "process"] }
+toml.workspace = true
+rustix = { workspace = true, features = ["fs", "net", "process", "stdio"] }
 
 [lints]
 workspace = true

@@ -1,16 +1,20 @@
-//! Bounded wall-clock recurrence for reminders.
+//! Bounded recurrence for reminders, tasks, and calendar events.
 
 use std::num::NonZeroU16;
 
-use chrono::{DateTime, Days, LocalResult, NaiveDate, NaiveTime, TimeDelta, TimeZone, Utc};
+use chrono::{
+    DateTime, Days, LocalResult, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta, TimeZone, Utc,
+};
 use chrono_tz::{GapInfo, Tz};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
     Id,
-    time::{DateSpan, ZonedMoment},
+    time::{DateSpan, DateTimeSpan, Span, ZonedMoment, date_window},
 };
+
+const MAX_CALENDAR_OCCURRENCES: usize = 1024;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum RecurrenceError {
@@ -18,6 +22,12 @@ pub enum RecurrenceError {
     DateOrder,
     #[error("occurrence window must be ordered and span no more than 366 days")]
     Window,
+    #[error("too many occurrences intersect the calendar window (limit {limit})")]
+    ProjectionLimit { limit: usize },
+    #[error("recurring event end date is out of range")]
+    OccurrenceEnd,
+    #[error("recurrence start must match the event's start date")]
+    EventStart,
 }
 
 /// An exclusive start and inclusive end, with at most 366 days of lookback.
@@ -134,19 +144,7 @@ impl RecurrenceRule {
         let mut occurrences = Vec::new();
         while let Some(day) = next.filter(|date| *date <= last_date) {
             let local = day.and_time(rule.time);
-            let occurrence = match rule.timezone.from_local_datetime(&local) {
-                LocalResult::Single(instant) => Some(instant),
-                LocalResult::Ambiguous(first, second) => Some(match rule.dst.fold {
-                    FoldPolicy::Earlier => first.min(second),
-                    FoldPolicy::Later => first.max(second),
-                }),
-                LocalResult::None => match rule.dst.gap {
-                    GapPolicy::Skip => None,
-                    GapPolicy::NextValid => {
-                        GapInfo::new(&local, &rule.timezone).and_then(|gap| gap.end)
-                    }
-                },
-            };
+            let occurrence = resolve_local(local, rule.timezone, rule.dst);
             if let Some(instant) = occurrence.map(|instant| instant.to_utc())
                 && window.contains(instant)
             {
@@ -157,6 +155,20 @@ impl RecurrenceRule {
         occurrences.sort_unstable();
         occurrences.dedup();
         occurrences
+    }
+}
+
+fn resolve_local(local: NaiveDateTime, zone: Tz, dst: DstPolicy) -> Option<DateTime<Tz>> {
+    match zone.from_local_datetime(&local) {
+        LocalResult::Single(instant) => Some(instant),
+        LocalResult::Ambiguous(first, second) => Some(match dst.fold {
+            FoldPolicy::Earlier => first.min(second),
+            FoldPolicy::Later => first.max(second),
+        }),
+        LocalResult::None => match dst.gap {
+            GapPolicy::Skip => None,
+            GapPolicy::NextValid => GapInfo::new(&local, &zone)?.end,
+        },
     }
 }
 
@@ -200,33 +212,164 @@ impl CalendarRecurrence {
         self.0.start
     }
 
+    pub fn validate_event(self, template: Span) -> Result<(), RecurrenceError> {
+        let date = match template {
+            Span::DateSpan(span) => span.start(),
+            Span::DateTimeSpan(span) => template_local_start(span)?.date(),
+        };
+        if date != self.start() {
+            return Err(RecurrenceError::EventStart);
+        }
+        Ok(())
+    }
+
+    /// Expand whole events intersecting the display window. Timed events
+    /// repeat at the template's local start time and keep its elapsed duration.
+    pub fn overlapping_events(
+        self,
+        template: Span,
+        window: DateSpan,
+        display_zone: Tz,
+    ) -> Result<Vec<Span>, RecurrenceError> {
+        self.validate_event(template)?;
+        match template {
+            Span::DateSpan(span) => self
+                .overlapping_spans(span, window)
+                .map(|spans| spans.into_iter().map(Span::DateSpan).collect()),
+            Span::DateTimeSpan(span) => self.overlapping_timed_events(span, window, display_zone),
+        }
+    }
+
     /// Return occurrence anchor dates in an inclusive window no longer than 366 days.
     pub fn occurrence_dates(self, window: DateSpan) -> Result<Vec<NaiveDate>, RecurrenceError> {
+        Self::check_window(window)?;
+        Ok(self
+            .dates_between(window.start(), window.through())
+            .collect())
+    }
+
+    /// Project whole occurrences, including those that start before the query window.
+    pub fn overlapping_spans(
+        self,
+        template: DateSpan,
+        window: DateSpan,
+    ) -> Result<Vec<DateSpan>, RecurrenceError> {
+        Self::check_window(window)?;
+        let duration = Days::new((template.through() - template.start()).num_days() as u64);
+        let earliest = window
+            .start()
+            .checked_sub_days(duration)
+            .unwrap_or(NaiveDate::MIN);
+        let mut spans = Vec::new();
+        for start in self.dates_between(earliest, window.through()) {
+            check_occurrence_limit(spans.len())?;
+            let through = start
+                .checked_add_days(duration)
+                .ok_or(RecurrenceError::OccurrenceEnd)?;
+            spans.push(DateSpan::new(start, through).map_err(|_| RecurrenceError::OccurrenceEnd)?);
+        }
+        Ok(spans)
+    }
+
+    fn overlapping_timed_events(
+        self,
+        template: DateTimeSpan,
+        window: DateSpan,
+        display_zone: Tz,
+    ) -> Result<Vec<Span>, RecurrenceError> {
+        Self::check_window(window)?;
+        let Some((window_start, window_end)) = date_window(window, display_zone) else {
+            return Ok(Vec::new());
+        };
+
+        let duration = template.end() - template.start();
+        let local_start = template_local_start(template)?.time();
+        let zone = template.timezone();
+        // Include adjacent anchor dates for zone offsets and a skipped local day.
+        let earliest = window_start
+            .checked_sub_signed(duration)
+            .and_then(|time| time.date_naive().checked_sub_days(Days::new(2)))
+            .unwrap_or(NaiveDate::MIN);
+        let latest = window_end
+            .date_naive()
+            .checked_add_days(Days::new(2))
+            .unwrap_or(NaiveDate::MAX);
+
+        let mut spans = Vec::new();
+        let mut last_start = None;
+        for day in self.dates_between(earliest, latest) {
+            let start = if day == self.start() {
+                template.start()
+            } else if let Some(start) = resolve_local(day.and_time(local_start), zone, self.0.dst) {
+                start.fixed_offset()
+            } else {
+                continue;
+            };
+            if start >= window_end || last_start == Some(start) {
+                continue;
+            }
+            let end = start
+                .to_utc()
+                .checked_add_signed(duration)
+                .ok_or(RecurrenceError::OccurrenceEnd)?;
+            if end <= window_start {
+                continue;
+            }
+            check_occurrence_limit(spans.len())?;
+            let span = DateTimeSpan::new(start, end.with_timezone(&zone).fixed_offset(), zone)
+                .map_err(|_| RecurrenceError::OccurrenceEnd)?;
+            spans.push(Span::DateTimeSpan(span));
+            last_start = Some(start);
+        }
+        Ok(spans)
+    }
+
+    fn check_window(window: DateSpan) -> Result<(), RecurrenceError> {
         if (window.through() - window.start()).num_days() > 366 {
             return Err(RecurrenceError::Window);
         }
+        Ok(())
+    }
+
+    fn dates_between(
+        self,
+        start: NaiveDate,
+        through: NaiveDate,
+    ) -> impl Iterator<Item = NaiveDate> {
         let rule = self.0;
         let stride = i64::from(rule.interval.get())
             * match rule.frequency {
                 Frequency::Daily => 1,
                 Frequency::Weekly => 7,
             };
-        let first = window.start().max(rule.start);
+        let first = start.max(rule.start);
         let offset = (first - rule.start).num_days();
         let steps = (offset + stride - 1) / stride;
+        let stride_days = Days::new(stride as u64);
         let first = rule
             .start
             .checked_add_days(Days::new((steps * stride) as u64));
-        let mut next = first;
-        let mut dates = Vec::new();
-        while let Some(day) = next.filter(|date| {
-            *date <= window.through() && rule.through.is_none_or(|through| *date <= through)
-        }) {
-            dates.push(day);
-            next = day.checked_add_days(Days::new(stride as u64));
-        }
-        Ok(dates)
+        let last = rule.through.map_or(through, |end| end.min(through));
+        std::iter::successors(first, move |day| day.checked_add_days(stride_days))
+            .take_while(move |&day| day <= last)
     }
+}
+
+fn template_local_start(template: DateTimeSpan) -> Result<NaiveDateTime, RecurrenceError> {
+    let start = template.start();
+    start
+        .naive_utc()
+        .checked_add_offset(*start.offset())
+        .ok_or(RecurrenceError::EventStart)
+}
+
+fn check_occurrence_limit(count: usize) -> Result<(), RecurrenceError> {
+    if count >= MAX_CALENDAR_OCCURRENCES {
+        return Err(RecurrenceError::ProjectionLimit {
+            limit: MAX_CALENDAR_OCCURRENCES,
+        });
+    }
+    Ok(())
 }
 
 impl TryFrom<CalendarRuleFields> for CalendarRecurrence {
@@ -421,6 +564,119 @@ mod tests {
         assert_eq!(
             rule.occurrence_dates(window).unwrap_err(),
             RecurrenceError::Window
+        );
+    }
+
+    #[test]
+    fn calendar_continuations_are_limited_by_matching_anchors_not_duration() {
+        let start = "2020-01-01".parse::<NaiveDate>().unwrap();
+        let end = start + Days::new(1024);
+        let template = DateSpan::new(start, end).unwrap();
+        let policy = DstPolicy {
+            gap: GapPolicy::Skip,
+            fold: FoldPolicy::Earlier,
+        };
+        let daily = CalendarRecurrence::new(start, None, Frequency::Daily, NonZeroU16::MIN, policy)
+            .unwrap();
+        let before = end.pred_opt().unwrap();
+        assert_eq!(
+            daily
+                .overlapping_spans(template, DateSpan::new(before, before).unwrap())
+                .unwrap()
+                .len(),
+            1024
+        );
+        let window = DateSpan::new(end, end).unwrap();
+        assert_eq!(
+            daily.overlapping_spans(template, window).unwrap_err(),
+            RecurrenceError::ProjectionLimit { limit: 1024 }
+        );
+        let weekly = CalendarRecurrence::new(
+            start,
+            Some(start),
+            Frequency::Weekly,
+            NonZeroU16::MIN,
+            policy,
+        )
+        .unwrap();
+        assert_eq!(
+            weekly.overlapping_spans(template, window).unwrap(),
+            [template]
+        );
+    }
+
+    #[test]
+    fn timed_continuations_share_the_calendar_occurrence_limit() {
+        let start = instant("2020-01-01T00:00:00Z");
+        let end = start + TimeDelta::days(1025);
+        let zone = chrono_tz::UTC;
+        let template = Span::DateTimeSpan(
+            DateTimeSpan::new(start.fixed_offset(), end.fixed_offset(), zone).unwrap(),
+        );
+        let rule = CalendarRecurrence::new(
+            start.date_naive(),
+            None,
+            Frequency::Daily,
+            NonZeroU16::MIN,
+            DstPolicy {
+                gap: GapPolicy::Skip,
+                fold: FoldPolicy::Earlier,
+            },
+        )
+        .unwrap();
+        let last = end.date_naive().pred_opt().unwrap();
+        let previous = last.pred_opt().unwrap();
+        let at_limit = rule
+            .overlapping_events(template, DateSpan::new(previous, previous).unwrap(), zone)
+            .unwrap();
+        assert_eq!(at_limit.len(), 1024);
+        assert_eq!(at_limit.first(), Some(&template));
+        assert_eq!(
+            rule.overlapping_events(template, DateSpan::new(last, last).unwrap(), zone),
+            Err(RecurrenceError::ProjectionLimit { limit: 1024 })
+        );
+    }
+
+    #[test]
+    fn timed_recurrence_preserves_the_explicit_fold_offset_of_its_anchor() {
+        let anchor: NaiveDate = "2026-11-01".parse().unwrap();
+        let zone = chrono_tz::America::New_York;
+        let template = Span::DateTimeSpan(
+            DateTimeSpan::new(
+                "2026-11-01T01:50:00-05:00".parse().unwrap(),
+                "2026-11-01T02:10:00-05:00".parse().unwrap(),
+                zone,
+            )
+            .unwrap(),
+        );
+        let rule = CalendarRecurrence::new(
+            anchor,
+            None,
+            Frequency::Daily,
+            NonZeroU16::MIN,
+            DstPolicy {
+                gap: GapPolicy::Skip,
+                fold: FoldPolicy::Earlier,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            rule.overlapping_events(template, DateSpan::new(anchor, anchor).unwrap(), zone)
+                .unwrap(),
+            [template]
+        );
+        let tomorrow = anchor.succ_opt().unwrap();
+        let wrong_anchor = CalendarRecurrence::new(
+            tomorrow,
+            None,
+            Frequency::Daily,
+            NonZeroU16::MIN,
+            rule.0.dst,
+        )
+        .unwrap();
+        assert_eq!(
+            wrong_anchor.validate_event(template),
+            Err(RecurrenceError::EventStart)
         );
     }
 }

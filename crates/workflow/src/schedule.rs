@@ -6,6 +6,10 @@ use chrono::{DateTime, Datelike, LocalResult, NaiveDate, Offset, TimeDelta, Time
 use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
 
+mod spec;
+
+pub use spec::{ClockScheduleError, Fold, Missed, Overlap, ScheduleSummary, Trigger};
+
 const NANOS_PER_SECOND: i128 = 1_000_000_000;
 const SECONDS_PER_DAY: i64 = 86_400;
 const NANOS_PER_DAY: i128 = SECONDS_PER_DAY as i128 * NANOS_PER_SECOND;
@@ -56,10 +60,10 @@ pub enum ScheduleError {
 }
 
 #[derive(Clone, Debug)]
-pub struct Schedule(Trigger);
+pub struct Schedule(ClockTrigger);
 
 #[derive(Clone, Debug)]
-enum Trigger {
+enum ClockTrigger {
     Once(DateTime<Utc>),
     Interval { anchor: DateTime<Utc>, period: i128 },
     Cron(Cron),
@@ -67,7 +71,7 @@ enum Trigger {
 
 impl Schedule {
     pub fn once(at: DateTime<Utc>) -> Self {
-        Self(Trigger::Once(at))
+        Self(ClockTrigger::Once(at))
     }
 
     /// Resolve a date-only once trigger to the first midnight of that civil date
@@ -93,25 +97,27 @@ impl Schedule {
         if anchor.timestamp_subsec_nanos() >= NANOS_PER_SECOND as u32 {
             return Err(ScheduleError::IntervalLeapSecond);
         }
-        Ok(Self(Trigger::Interval { anchor, period }))
+        Ok(Self(ClockTrigger::Interval { anchor, period }))
     }
 
     /// Five fields with wildcards, lists, inclusive ranges, optional steps on
     /// wildcards and ranges, and case-insensitive three-letter month and weekday
     /// names. Sunday is 0 or 7. If both day fields are restricted, either may match.
     pub fn cron(expression: &str, timezone: Tz, dst: DstResolution) -> Result<Self, ScheduleError> {
-        Ok(Self(Trigger::Cron(Cron::parse(expression, timezone, dst)?)))
+        Ok(Self(ClockTrigger::Cron(Cron::parse(
+            expression, timezone, dst,
+        )?)))
     }
 
     /// The first occurrence strictly after `after`.
     pub fn next_after(&self, after: DateTime<Utc>) -> Option<DateTime<Utc>> {
         match &self.0 {
-            Trigger::Once(at) => (*at > after).then_some(*at),
-            Trigger::Interval { anchor, period } => {
+            ClockTrigger::Once(at) => (*at > after).then_some(*at),
+            ClockTrigger::Interval { anchor, period } => {
                 let index = first_interval_index(*anchor, *period, after);
                 interval_at(*anchor, *period, index)
             }
-            Trigger::Cron(cron) => cron.next_after(after),
+            ClockTrigger::Cron(cron) => cron.next_after(after),
         }
     }
 
@@ -133,12 +139,12 @@ impl Schedule {
             MissedPolicy::ReplayLimited { limit } => limit.get(),
         };
         match &self.0 {
-            Trigger::Once(at) if *at > after && *at <= through => MissedOccurrences {
+            ClockTrigger::Once(at) if *at > after && *at <= through => MissedOccurrences {
                 total: 1,
                 occurrences: if limit == 0 { vec![] } else { vec![*at] },
             },
-            Trigger::Once(_) => MissedOccurrences::default(),
-            Trigger::Interval { anchor, period } if through >= *anchor => {
+            ClockTrigger::Once(_) => MissedOccurrences::default(),
+            ClockTrigger::Interval { anchor, period } if through >= *anchor => {
                 let first = first_interval_index(*anchor, *period, after);
                 let end = (timestamp_nanos(through) - timestamp_nanos(*anchor)) / period + 1;
                 let occurrences = (first.max(end - limit as i128)..end)
@@ -149,8 +155,8 @@ impl Schedule {
                     occurrences,
                 }
             }
-            Trigger::Interval { .. } => MissedOccurrences::default(),
-            Trigger::Cron(cron) => cron.missed(after, through, limit),
+            ClockTrigger::Interval { .. } => MissedOccurrences::default(),
+            ClockTrigger::Cron(cron) => cron.missed(after, through, limit),
         }
     }
 }

@@ -1,36 +1,75 @@
 # mcbtodo
 
-面向 Linux 的 Markdown 个人工作台，当前发行构建目标为 x86_64 和 AArch64。默认打开月历，使用 Helix 风格的键位管理日期选择，在同一工作台查看任务层级、依赖和日程。后台守护进程保存专注计时；尚未声明或验证其他操作系统支持。
+以 Markdown Vault 为基础的个人工作台。默认打开月历，使用 Helix 风格的键位管理日期选择，在同一工作台查看任务层级、依赖和日程。后台守护进程保存专注计时。当前发行构建目标为 Linux x86_64 和 AArch64。macOS ARM64 和 Windows x64 的前台应用已通过交叉类型检查，原生运行验证仍待完成。
 
 ## 开始使用
 
 在 Linux ARM64 或 x86_64 上使用 Rust 1.100 或更高版本。构建守护进程时需要 C 编译工具链来编译随包提供的 SQLite。
 
 ```sh
-cargo build --locked --workspace --bin mcbtodo --bin mcbtodo-daemon --bin mcbtodo-worker
-./target/debug/mcbtodo init
-./target/debug/mcbtodo
+cargo run
 ```
 
-根 `Cargo.toml` 将 `apps/mcbtodo` 设为唯一 `default-member`，所以开发时在仓库根目录直接运行 `cargo run` 会启动 TUI；Cargo 参数与程序参数用 `--` 分隔，例如 `cargo run -- --help` 或 `cargo run -- init`。要启动另一个 workspace binary，明确选择包：
+根 `Cargo.toml` 将 `apps/mcbtodo` 设为唯一 `default-member`，所以在仓库根目录直接运行 `cargo run` 会启动 TUI。首次启动会安全创建默认配置、状态目录和空 Vault；现有配置不会被覆盖。`mcbtodo init` 仍可用于提前初始化。Cargo 参数与程序参数用 `--` 分隔，例如 `cargo run -- --help` 或 `cargo run -- init`。要启动另一个 workspace binary，明确选择包：
 
 ```sh
+cargo build --locked --workspace --bin mcbtodo --bin mcbtodo-daemon --bin mcbtodo-worker
 cargo run --locked -p mcbtodo-daemon
-cargo run --locked -p mcbtodo-worker
 ```
 
-`mcbtodo-worker` 是由 Daemon 按工作流节点启动的内部进程，通常不需要手动运行。日常使用前先构建三个 binary 并运行一次 `mcbtodo init`；之后可直接运行 `cargo run`，或从 `target/debug/mcbtodo` 启动 CLI/TUI。专注计时、提醒和调度需要另外运行 `mcbtodo-daemon`。
+`mcbtodo-worker` 是由 Daemon 按工作流节点启动的内部进程，通常不需要手动运行。浏览 TUI 不需要先构建 Daemon 或 Worker；专注计时、提醒、调度和工作流执行才需要构建并另外运行 `mcbtodo-daemon`。
+
+Daemon 默认只使用一个 Worker 槽。需要并行执行多个独立的脚本或 Agent
+尝试时，可以显式设置 1 到 4 个槽：
+
+```sh
+mcbtodo-daemon --worker-slots 2
+```
+
+槽位已占满时，后续工作保持 `pending`，不会提前领取 Attempt 或消耗 Agent
+预算。每个 Worker 的取消和监督彼此隔离。Daemon 重启后，已经 Started 的执行仍
+按 `outcome_unknown` 恢复，尚未领取的工作继续保留。多槽能力是本地有界并发，
+不代表已经提供通用的跨资源调度器。
+
+运行 TUI 只需要应用本身。Daemon 执行工作流脚本时需要 Linux Bubblewrap，解释器由脚本的 `runner` 决定。CI 安装 Bubblewrap 和 Nushell，以实际运行脚本的沙箱测试。`cargo xtask smoke-systemd` 使用 Rust 解析 JSON，也可以在没有 `jq` 的环境中运行。
+
+可以在 TUI 设置中选择默认、高对比度或单色主题。非空 `NO_COLOR` 强制使用
+单色主题。更完整的操作提示可在 TUI 中按 `?` 查看。
+终端太窄或太矮时，月历会用日期列表保持选中日期可见。详见 [TUI 设计系统](docs/tui-design.md)。
 
 | 位置 | 用途 |
 | --- | --- |
-| `~/.config/mcbtodo/config.toml` | 用户配置。`timezone` 接受 IANA 时区名称，默认 `UTC`；`home_view` 可设为 `month`（默认）或 `restore_last_view`。 |
+| `~/.config/mcbtodo/config.toml` | 用户偏好。`timezone` 默认 `UTC`，`home_view` 可设为 `month`（默认）或 `restore_last_view`，`tui_theme` 可设为 `default`、`high-contrast` 或 `monochrome`。 |
 | `~/.config/mcbtodo/agents.toml` | 可选的工作流 Agent 策略。每条授权绑定能力和发布摘要。 |
-| `~/.config/mcbtodo/keymap.toml` | 可选 TUI 键位覆盖；未创建时使用内置默认键位。 |
+| `~/.config/mcbtodo/codex.toml` | 可选 Codex Provider 配置。包含受保护的可执行路径、能力、指令和输出 schema。 |
+| `~/.config/mcbtodo/keymap.toml` | 可选 TUI 键位覆盖，可在设置页中编辑。未创建时使用内置默认键位。 |
 | `~/.mcbtodo/vault/` | 默认 Vault，存放可直接编辑的 Markdown。 |
 | `~/.mcbtodo/state/` | 计时和工作流 SQLite 状态、提案队列、工作流 revision 快照、进程锁与 Unix socket。工作流产物保存在工作流 SQLite 状态中。 |
 | `~/.mcbtodo/cache/agents/` | 由 `xtask` 生成的 AI 上下文与固定摘要的下载缓存。 |
 
-`init` 可重复运行，现有配置文件会保留。修改显示时区后重新打开客户端，也可用 `--timezone Asia/Shanghai` 为单次调用指定时区。
+在 TUI 中按 `Space` → `Enter` 打开设置，也可以输入 `:settings`。General 包含时区和首页，Appearance 包含主题。用 `Tab` 或 `Shift+Tab` 跨分组切换字段。时区输入 IANA 名称（例如 `Asia/Shanghai`），用 `Delete` 清空输入。选中首页或主题后用 `←` / `→` 切换选项。`Enter` 保存本页设置，`Esc` 放弃。
+
+每次打开设置页都会读取当前的 `config.toml`。手工编辑时只需填写想改的字段，其余项使用应用默认值。值未改动时按 `Enter` 会保留原文件。如果打开设置后文件有任何修改（包括注释），保存会提示冲突。按 `F5` 可原地读取新版本并重置当前页的草稿。
+
+如果 `config.toml` 可读但内容无效，`cargo run` 会先打开设置页，使用默认值作为草稿。检查并修改各字段后，按 `Enter` 替换整份文件并继续打开日历，或按 `Esc` 保留原文并退出。如果配置在 TUI 运行期间变得不可读，偏好页会显示原因，`F5` 可重试。此时仍可按 `F2` 编辑键位、按 `F3` 查看 Agents。
+
+保存后主题立即生效。终端设置了非空 `NO_COLOR` 时，本次会话继续以单色显示，选中的主题仍会保存。旧的 `MCBTODO_TUI_THEME` 已移除。
+
+时区和启动视图在下次启动时应用。选择恢复上次视图后，正常退出会记录当前视图。如果无法读取上次视图，TUI 会从月历启动并提示，可以在设置中改回固定月历。显式 `--timezone` 只覆盖当前会话，若要使用保存的时区，重启时去掉该参数。
+
+保存修改时会重新生成 TOML，原有注释和排版可能丢失。使用显式 `--vault` 时也可编辑这份用户配置。
+
+设置中按 `F2` 打开键位页。用方向键或 `Tab` 选择动作，直接按下要绑定的字符键，`Delete` 恢复该动作的默认键位。`Enter` 保存并即时应用，`Esc` 放弃键位草稿并返回设置。键位页单独保存到 `keymap.toml`，未修改时保留文件原文或缺省状态。遇到同一作用域内的重复绑定会留在当前页并显示冲突。遇到文件修改冲突时，`F5` 只重读键位页，偏好草稿会保留。
+
+如果手工修改的 `keymap.toml` 无效，TUI 会提示并使用默认键位启动。进入键位页后，可以从默认键位开始编辑，按 `Enter` 替换无效文件，或按 `Esc` 保留原文件。文件无法读取时，键位页会显示错误。恢复文件访问后可在原页按 `F5` 重试，按 `Esc` 回到原先的偏好草稿。
+
+设置中按 `F3` 打开 Agents，查看已配置的 Provider、默认路由和授权条数。在 Linux 上，如果已配置多个 Provider，用 `↑` / `↓` 选择，按 `Enter` 保存为默认路由。页面会提示此操作将重定向的授权条数。没有指定 Provider 的授权会跟随默认路由，带有 Provider 的授权继续使用指定路由。
+
+选中已配置的 Provider 后按 `F6` 可编辑其 socket 路径。路径相对于 `~/.mcbtodo/`，例如 `state/agent.sock`。`Delete` 清空，`Enter` 保存，`F5` 重读，`Esc` 取消。新增 Provider、移除 Provider 和增删 revision 授权仍通过 `agents.toml` 完成。
+
+在 Linux 上，从 Agents 页按 `F4` 可编辑 `codex.toml` 中的可执行路径、能力名、指令和输出字段。用 `Tab` 或方向键切换字段，`Delete` 清空当前字段，`Enter` 保存，`F5` 重读当前页，`Esc` 取消编辑。输出字段可写成 `title=string, count=integer`。新路由、端点和 Codex 参数在下一次执行尝试中读取。本地安装诊断由 `mcbtodo doctor --json` 提供。
+
+`init` 可重复运行，现有配置文件会保留。
 这些路径固定相对于用户 home；当前版本不读取 `XDG_CONFIG_HOME` 或 `XDG_DATA_HOME` 进行重定位。
 
 配置示例：
@@ -40,9 +79,9 @@ timezone = "Asia/Shanghai"
 home_view = "restore_last_view"
 ```
 
-`home_view = "month"` 每次从月历进入；`restore_last_view` 在正常退出或编辑器/提案审批交还终端时恢复并保存上次视图。保存值位于 `~/.mcbtodo/state/last-view`，不属于用户配置；缺失或不识别的值回退到月历。强制结束进程时不保证保存本次视图。
+`home_view = "month"` 每次从月历进入。`restore_last_view` 在启动时恢复上次视图，并在正常退出时记录当前视图。应用把这个运行状态保存在 `~/.mcbtodo/state/last-view`。文件缺失或视图名称无法识别时，从月历启动。强制结束进程时不保证保存本次视图。
 
-初始化及每次用户配置读取都会检查 `.config` 与 `mcbtodo` 配置目录不是符号链接、属主正确且不允许其他用户写入；配置文件也须由当前用户所有且不可被组/其他用户写入。配置读取有 1 MiB 上限并通过 no-follow 文件描述符打开。应用数据目录另有私有权限校验；这些检查不构成对所有祖先路径、同一用户并发替换、任意外部 Vault 或全部运行时文件的完整隔离。
+在 Unix 上，配置读取逐层打开 `.config`、`mcbtodo` 和配置文件，拒绝符号链接、非当前用户属主以及允许组或其他用户写入的权限。普通偏好和键位文件有 1 MiB 上限，Agent 策略和 Codex 配置有 64 KiB 上限。普通偏好还要求应用配置目录为私有目录。
 
 ## 日历和任务
 
@@ -61,7 +100,10 @@ cargo run --locked -- --vault examples/vault graph
 
 `hjkl` 或方向键移动，`v` 开启日期范围选择，`Enter` 查看议程。`Space u` 打开视图选择，可从月历切换到周历、日历、议程、大纲、任务图、Timeline 或工作流。Timeline 展示焦点日期所在周起始的 14 天计划；`h/l` 移动日期，`j/k` 选择项目，横条区分计划区间、精确时段、任务实例和期限。在 Graph 中用 `v/x` 选择依赖源节点，移动焦点到目标节点后按 `a` 新增边或按 `d` 移除边；预览会显示边方向和受影响的阻塞状态，按 `y` 确认、`Esc` 取消。依赖边方向为前置节点指向依赖它的目标节点。在月历选中日期后按 `Space t b`，为 WorkUnit 安排精确时段。按 `Space c r` 创建单次提醒，并输入带偏移的 RFC 3339 时间戳，例如 `2026-11-21T09:00:00+08:00`；偏移必须与 Vault 时区相符。在 Outline 选中 Task 或 WorkUnit 后创建，提醒会自动关联该对象。周期提醒仍通过 `mcbtodo vault create-reminder` 或 MCP 提案创建。`e` 编辑当前选中项的源文档，按 `$VISUAL`、`$EDITOR`、`hx` 的顺序选择编辑器可执行文件。`r` 重载 Vault。若编辑后校验失败，TUI 保留上一次有效数据并显示错误。
 
-键位可在 `~/.config/mcbtodo/keymap.toml` 中按动作覆盖，例如：
+单独按 `Space` 可浏览操作菜单。方向键滚动，`Home` 和 `End` 跳到首尾，
+`Esc` 返回原视图。`Space u`、`Space t` 等快捷键仍可直接执行。
+
+也可以直接在 `~/.config/mcbtodo/keymap.toml` 中按动作覆盖。
 
 ```toml
 [keys]
@@ -79,7 +121,7 @@ view_graph = "6"
 view_workflow = "7"
 ```
 
-配置只接受列出的动作名和单个可打印字符。常用导航键只在主视图生效，视图键只在 `Space u` 菜单生效；表单和确认键保持固定。`x`、`a`、`d` 保留给 Graph 操作，`v` 保留给选择；冲突、未知动作或无效绑定会阻止 TUI 启动并指出配置错误。
+每个动作接受单个可打印字符，大小写分别绑定。视图键的作用域为 `Space u` 菜单。原默认键在未分配给其他动作时仍可作为快捷键。`Ctrl+C` 始终退出，设置导航和保存键是固定键。`x`、`a`、`d` 保留给 Graph 操作，`v` 保留给选择。手工配置中的绑定冲突、未知动作或无效值会在启动时报告。
 
 按 `/` 可模糊搜索 Project、Task 和 WorkUnit；输入名称片段后按上下键选择，Enter 会切换到 Outline 并聚焦该对象，Esc 取消且保留原焦点。
 
@@ -99,7 +141,7 @@ mcbtodo vault triage-inbox --id INBOX_UUID --project PROJECT_UUID
 
 活动期与截止日作为日历标记。全天日期区间包含首日和末日，精确时间段的结束时刻不计入占用。精确时间使用带 UTC 偏移的时间戳和 IANA 时区，夏令时重复时刻由偏移确定。
 
-日历事件可用 `recurrence` 声明有限或持续的 `daily` / `weekly` 重复规则，`interval` 是正整数，`through`（若提供）为包含的最后一个发生日期。规则的 `start` 必须与事件 `when.start` 一致。当前重复投影支持全天/多日 `date_span` 事件；精确时段事件暂不支持重复。日期视图按查询窗口展开，不写入额外 Markdown 实例；查询范围最多 366 天。
+日历事件可用 `recurrence` 声明有限或持续的 `daily` / `weekly` 重复规则，`interval` 是正整数，`through`（若提供）为包含的最后一个锚定日期。规则的 `start` 必须与事件 `when.start` 的当地日期一致。`date_span` 保持日期跨度。`date_time_span` 按模板时区的本地开始时刻重复，并保持实际经过时长。首个实例保留模板的显式偏移。后续实例遇到 DST 跳时，由 `dst.gap` 选择 `skip` 或 `next_valid`，其中 `next_valid` 移到缺口后的第一个有效时刻。时钟回拨时，由 `dst.fold` 选择 `earlier` 或 `later`，只生成一个实例。查询按显示时区返回与窗口相交的完整实例。查询起止日期相差最多 366 天。每条重复规则在单次查询中最多展开 1024 个相交实例，超过时会报告错误。投影不会写入额外 Markdown 实例。
 
 重复人工任务与日历事件不同：任务规则保存在 Task 模板中，明确物化后每个发生日期成为独立 Task Markdown 文件，实例有自己的 UUID、状态和截止日期。模板和实例以 `recurrence` / `occurrence` front matter 字段区分；实例 UUID 由模板 UUID 和日期通过 UUID v5 稳定计算。物化范围最多 366 天，重复运行会返回既有实例而不覆盖其状态。
 
@@ -131,6 +173,17 @@ mcbtodo vault materialize-task-occurrences --template TASK_UUID \
 
 `mcbtodo vault --help` 列出项目、任务、工作单元和时间块的写入命令。`vault bind-workflow` 绑定发布摘要，`vault complete --unit UUID --evidence RUN_UUID:STEP` 在验收时附加运行步骤引用；只有状态为 `succeeded` 的已记录步骤可作为证据，失败、跳过或格式异常的 trace 会被拒绝。`vault completion-events` 以 JSONL 输出 Vault 中已提交的 WorkUnit 完成事件。
 
+`mcbtodo vault completion-events --after 0` 分页输出最多 64 条记录，每条包含 `sequence`、`observed_revision` 和 `event`。CLI 直接完成和应用完成提案会记录 `origin_device_id`，旧事件可能缺少该字段。后续页将最后一条的 `sequence` 传给 `--after`。空输出表示当前没有更新。游标仅适用于同一个本地事件日志。安装身份和备份规则见 [存储与同步模型](docs/storage-and-sync.md)。
+
+使用 `mcbtodo vault completion-events --after 0 --logical` 导出版本化事件。每行的 `envelope` 携带事件 UUID、工作单元 UUID、来源、观察到的 revision 和完成证据。`sequence` 位于外层，只能用于继续读取该 Vault 的日志。
+
+可在另一份 Vault 手动回放可信的导出记录。目标 WorkUnit 必须保留完成前的 Markdown，导入不会触发工作流。导入逐条提交，遇到冲突会报告行号，已导入的事件可以安全重试。自动同步、设备授权和冲突合并仍在规划中。详见[存储与同步模型](docs/storage-and-sync.md#manual-completion-import)。
+
+```bash
+mcbtodo --vault /path/to/source vault completion-events --after 0 --logical > completions.jsonl
+mcbtodo --vault /path/to/destination vault import-completion-events < completions.jsonl
+```
+
 用 `mcbtodo vault set-deadline --id UUID --date YYYY-MM-DD` 设置 Project、Task 或 WorkUnit 的日期截止日；用 `mcbtodo vault clear-deadline --id UUID` 清除。写入会基于当前读取到的文档 revision 检查冲突。
 
 用 `mcbtodo vault create-reminder --title "Review" --schedule '{"kind":"once","at":{"value":"2026-11-21T09:00:00+08:00","timezone":"Asia/Shanghai"}}'` 创建一次性提醒。周期提醒使用 `{"kind":"recurring","rule":{"start":"2026-11-21","time":"09:00:00","timezone":"Asia/Shanghai","frequency":"weekly","interval":1,"dst":{"gap":"skip","fold":"earlier"}}}`；`--target UUID` 可关联现有 Task 或 WorkUnit。提醒定义保存在 Vault 的 `reminders/<uuid>.md`，目标关闭后会停止投递。
@@ -158,6 +211,12 @@ revision="$(./target/debug/mcbtodo workflow publish target/examples/workflow/gra
 脚本执行需要宿主机具备可用的 Bubblewrap 和所选的 Bash 或 Nushell。授权绑定发布摘要和节点。沙箱隔离宿主 HOME 和网络。节点可以使用空能力集，或声明一项 `process.exec`，用图目录的相对路径指定一个本机 ELF。守护进程将发布时固定的 ELF 以只读方式交给脚本，并通过 `PROD_EXECUTABLE` 提供沙箱内路径。运行详情由 `workflow inspect`、`trace`、`artifact` 和 TUI 工作流视图提供。守护进程重启后，尚未确认结果的活动工作节点进入 `outcome_unknown`，不会自动重放。操作者核对外部效果后，可运行 `mcbtodo workflow resolve <run-id> --outcome completed|failed|not-started --note "核对依据"` 记录一次性审计结论。该操作不把运行改写为普通成功/失败、不生成步骤证据、不触发依赖工作流；若确认未启动且要重试，请单独提交新的运行。失败分析可接入本机 Agent。 [Agent 适配器](docs/agent-adapter.md)
 
 `mcbtodo notifications` 以 JSON 返回持久化的工作流终态通知，最新记录优先；`mcbtodo notifications --reminders` 查询提醒 Inbox，记录含 `created_at`（入 Inbox 时间），不代表系统桌面通知已经送达。用上一页的 `next_before` 作为 `--before UUID` 继续查询。桌面通知不可用时仍可查询这些记录。桌面 helper 失败会按有界指数退避重试最多五次，重启会恢复进行中的投递；进程可能在 helper 已显示通知、但成功状态尚未落盘时崩溃，因此这种极少数窗口按至少一次语义处理，可能重复。停机超过 24 小时的旧 occurrence 不会自动补发。
+
+审批前先执行 `mcbtodo workflow inspect <run-id>`，阅读等待节点 `current_node` 和完整的 `detail`。确认后，从**同一次**输出复制 `approval_review`，运行 `mcbtodo workflow approve <run-id> <node> --review <value>`。如果内容已刷新，重新检查并审阅后再批准。自动化集成也须把审批凭据和实际展示的详情一起保存。升级时请同时更新 CLI、TUI 和 Daemon。`workflow reject` 用法保持不变，已有运行记录可直接检查。
+
+Linux 上可运行 `mcbtodo doctor --json` 查看 `agent_policy` 检查和配置所选的后端。检查缺失策略时显示 `skipped`，策略不可用时显示 `warning`。选择 Codex 时，`agent_codex` 会检查受保护的配置和可执行文件。协议兼容性与模型连通性由运行时探测验证。
+
+同一命令也会预检 Bubblewrap、Bash 和 Nushell 的固定系统路径、文件所有权及执行权限。`ok` 表示该二进制通过安装预检。沙箱启动与隔离需通过实际执行验证。可选工具的 `warning` 不影响 Vault 检查或 TUI 启动。
 
 `mcbtodo workflow schedule dependency <下游发布摘要> <上游发布摘要> [--id UUID]` 为上游之后的每次成功排队一个下游运行。同一规则和上游运行 UUID 只处理一次。`workflow inspect` 的 `source_run_id` 指向触发该运行的上游，`workflow schedule disable` 停止后续触发，已排队的运行继续保留。每个上游版本最多有 16 条启用的依赖规则。级联最多延伸 8 层，每个根运行最多产生 128 个下游运行，同一链路内不会再次访问已经运行过的版本。`workflow schedule inspect` 的 `cascade_skipped` 统计被这些级联保护跳过的次数。
 
@@ -193,11 +252,15 @@ cargo xtask agent prepare --harness codex --workflow review --offline
 项目按 [Apache-2.0](LICENSE) 许可证发布；贡献材料须有清晰来源，并可
 依照该许可证及其适用条款接收和分发。
 
-`cargo xtask smoke-systemd` 通过临时用户服务验证计时恢复，依赖可访问的 systemd 用户管理器、Bubblewrap 和 `jq`。`cargo xtask package` 使用 `tar` 将同架构的发行二进制和服务文件打包到 `target/dist/`。
+`cargo xtask smoke-systemd` 通过临时用户服务验证计时恢复，需要可访问的 systemd 用户管理器和 Bubblewrap。`cargo xtask package` 使用 `tar` 将同架构的发行二进制和服务文件打包到 `target/dist/`。
 
 ## 支持范围与发布状态
 
 当前受支持的发行目标是 Linux x86_64 和 AArch64。仓库 CI 在对应原生 Linux runner 上运行 workspace 检查、release 构建和打包二进制 smoke；systemd 用户服务仅适用于提供 systemd user manager 的 Linux 环境。此验证不代表已在所有发行版、桌面环境或其他操作系统上验收。
+
+macOS ARM64 和 Windows x64 的前台应用正在验证。CI 已配置原生 CLI 和 Agent 工作流准备门禁。两者的 `mcbtodo doctor --json` 将 Linux 专用的 Daemon 传输、Workflow Agent、沙箱、桌面通知适配器和 systemd 报告为 `unsupported`。Windows 上的备份、恢复及私有提案队列会明确拒绝。各平台的实测范围见[平台能力矩阵](docs/architecture.md#平台验证范围)。
+
+Linux 的 `mcbtodo doctor --json` 通过 `notification_desktop` 报告当前进程的桌面通知环境。未配置会话总线时为 `skipped`，已配置总线但 `PATH` 中缺少可执行的 `notify-send` 时为 `warning`。检查只读取环境和文件状态。若 Daemon 由 systemd 启动，请以服务进程的环境为准。
 
 当前项目具备端到端可演示的规划、计时、提案审批、工作流执行及备份恢复基础，但还未达到可靠日用级别。生产 Daemon 已为脚本和 Agent attempt 启动并监督独立 `mcbtodo-worker` 进程，使用绑定 workflow revision 的输入、attempt 身份校验、取消回收和 `outcome_unknown` 重启恢复；测试也覆盖 Daemon/Worker 中断后的本地进程回收及不重放。新解压的 Linux 发行归档已通过 sandbox smoke，其中用归档内 Worker 运行 `exit 23` 脚本并验证失败步骤与错误原因被持久化；打包 Worker 的畸形协议帧及组合故障仍未验收。数据库 epoch 不是可过期租约，也不能撤销或核对外部副作用。桌面提醒已采用持久 outbox、最多五次有界退避及重启恢复，但 helper 副作用与成功落盘之间仍存在可能重复的 at-least-once 窗口，停机超过 24 小时的 occurrence 不会补发；`outcome_unknown` 已支持一次性人工核对审计，但持续运行恢复与全副作用边界故障注入仍不完整。首页月历/恢复上次视图策略已有配置及持久化实现，但完整跨日历视图交互、干净系统安装和持续运行可靠性也尚未验收。详细证据与架构差距见[架构验收评估](docs/architecture-assessment.md)。
 

@@ -1,5 +1,3 @@
-use std::{cell::Cell, ops::Range};
-
 use anyhow::{Context, Result, bail};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use mcbtodo_platform::WorkspacePaths;
@@ -7,10 +5,14 @@ use mcbtodo_protocol::{
     Request, Response, request,
     workflow::{RunState, RunSummary, WorkflowRequest, WorkflowResponse},
 };
-use ratatui::text::Line;
 use uuid::Uuid;
 
-use super::{Action, move_row};
+use super::{
+    Action,
+    keymap::Keymap,
+    move_row,
+    review::{PannableReview, ReviewViewport},
+};
 
 #[derive(Default)]
 pub(super) struct State {
@@ -28,7 +30,7 @@ pub(super) enum Panel {
     Trace {
         index: u32,
         text: String,
-        scroll: (u16, u16),
+        viewport: PannableReview,
     },
     InspectDecision {
         approved: bool,
@@ -37,85 +39,24 @@ pub(super) enum Panel {
 }
 
 pub(super) struct Decision {
-    run_id: Uuid,
-    node: String,
-    approved: bool,
-    text: String,
-    viewport: Cell<Viewport>,
-}
-
-#[derive(Clone, Copy, Default)]
-struct Viewport {
-    offset: usize,
-    height: usize,
-    last_offset: usize,
+    pub(super) run_id: Uuid,
+    pub(super) node: String,
+    pub(super) approved: bool,
+    pub(super) detail: Option<String>,
+    review: Option<String>,
+    pub(super) viewport: ReviewViewport,
 }
 
 impl Decision {
     fn new(run: &RunSummary, node: &str, approved: bool) -> Self {
-        let mut decision = Self {
+        Self {
             run_id: run.id,
             node: node.to_owned(),
             approved,
-            text: String::new(),
-            viewport: Cell::default(),
-        };
-        let mut text = format!("{} workflow run?\nRun  {}\nNode ", decision.verb(), run.id);
-        append_review_line(&mut text, node);
-        text.push('\n');
-        // Split only at actual newlines. Literal escapes from the daemon are already display text.
-        for line in run
-            .detail
-            .as_deref()
-            .unwrap_or("No run detail available.")
-            .split('\n')
-        {
-            text.push('\n');
-            append_review_line(&mut text, line);
+            detail: run.detail.clone(),
+            review: approved.then(|| run.approval_review()).flatten(),
+            viewport: ReviewViewport::default(),
         }
-        decision.text = text;
-        decision
-    }
-
-    pub(super) fn verb(&self) -> &'static str {
-        if self.approved { "Approve" } else { "Reject" }
-    }
-
-    pub(super) fn text(&self) -> &str {
-        &self.text
-    }
-
-    pub(super) fn visible_rows(&self, total: usize, height: u16) -> Range<usize> {
-        let height = usize::from(height);
-        let last_offset = total.saturating_sub(height);
-        let offset = self.viewport.get().offset.min(last_offset);
-        // The renderer supplies the current bounds after wrapping at the terminal width.
-        self.viewport.set(Viewport {
-            offset,
-            height,
-            last_offset,
-        });
-        offset..(offset + height).min(total)
-    }
-
-    fn scroll(&self, key: KeyCode) {
-        let mut viewport = self.viewport.get();
-        let Viewport {
-            offset,
-            height,
-            last_offset,
-        } = viewport;
-        viewport.offset = match key {
-            KeyCode::Char('j') | KeyCode::Down => offset.saturating_add(1),
-            KeyCode::Char('k') | KeyCode::Up => offset.saturating_sub(1),
-            KeyCode::PageDown => offset.saturating_add(height),
-            KeyCode::PageUp => offset.saturating_sub(height),
-            KeyCode::Home => 0,
-            KeyCode::End => last_offset,
-            _ => return,
-        }
-        .min(last_offset);
-        self.viewport.set(viewport);
     }
 }
 
@@ -129,24 +70,32 @@ impl State {
         refresh()
     }
 
-    pub(super) fn handle(&mut self, key: KeyEvent, message: &mut String) -> Option<Action> {
+    pub(super) fn handle(
+        &mut self,
+        key: KeyEvent,
+        keys: &Keymap,
+        message: &mut String,
+    ) -> Option<Action> {
         if let Panel::Confirm(decision) = &self.panel {
             return Some(match key.code {
                 KeyCode::Esc => {
                     self.panel = Panel::Runs;
                     Action::Continue
                 }
-                KeyCode::Char('y') if key.kind == KeyEventKind::Press => {
+                code if code == keys.workflow_confirmation_key()
+                    && key.kind == KeyEventKind::Press =>
+                {
                     let command = WorkflowRequest::Decide {
                         run_id: decision.run_id,
                         node: decision.node.clone(),
                         approved: decision.approved,
+                        review: decision.review.clone(),
                     };
                     self.panel = Panel::Runs;
                     Action::Workflow(command)
                 }
                 _ => {
-                    decision.scroll(key.code);
+                    decision.viewport.scroll(key.code);
                     Action::Continue
                 }
             });
@@ -155,7 +104,7 @@ impl State {
         if let Panel::Trace {
             index,
             text,
-            scroll,
+            viewport,
         } = &mut self.panel
         {
             let index = *index;
@@ -164,29 +113,28 @@ impl State {
                     self.panel = Panel::Runs;
                     Some(Action::Continue)
                 }
-                KeyCode::Char('j') | KeyCode::Down => {
-                    let last_line = text.lines().count().saturating_sub(1);
-                    scroll.0 = scroll.0.saturating_add(1).min(to_u16(last_line));
-                    Some(Action::Continue)
-                }
-                KeyCode::Char('k') | KeyCode::Up => {
-                    scroll.0 = scroll.0.saturating_sub(1);
+                KeyCode::Char('j' | 'k')
+                | KeyCode::Up
+                | KeyCode::Down
+                | KeyCode::PageUp
+                | KeyCode::PageDown
+                | KeyCode::Home
+                | KeyCode::End => {
+                    viewport.scroll(key.code, text);
                     Some(Action::Continue)
                 }
                 KeyCode::Char('H') => {
-                    scroll.1 = scroll.1.saturating_sub(4);
+                    viewport.pan_left(4);
                     Some(Action::Continue)
                 }
                 KeyCode::Char('L') => {
-                    let last_column = text
-                        .lines()
-                        .map(|line| Line::raw(line).width())
-                        .max()
-                        .unwrap_or(0);
-                    scroll.1 = scroll
-                        .1
-                        .saturating_add(4)
-                        .min(to_u16(last_column.saturating_sub(1)));
+                    viewport.pan_right(4, text);
+                    Some(Action::Continue)
+                }
+                KeyCode::Char('w') => {
+                    if key.kind == KeyEventKind::Press {
+                        viewport.toggle_wrap();
+                    }
                     Some(Action::Continue)
                 }
                 KeyCode::Char('h') | KeyCode::Left => {
@@ -306,7 +254,7 @@ impl State {
                 self.panel = Panel::Trace {
                     index,
                     text: serde_json::to_string_pretty(&step)?,
-                    scroll: (0, 0),
+                    viewport: PannableReview::default(),
                 };
             }
             (WorkflowRequest::Inspect { run_id }, WorkflowResponse::Run(updated))
@@ -337,28 +285,6 @@ impl State {
         }
         Ok(())
     }
-}
-
-fn append_review_line(visible: &mut String, text: &str) {
-    for ch in text.chars() {
-        match ch {
-            '\n' => visible.push_str(r"\n"),
-            '\r' => visible.push_str(r"\r"),
-            '\t' => visible.push_str(r"\t"),
-            '\u{061c}'
-            | '\u{200e}'..='\u{200f}'
-            | '\u{2028}'..='\u{202e}'
-            | '\u{2066}'..='\u{2069}' => {
-                visible.extend(ch.escape_unicode());
-            }
-            ch if ch.is_control() => visible.extend(ch.escape_unicode()),
-            ch => visible.push(ch),
-        }
-    }
-}
-
-fn to_u16(value: usize) -> u16 {
-    u16::try_from(value).unwrap_or(u16::MAX)
 }
 
 fn refresh() -> Action {

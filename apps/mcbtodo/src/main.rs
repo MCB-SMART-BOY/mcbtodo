@@ -1,3 +1,5 @@
+mod agent_discovery;
+#[cfg_attr(not(unix), path = "backup_unsupported.rs")]
 mod backup;
 mod calendar_format;
 mod doctor;
@@ -26,7 +28,7 @@ use mcbtodo_domain::{
     Id, Occurrence,
     time::{DateParseError, Deadline, parse_date},
 };
-use mcbtodo_platform::{AppConfig, HomeViewPolicy, WorkspacePaths};
+use mcbtodo_platform::{AppConfig, WorkspacePaths};
 use mcbtodo_protocol::{Request, Response, TimerState, TimerStatus, request};
 use mcbtodo_vault::Vault;
 
@@ -190,6 +192,15 @@ fn run(cli: Cli) -> Result<()> {
     }
     let paths = WorkspacePaths::discover()?;
     match command {
+        Command::Tui { date } => {
+            let has_timezone_override = location.timezone_override.is_some();
+            let Some((root, timezone, config)) = location.resolve_tui(&paths)? else {
+                return Ok(());
+            };
+            let vault = Vault::load(&root, timezone)?;
+            let day = date.unwrap_or_else(|| today(&vault));
+            tui::run(&root, vault, day, &paths, config, has_timezone_override)?;
+        }
         Command::Workflow { command } => workflow::run(command, &paths)?,
         Command::Init => {
             paths.initialize()?;
@@ -332,10 +343,20 @@ fn run(cli: Cli) -> Result<()> {
                 }
             }
         }
-        command => {
-            let (root, vault) = location.load(&paths)?;
-            run_vault(command, root, vault, &paths)?;
+        Command::Calendar {
+            export: Some(CalendarExport::ImportIcal { input }),
+            ..
+        } => {
+            let (root, timezone) = location.resolve(&paths)?;
+            Vault::load(&root, timezone)?;
+            let imported = ical_import::parse_file(&input)?;
+            let count = imported.len();
+            VaultCommands::new(&root, timezone)
+                .create_events_atomic(imported)
+                .map_err(anyhow::Error::new)?;
+            println!("Imported {count} calendar events");
         }
+        Command::Doctor { .. } | Command::Restore { .. } => unreachable!("handled above"),
     }
     Ok(())
 }
@@ -346,67 +367,37 @@ struct VaultLocation {
 }
 
 impl VaultLocation {
-    fn load(self, paths: &WorkspacePaths) -> Result<(PathBuf, Vault)> {
-        let (root, timezone) = self.resolve(paths)?;
-        let vault = Vault::load(&root, timezone)?;
-        Ok((root, vault))
+    fn resolve_tui(self, paths: &WorkspacePaths) -> Result<Option<(PathBuf, Tz, AppConfig)>> {
+        let snapshot = if self.root_override.is_some() {
+            paths.read_app_config_snapshot()?
+        } else {
+            paths.initialize_config_snapshot()?
+        };
+        let config = match snapshot.preferences() {
+            Some(config) => config,
+            None => match tui::repair_config(paths, snapshot)? {
+                Some(config) => config,
+                None => return Ok(None),
+            },
+        };
+        let timezone = self.timezone_override.unwrap_or(config.timezone);
+        Ok(Some((self.root(paths), timezone, config)))
     }
 
     fn resolve(self, paths: &WorkspacePaths) -> Result<(PathBuf, Tz)> {
         let timezone = match self.timezone_override {
             Some(timezone) => timezone,
-            None if self.root_override.is_some() && !paths.config_path().try_exists()? => {
-                AppConfig::default().timezone
+            None if self.root_override.is_some() => {
+                paths.load_optional_config()?.unwrap_or_default().timezone
             }
             None => paths.load_config()?.timezone,
         };
-        let root = self
-            .root_override
-            .unwrap_or_else(|| paths.vault_root().to_path_buf());
-        Ok((root, timezone))
+        Ok((self.root(paths), timezone))
     }
-}
 
-fn run_vault(command: Command, root: PathBuf, vault: Vault, paths: &WorkspacePaths) -> Result<()> {
-    match command {
-        Command::Init
-        | Command::Doctor { .. }
-        | Command::Timer { .. }
-        | Command::Workflow { .. }
-        | Command::Notifications { .. }
-        | Command::Mcp { .. }
-        | Command::Proposal { .. }
-        | Command::Backup { .. }
-        | Command::Restore { .. } => {
-            unreachable!("handled above")
-        }
-        Command::Validate | Command::Outline | Command::Graph => {
-            unreachable!("handled above")
-        }
-        Command::Vault { command } => vault_cli::run(command, &root, &vault, paths)?,
-        Command::Calendar {
-            export: Some(CalendarExport::ImportIcal { input }),
-            ..
-        } => {
-            let imported = ical_import::parse_file(&input)?;
-            let count = imported.len();
-            VaultCommands::new(&root, vault.timezone())
-                .create_events_atomic(imported)
-                .map_err(anyhow::Error::new)?;
-            println!("Imported {count} calendar events");
-        }
-        Command::Calendar { .. } => unreachable!("calendar queries and exports are handled above"),
-        Command::Tui { date } => {
-            let day = date.unwrap_or_else(|| today(&vault));
-            let home_view = if paths.config_path().try_exists()? {
-                paths.load_config()?.home_view
-            } else {
-                HomeViewPolicy::Month
-            };
-            tui::run(&root, vault, day, paths, home_view)?;
-        }
+    fn root(self, paths: &WorkspacePaths) -> PathBuf {
+        self.root_override.unwrap_or_else(|| paths.vault_root())
     }
-    Ok(())
 }
 
 pub(crate) fn require_default_focus_vault(paths: &WorkspacePaths, root: &Path) -> Result<()> {
@@ -418,16 +409,6 @@ pub(crate) fn require_default_focus_vault(paths: &WorkspacePaths, root: &Path) -
             default.display(),
         );
     }
-    Ok(())
-}
-
-pub(crate) fn require_default_reminder_vault(paths: &WorkspacePaths, root: &Path) -> Result<()> {
-    let default = paths.vault_root();
-    ensure!(
-        default.try_exists()? && root.canonicalize()? == default.canonicalize()?,
-        "background reminders are only supported for the default Vault ({})",
-        default.display(),
-    );
     Ok(())
 }
 

@@ -47,7 +47,13 @@ pub enum Command {
     /// Write the recorded step's artifact bytes to stdout.
     Artifact { run_id: Uuid, index: u32 },
     /// Continue a waiting run through an explicit approval node.
-    Approve { run_id: Uuid, node: String },
+    Approve {
+        run_id: Uuid,
+        node: String,
+        /// The approval_review value from the reviewed workflow inspect output.
+        #[arg(long)]
+        review: String,
+    },
     /// Continue a waiting run through its rejection branch.
     Reject { run_id: Uuid, node: String },
     /// Cancel a pending or active run.
@@ -201,15 +207,21 @@ pub fn run(command: Command, paths: &WorkspacePaths) -> Result<()> {
         Command::Runs { before } => WorkflowRequest::List { before },
         Command::Trace { run_id, index } => WorkflowRequest::Step { run_id, index },
         Command::Artifact { run_id, index } => return read_artifact(&socket, run_id, index),
-        Command::Approve { run_id, node } => WorkflowRequest::Decide {
+        Command::Approve {
+            run_id,
+            node,
+            review,
+        } => WorkflowRequest::Decide {
             run_id,
             node,
             approved: true,
+            review: Some(review),
         },
         Command::Reject { run_id, node } => WorkflowRequest::Decide {
             run_id,
             node,
             approved: false,
+            review: None,
         },
         Command::Cancel { run_id } => WorkflowRequest::Cancel { run_id },
         Command::AuthorizeScript { revision, node } => WorkflowRequest::AuthorizeScript {
@@ -282,10 +294,19 @@ pub fn run(command: Command, paths: &WorkspacePaths) -> Result<()> {
             ScheduleCommand::Disable { id } => WorkflowRequest::DisableSchedule { id },
         },
     };
+    let inspect = matches!(&command, WorkflowRequest::Inspect { .. });
     let output = call(&socket, command)?;
     let stdout = io::stdout().lock();
     match output {
-        WorkflowResponse::Run(run) => serde_json::to_writer_pretty(stdout, &run)?,
+        WorkflowResponse::Run(run) => {
+            if let Some(review) = inspect.then(|| run.approval_review()).flatten() {
+                let mut output = serde_json::to_value(&run)?;
+                output["approval_review"] = review.into();
+                serde_json::to_writer_pretty(stdout, &output)?;
+            } else {
+                serde_json::to_writer_pretty(stdout, &run)?;
+            }
+        }
         WorkflowResponse::Schedule(schedule) => serde_json::to_writer_pretty(stdout, &schedule)?,
         WorkflowResponse::Resolution(resolution) => {
             serde_json::to_writer_pretty(stdout, &resolution)?

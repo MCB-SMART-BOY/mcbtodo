@@ -141,22 +141,16 @@ impl DateTimeSpan {
         self.end
     }
 
+    pub(crate) fn timezone(self) -> Tz {
+        self.timezone
+    }
+
     pub fn overlaps_day(self, day: NaiveDate, zone: Tz) -> bool {
         DateSpan::new(day, day).is_ok_and(|days| self.overlaps_dates(days, zone))
     }
 
     pub fn overlaps_dates(self, days: DateSpan, zone: Tz) -> bool {
-        let Some(start) = day_start(days.start(), zone) else {
-            return false;
-        };
-        let Some(end) = days
-            .through()
-            .succ_opt()
-            .and_then(|next| day_start(next, zone))
-        else {
-            return false;
-        };
-        start < end && self.start < end && self.end > start
+        date_window(days, zone).is_some_and(|(start, end)| self.start < end && self.end > start)
     }
 }
 
@@ -197,6 +191,12 @@ fn check_offset(value: DateTime<FixedOffset>, timezone: Tz) -> Result<(), TimeEr
         return Err(TimeError::Offset { value, timezone });
     }
     Ok(())
+}
+
+pub(crate) fn date_window(days: DateSpan, zone: Tz) -> Option<(DateTime<Utc>, DateTime<Utc>)> {
+    let start = day_start(days.start(), zone)?;
+    let end = day_start(days.through().succ_opt()?, zone)?;
+    (start < end).then_some((start, end))
 }
 
 fn day_start(day: NaiveDate, timezone: Tz) -> Option<DateTime<Utc>> {

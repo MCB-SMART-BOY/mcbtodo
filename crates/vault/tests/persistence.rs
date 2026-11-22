@@ -2,14 +2,14 @@ use std::{fs, path::PathBuf, sync::Barrier, thread};
 
 use chrono_tz::UTC;
 use mcbtodo_domain::{
-    Availability, CalendarEvent, CalendarKind, EvidenceRef, Id, InboxEntry, Priority, Project,
-    Task, TaskStatus, TimeBlock, WorkUnit, WorkUnitStatus, WorkflowRevisionHash,
+    Availability, CalendarEvent, CalendarKind, EvidenceRef, Id, InboxEntry, Priority, Task,
+    TaskStatus, TimeBlock, WorkUnit, WorkUnitStatus, WorkflowRevisionHash,
     recurrence::Reminder,
     time::{DateSpan, DateTimeSpan, Deadline, Span},
 };
 use mcbtodo_vault::{
-    BindWorkflow, CaptureInboxEntry, CaptureTask, CompleteWorkUnit, CreateEvent, CreateProject,
-    CreateReminder, CreateTimeBlock, CreateWorkUnit, MaterializeTaskOccurrences, SetDeadline,
+    BindWorkflow, CaptureInboxEntry, CaptureTask, CompleteWorkUnit, CreateEvent, CreateReminder,
+    CreateTimeBlock, CreateWorkUnit, MaterializeTaskOccurrences, SetDeadline,
     SetWorkUnitDependencies, TriageInboxEntry, Vault, VaultStore, WriteError,
 };
 use tempfile::TempDir;
@@ -374,7 +374,7 @@ fn create_events_atomic_rejects_conflicts_before_publishing_anything() {
 }
 
 #[test]
-fn recurring_date_event_expands_only_inside_the_requested_calendar_window() {
+fn recurring_date_event_preserves_interval_and_full_spans_at_window_edges() {
     let fixture = Fixture::new();
     let event = format!(
         "---\nschema: mcbtodo.calendar-event/v1\nid: {EVENT}\nwhen:\n  kind: date_span\n  start: '2026-01-05'\n  through: '2026-01-06'\nrecurrence:\n  start: '2026-01-05'\n  through: '2026-02-28'\n  frequency: weekly\n  interval: 2\n  dst: {{gap: skip, fold: earlier}}\n---\n\n# Sprint planning\n"
@@ -390,15 +390,70 @@ fn recurring_date_event_expands_only_inside_the_requested_calendar_window() {
     let occurrences: Vec<_> = entries
         .iter()
         .filter(|entry| entry.id == EVENT && entry.kind == CalendarKind::Event)
+        .map(|entry| entry.occurrence)
         .collect();
-    assert_eq!(occurrences.len(), 2);
-    assert!(occurrences.iter().all(|entry| entry.id == EVENT));
-    assert!(occurrences.iter().any(|entry| matches!(
-        entry.occurrence,
-        mcbtodo_domain::Occurrence::Span(Span::DateSpan(span))
-            if span.start() == "2026-02-02".parse::<chrono::NaiveDate>().unwrap()
-                && span.through() == "2026-02-03".parse::<chrono::NaiveDate>().unwrap()
-    )));
+    assert_eq!(
+        occurrences,
+        [
+            ("2026-01-19", "2026-01-20"),
+            ("2026-02-02", "2026-02-03"),
+            ("2026-02-16", "2026-02-17"),
+        ]
+        .map(
+            |(start, end)| mcbtodo_domain::Occurrence::Span(Span::DateSpan(
+                DateSpan::new(day(start), day(end)).unwrap(),
+            ))
+        )
+    );
+}
+
+#[test]
+fn recurring_date_event_includes_a_continuation_from_before_the_window() {
+    let fixture = Fixture::new();
+    let event = format!(
+        "\
+---
+schema: mcbtodo.calendar-event/v1
+id: {EVENT}
+when: {{kind: date_span, start: '2026-11-29', through: '2026-12-01'}}
+recurrence:
+  start: '2026-11-29'
+  through: '2026-11-29'
+  frequency: weekly
+  dst: {{gap: skip, fold: earlier}}
+---
+
+# Monthly review
+"
+    );
+    let path = fixture.root.path().join("calendar/review.md");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, event).unwrap();
+    let vault = fixture.snapshot();
+
+    let dec1 = day("2026-12-01");
+    let entries = vault
+        .calendar_between(DateSpan::new(dec1, dec1).unwrap())
+        .unwrap();
+    let occurrences: Vec<_> = entries
+        .iter()
+        .filter(|entry| entry.id == EVENT)
+        .map(|entry| entry.occurrence)
+        .collect();
+    assert_eq!(
+        occurrences,
+        [mcbtodo_domain::Occurrence::Span(Span::DateSpan(
+            DateSpan::new(day("2026-11-29"), dec1).unwrap()
+        ))]
+    );
+    let dec2 = day("2026-12-02");
+    assert!(
+        vault
+            .calendar_between(DateSpan::new(dec2, dec2).unwrap())
+            .unwrap()
+            .iter()
+            .all(|entry| entry.id != EVENT)
+    );
 }
 
 #[test]
@@ -495,7 +550,7 @@ fn vault_rejects_a_recurring_task_occurrence_with_an_unstable_id() {
 }
 
 #[test]
-fn vault_rejects_recurring_events_with_non_date_templates_or_mismatched_anchors() {
+fn vault_rejects_recurring_events_with_mismatched_anchors() {
     for (when, start) in [
         (
             "kind: date_span\n  start: '2026-01-05'\n  through: '2026-01-06'",
@@ -503,7 +558,7 @@ fn vault_rejects_recurring_events_with_non_date_templates_or_mismatched_anchors(
         ),
         (
             "kind: date_time_span\n  start: '2026-01-05T09:00:00+08:00'\n  end: '2026-01-05T10:00:00+08:00'\n  timezone: Asia/Shanghai",
-            "2026-01-05",
+            "2026-01-06",
         ),
     ] {
         let fixture = Fixture::new();
@@ -512,9 +567,15 @@ fn vault_rejects_recurring_events_with_non_date_templates_or_mismatched_anchors(
         );
         let path = fixture.root.path().join("calendar/recurring.md");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, event).unwrap();
+        fs::write(&path, event).unwrap();
 
-        assert!(Vault::load(fixture.root.path(), UTC).is_err());
+        let error = Vault::load(fixture.root.path(), UTC).unwrap_err();
+        let diagnostic = format!("{error:#}");
+        assert!(diagnostic.contains("calendar/recurring.md"), "{diagnostic}");
+        assert!(
+            diagnostic.contains("recurrence start must match"),
+            "{diagnostic}"
+        );
     }
 }
 
@@ -650,6 +711,9 @@ fn time_block_checks_the_current_dag_before_writing() {
 #[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
 #[test]
 fn create_project_checks_uuid_and_directory_without_overwriting() {
+    use mcbtodo_domain::Project;
+    use mcbtodo_vault::CreateProject;
+
     let root = tempfile::tempdir().unwrap();
     let store = VaultStore::new(root.path(), UTC);
     let create = |id, slug: &str| CreateProject {

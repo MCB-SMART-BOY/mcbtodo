@@ -31,6 +31,24 @@ fn selected_outline_document_keeps_invalid_deadline_input_open() {
 }
 
 #[test]
+fn deadline_editor_keeps_input_feedback_and_actions_visible_at_28_by_5() {
+    let vault = tests::fixture();
+    let mut state = State::new("2026-11-25".parse().unwrap());
+    press(&mut state, &vault, " ul d");
+    press(&mut state, &vault, "\u{7f}2026-02-30\n");
+
+    let rendered = screen(&state, &vault, 28, 5);
+    let lines: Vec<_> = rendered.lines().collect();
+    assert!(lines[0].contains("INSERT"), "{rendered}");
+    assert!(lines[1].contains("> Due  2026-02-30▏"), "{rendered}");
+    assert!(lines[3].contains("expected a date"), "{rendered}");
+    assert!(
+        lines[4].contains("Enter save  Del clear  Esc"),
+        "{rendered}"
+    );
+}
+
+#[test]
 fn selected_outline_document_can_set_a_new_date_deadline() {
     let vault = tests::fixture();
     let mut state = State::new("2026-11-25".parse().unwrap());

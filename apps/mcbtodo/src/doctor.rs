@@ -1,24 +1,34 @@
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::FileTypeExt;
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
 use std::{
-    fs::{self, Metadata},
+    fs,
     io::{self, Write},
-    os::unix::fs::{FileTypeExt, MetadataExt},
     path::Path,
 };
 
 use anyhow::{Result, ensure};
 use chrono_tz::Tz;
 use mcbtodo_application::VaultQueries;
+#[cfg(target_os = "linux")]
+use mcbtodo_execution::{notification::NotifySend, sandbox::SandboxExecutable};
+#[cfg(target_os = "linux")]
+use mcbtodo_platform::agent_policy::AgentBackend;
 use mcbtodo_platform::{AppConfig, WorkspacePaths};
 use serde::Serialize;
 
-use crate::VaultLocation;
+use crate::{VaultLocation, agent_discovery};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 enum Status {
     Ok,
     Warning,
+    #[cfg(target_os = "linux")]
     Offline,
+    #[cfg(not(target_os = "linux"))]
+    Unsupported,
     Skipped,
     Error,
 }
@@ -47,6 +57,7 @@ struct Report {
     ok: bool,
     timezone: Option<Tz>,
     checks: Vec<Check>,
+    agent_providers: Vec<agent_discovery::Provider>,
 }
 
 pub(crate) fn run(
@@ -65,6 +76,7 @@ pub(crate) fn run(
                 path: None,
                 message: error.to_string(),
             }],
+            agent_providers: Vec::new(),
         },
     };
     let mut out = io::stdout().lock();
@@ -108,41 +120,158 @@ fn inspect(paths: &WorkspacePaths, location: VaultLocation) -> Report {
         inspect_private_dir("cache", &paths.cache_dir(), true),
         daemon,
     ];
+    let agents = agent_discovery::Discovery::inspect(paths);
     #[cfg(target_os = "linux")]
-    for (id, path) in [
-        ("sandbox_bubblewrap", "/usr/bin/bwrap"),
-        ("sandbox_bash", "/usr/bin/bash"),
-        ("sandbox_nushell", "/usr/bin/nu"),
-        ("systemd_systemctl", "/usr/bin/systemctl"),
-    ] {
-        checks.push(inspect_executable(id, Path::new(path)));
-    }
+    let agents = {
+        let mut agents = agents;
+        agents.check_installations(paths);
+        agents
+    };
+    checks.extend(inspect_agents(paths, &agents));
+    #[cfg(target_os = "linux")]
+    checks.extend([
+        inspect_sandbox_executable("sandbox_bubblewrap", SandboxExecutable::Bubblewrap),
+        inspect_sandbox_executable("sandbox_bash", SandboxExecutable::Bash),
+        inspect_sandbox_executable("sandbox_nushell", SandboxExecutable::Nushell),
+        inspect_desktop_notification(),
+        inspect_executable("systemd_systemctl", Path::new("/usr/bin/systemctl")),
+    ]);
+    #[cfg(not(target_os = "linux"))]
+    checks.extend(
+        [
+            ("sandbox_bubblewrap", "Bubblewrap isolation requires Linux"),
+            ("sandbox_bash", "The sandboxed Bash runner requires Linux"),
+            (
+                "sandbox_nushell",
+                "The sandboxed Nushell runner requires Linux",
+            ),
+            (
+                "notification_desktop",
+                "The desktop notification adapter requires Linux",
+            ),
+            (
+                "systemd_systemctl",
+                "The systemd user service requires Linux",
+            ),
+        ]
+        .map(|(id, message)| Check {
+            id,
+            status: Status::Unsupported,
+            path: None,
+            message: message.into(),
+        }),
+    );
     Report {
         ok: checks.iter().all(|check| check.status != Status::Error),
         timezone,
         checks,
+        agent_providers: agents.providers,
     }
+}
+
+#[cfg(target_os = "linux")]
+fn inspect_desktop_notification() -> Check {
+    let id = "notification_desktop";
+    let Some(sink) = NotifySend::for_session() else {
+        return Check {
+            id,
+            status: Status::Skipped,
+            path: None,
+            message: "No desktop session bus configured in this process environment".into(),
+        };
+    };
+    match sink.check_installation() {
+        Ok(path) => Check::new(
+            id,
+            Status::Ok,
+            &path,
+            "Notification helper is executable in this environment. Desktop delivery was not tested",
+        ),
+        Err(error) => Check {
+            id,
+            status: Status::Warning,
+            path: None,
+            message: error.to_string(),
+        },
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn inspect_agents(paths: &WorkspacePaths, agents: &agent_discovery::Discovery) -> [Check; 2] {
+    use agent_discovery::{Installation, Policy};
+
+    let (status, message) = match &agents.policy {
+        Policy::Configured => {
+            let configured = agents
+                .providers
+                .iter()
+                .map(|provider| provider.backend.name())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let default = agents
+                .providers
+                .iter()
+                .find(|provider| provider.is_default)
+                .map_or("", |provider| provider.backend.name());
+            (
+                Status::Ok,
+                format!(
+                    "Agent providers: {configured}. Default: {default}. Endpoints were not contacted"
+                ),
+            )
+        }
+        Policy::Absent => (Status::Skipped, agents.policy.message().into()),
+        Policy::Unusable(error) => (Status::Warning, error.clone()),
+    };
+    let (codex_status, codex_message) = match agents
+        .providers
+        .iter()
+        .find(|provider| provider.backend == AgentBackend::Codex)
+        .map(|provider| &provider.installation)
+    {
+        Some(Installation::PreflightPassed { .. }) => (
+            Status::Ok,
+            "Codex installation preflight passed. Model connectivity and protocol compatibility were not tested".into(),
+        ),
+        Some(Installation::Unavailable { message }) => (Status::Warning, message.clone()),
+        _ => (
+            Status::Skipped,
+            "Codex requires a valid Agent policy that configures it".into(),
+        ),
+    };
+    [
+        Check::new("agent_policy", status, &paths.agent_policy_path(), message),
+        Check::new(
+            "agent_codex",
+            codex_status,
+            &paths.codex_provider_path(),
+            codex_message,
+        ),
+    ]
+}
+
+#[cfg(not(target_os = "linux"))]
+fn inspect_agents(_paths: &WorkspacePaths, agents: &agent_discovery::Discovery) -> [Check; 2] {
+    ["agent_policy", "agent_codex"].map(|id| Check {
+        id,
+        status: Status::Unsupported,
+        path: None,
+        message: agents.policy.message().into(),
+    })
 }
 
 fn inspect_config(paths: &WorkspacePaths, allow_missing: bool) -> (Check, Option<Tz>) {
     let path = paths.config_path();
     let check = |status, message| Check::new("config", status, &path, message);
-    match fs::metadata(&path) {
-        Ok(metadata) if metadata.is_file() => match paths.load_config() {
-            Ok(config) => (
-                check(
-                    Status::Ok,
-                    format!("Configured timezone: {}", config.timezone),
-                ),
-                Some(config.timezone),
+    match paths.load_optional_config() {
+        Ok(Some(config)) => (
+            check(
+                Status::Ok,
+                format!("Configured timezone: {}", config.timezone),
             ),
-            Err(error) => (check(Status::Error, format!("{error:#}")), None),
-        },
-        Ok(_) => (
-            check(Status::Error, "Expected a regular config file".into()),
-            None,
+            Some(config.timezone),
         ),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => (
+        Ok(None) => (
             if allow_missing {
                 check(
                     Status::Warning,
@@ -156,10 +285,7 @@ fn inspect_config(paths: &WorkspacePaths, allow_missing: bool) -> (Check, Option
             },
             None,
         ),
-        Err(error) => (
-            check(Status::Error, format!("Cannot inspect config: {error}")),
-            None,
-        ),
+        Err(error) => (check(Status::Error, format!("{error:#}")), None),
     }
 }
 
@@ -187,6 +313,7 @@ fn inspect_vault(root: &Path, timezone: Option<Tz>) -> Check {
 fn inspect_private_dir(id: &'static str, path: &Path, optional: bool) -> Check {
     let (status, message) = match fs::symlink_metadata(path) {
         Ok(metadata) if !metadata.is_dir() => (Status::Error, "Expected a real directory".into()),
+        #[cfg(unix)]
         Ok(metadata)
             if !owned_by_us(&metadata)
                 || metadata.mode() & 0o077 != 0
@@ -198,24 +325,32 @@ fn inspect_private_dir(id: &'static str, path: &Path, optional: bool) -> Check {
                     .into(),
             )
         }
+        #[cfg(unix)]
         Ok(_) => (Status::Ok, "Private directory exists".into()),
+        #[cfg(not(unix))]
+        Ok(_) => (
+            Status::Skipped,
+            "Directory exists. Ownership and access checks are unavailable on this platform".into(),
+        ),
         Err(error) if error.kind() == io::ErrorKind::NotFound && optional => (
             Status::Skipped,
             "Cache directory has not been created".into(),
         ),
         Err(error) if error.kind() == io::ErrorKind::NotFound => (
             Status::Warning,
-            "State directory is missing. Run `mcbtodo init` before starting the daemon".into(),
+            "State directory is missing. Run `mcbtodo init` to create it".into(),
         ),
         Err(error) => (Status::Error, format!("Cannot inspect directory: {error}")),
     };
     Check::new(id, status, path, message)
 }
 
-fn owned_by_us(metadata: &Metadata) -> bool {
+#[cfg(unix)]
+fn owned_by_us(metadata: &fs::Metadata) -> bool {
     metadata.uid() == rustix::process::geteuid().as_raw()
 }
 
+#[cfg(target_os = "linux")]
 fn inspect_daemon(path: &Path, state_status: Status) -> Check {
     let (status, message) = match fs::symlink_metadata(path) {
         Ok(metadata) if !metadata.file_type().is_socket() || !owned_by_us(&metadata) => (
@@ -237,6 +372,16 @@ fn inspect_daemon(path: &Path, state_status: Status) -> Check {
         ),
     };
     Check::new("daemon", status, path, message)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn inspect_daemon(path: &Path, _state_status: Status) -> Check {
+    Check::new(
+        "daemon",
+        Status::Unsupported,
+        path,
+        "The local daemon transport is unavailable on this platform",
+    )
 }
 
 #[cfg(target_os = "linux")]
@@ -299,12 +444,20 @@ fn is_listening_at(mut line: &[u8], path: &[u8]) -> bool {
     line.strip_prefix(b" ") == Some(path)
 }
 
-#[cfg(not(target_os = "linux"))]
-fn inspect_listener(_path: &Path) -> (Status, String) {
-    (
-        Status::Skipped,
-        "Passive daemon listener inspection is available on Linux".into(),
-    )
+#[cfg(target_os = "linux")]
+fn inspect_sandbox_executable(id: &'static str, executable: SandboxExecutable) -> Check {
+    let (status, message) = match executable.check_installation() {
+        Ok(()) => (
+            Status::Ok,
+            "Sandbox executable preflight passed. Sandbox startup and isolation were not tested"
+                .into(),
+        ),
+        Err(error) => (
+            Status::Warning,
+            format!("Sandbox executable preflight failed: {error:#}"),
+        ),
+    };
+    Check::new(id, status, executable.path(), message)
 }
 
 #[cfg(target_os = "linux")]

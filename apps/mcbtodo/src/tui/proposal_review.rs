@@ -5,10 +5,9 @@ use chrono_tz::Tz;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use mcbtodo_domain::Id;
 use mcbtodo_platform::WorkspacePaths;
-use ratatui::text::Span;
 use sha2::{Digest, Sha256};
 
-use super::{Action, move_row};
+use super::{Action, move_row, review::PannableReview};
 use mcbtodo_application::graph_diff::GraphDiff;
 
 use crate::proposal::{Operation, Proposal, Queue, Status};
@@ -132,15 +131,12 @@ pub(super) struct Review {
     pub rows: Vec<Proposal>,
     pub row: usize,
     pub detail: Option<Detail>,
-    pub scroll: u16,
-    pub pan: u16,
+    pub viewport: PannableReview,
 }
 
 impl Review {
     pub fn handle(&mut self, key: KeyEvent, message: &mut String) -> Option<Action> {
         if let Some(detail) = &self.detail {
-            let max_row =
-                u16::try_from(detail.text.lines().count().saturating_sub(1)).unwrap_or(u16::MAX);
             match key.code {
                 KeyCode::Esc => {
                     self.detail = None;
@@ -156,29 +152,14 @@ impl Review {
                         return Some(Action::Proposals(Request::Reject(id)));
                     }
                 }
-                KeyCode::Char('k') | KeyCode::Up => self.scroll = self.scroll.saturating_sub(1),
-                KeyCode::Char('j') | KeyCode::Down => {
-                    self.scroll = self.scroll.saturating_add(1).min(max_row);
+                KeyCode::Char('w') if key.kind == KeyEventKind::Press => {
+                    self.viewport.toggle_wrap();
                 }
-                KeyCode::PageUp => self.scroll = self.scroll.saturating_sub(10),
-                KeyCode::PageDown => self.scroll = self.scroll.saturating_add(10).min(max_row),
-                KeyCode::Home => (self.scroll, self.pan) = (0, 0),
-                KeyCode::End => self.scroll = max_row,
-                KeyCode::Char('h') | KeyCode::Left => self.pan = self.pan.saturating_sub(8),
                 KeyCode::Char('l') | KeyCode::Right => {
-                    if let Some(width) = detail
-                        .text
-                        .lines()
-                        .map(|line| Span::raw(line).width())
-                        .max()
-                    {
-                        self.pan = self
-                            .pan
-                            .saturating_add(8)
-                            .min(u16::try_from(width.saturating_sub(1)).unwrap_or(u16::MAX));
-                    }
+                    self.viewport.pan_right(8, &detail.text);
                 }
-                _ => {}
+                KeyCode::Char('h') | KeyCode::Left => self.viewport.pan_left(8),
+                code => self.viewport.scroll(code, &detail.text),
             }
         } else {
             match key.code {
@@ -278,7 +259,7 @@ impl Review {
                             && record.workflow_revision().is_some()))
                     .then_some(id),
                 });
-                (self.scroll, self.pan) = (0, 0);
+                self.viewport = PannableReview::default();
             }
             Request::Reject(_) => unreachable!("handled above"),
         }
@@ -304,7 +285,7 @@ fn terminal_text(value: &str) -> String {
     text
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::{
@@ -327,6 +308,180 @@ mod tests {
                 .unwrap();
         }
         action
+    }
+
+    #[test]
+    fn compact_proposal_review_keeps_actions_contextual() {
+        use crate::tui::{
+            calendar_tests::projected_screen,
+            screen_model::{Content, ProposalScreenModel, ScreenChrome, ScreenModel},
+        };
+
+        let mut state = State::new("2026-11-20".parse().unwrap());
+        state.overlay = Overlay::Proposals;
+        let screen = |state: &State| {
+            let model = ScreenModel {
+                content: Content::Proposals(ProposalScreenModel::project(
+                    &state.proposals,
+                    !state.message.is_empty(),
+                )),
+                chrome: ScreenChrome::project(state, ZONE),
+            };
+            projected_screen(&model, 28, 6)
+        };
+
+        let empty = screen(&state);
+        assert_eq!(empty.lines().last().unwrap().trim(), "r refresh  Esc back");
+        assert!(!empty.contains("Enter review"));
+
+        state.proposals.detail = Some(Detail {
+            text: "中文 Rust review".into(),
+            kind: DetailKind::GraphDiff,
+            pending: Some("20000000-0000-4000-8000-000000000001".parse().unwrap()),
+        });
+        let pending = screen(&state);
+        assert!(pending.contains("中文 Rust review"));
+        assert_eq!(
+            pending.lines().last().unwrap().trim(),
+            "a approve  x reject Esc"
+        );
+
+        state.proposals.detail.as_mut().unwrap().pending = None;
+        let read_only = screen(&state);
+        assert_eq!(
+            read_only.lines().last().unwrap().trim(),
+            "Esc list  jk scroll  w wrap"
+        );
+    }
+
+    #[test]
+    fn narrow_proposal_review_wraps_long_lines_and_pages_to_the_end() {
+        let vault = fixture();
+        let mut state = State::new("2026-11-20".parse().unwrap());
+        state.overlay = Overlay::Proposals;
+        let id = "20000000-0000-4000-8000-000000000001".parse().unwrap();
+        state.proposals.detail = Some(Detail {
+            text: "中文 Rust 1234567890  END\nlast · 完成\n".into(),
+            kind: DetailKind::Proposal,
+            pending: Some(id),
+        });
+        let press =
+            |state: &mut State, code| state.handle(KeyEvent::new(code, KeyModifiers::NONE), &vault);
+        let first = screen(&state, &vault, 24, 5);
+        assert_eq!(first.lines().nth(2).unwrap(), "│中文 Rust 1234567890  │");
+        assert_eq!(
+            first.lines().last().unwrap().trim(),
+            "a approve  x reject Esc"
+        );
+        press(&mut state, KeyCode::PageDown);
+        assert_eq!(
+            screen(&state, &vault, 24, 5).lines().nth(2).unwrap(),
+            "│END                   │"
+        );
+        press(&mut state, KeyCode::End);
+        assert!(
+            screen(&state, &vault, 24, 5)
+                .lines()
+                .nth(2)
+                .unwrap()
+                .contains("last · 完成")
+        );
+        press(&mut state, KeyCode::Char('w'));
+        assert!(
+            screen(&state, &vault, 24, 5)
+                .lines()
+                .nth(2)
+                .unwrap()
+                .contains("last · 完成"),
+            "switching to unwrapped review should keep the current source line"
+        );
+        press(&mut state, KeyCode::Char('w'));
+        press(&mut state, KeyCode::Home);
+        assert_eq!(screen(&state, &vault, 24, 5), first);
+        press(&mut state, KeyCode::Right);
+        assert!(
+            screen(&state, &vault, 24, 5)
+                .lines()
+                .nth(2)
+                .unwrap()
+                .contains("1234567890  END")
+        );
+        press(&mut state, KeyCode::Left);
+        assert!(
+            !screen(&state, &vault, 24, 5)
+                .lines()
+                .nth(2)
+                .unwrap()
+                .contains("END")
+        );
+        press(&mut state, KeyCode::Char('w'));
+        assert_eq!(screen(&state, &vault, 24, 5), first);
+        assert_eq!(
+            press(&mut state, KeyCode::Char('a')),
+            Action::ApplyProposal(id)
+        );
+    }
+
+    #[test]
+    fn review_keeps_its_source_line_when_reflowing_or_returning_to_wrapped_mode() {
+        let vault = fixture();
+        let mut state = State::new("2026-11-20".parse().unwrap());
+        state.overlay = Overlay::Proposals;
+        state.proposals.detail = Some(Detail {
+            text: format!(
+                "{}\n中段 target\n下一行 original\nAnother line\nLast line",
+                "abcdefghij".repeat(6)
+            ),
+            kind: DetailKind::Proposal,
+            pending: None,
+        });
+        let press =
+            |state: &mut State, code| state.handle(KeyEvent::new(code, KeyModifiers::NONE), &vault);
+        let row = |state: &State, width| {
+            screen(state, &vault, width, 5)
+                .lines()
+                .nth(2)
+                .unwrap()
+                .to_string()
+        };
+
+        row(&state, 24);
+        for _ in 0..3 {
+            press(&mut state, KeyCode::Down);
+            row(&state, 24);
+        }
+        assert!(row(&state, 24).contains("中段 target"));
+        assert!(row(&state, 70).contains("中段 target"));
+        press(&mut state, KeyCode::Char('w'));
+        press(&mut state, KeyCode::Down);
+        assert!(row(&state, 70).contains("下一行 original"));
+        press(&mut state, KeyCode::Char('w'));
+        assert!(row(&state, 24).contains("下一行 original"));
+    }
+
+    #[test]
+    fn review_keeps_its_place_within_a_long_line_across_resizes() {
+        let vault = fixture();
+        let mut state = State::new("2026-11-20".parse().unwrap());
+        state.overlay = Overlay::Proposals;
+        state.proposals.detail = Some(Detail {
+            text: format!("{}目标{}\nLast line", "x".repeat(44), "y".repeat(32)),
+            kind: DetailKind::Proposal,
+            pending: None,
+        });
+        let draw = |state: &State, width, height| screen(state, &vault, width, height);
+        draw(&state, 24, 5);
+        for _ in 0..2 {
+            state.handle(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &vault);
+            draw(&state, 24, 5);
+        }
+        for (width, height) in [(24, 5), (28, 5), (88, 5), (24, 5), (24, 12), (24, 5)] {
+            let visible = draw(&state, width, height);
+            assert!(visible.contains("目标"), "{width}×{height}:\n{visible}");
+        }
+        state.handle(KeyEvent::new(KeyCode::End, KeyModifiers::NONE), &vault);
+        assert!(draw(&state, 24, 5).contains("Last line"));
+        assert!(draw(&state, 28, 5).contains("Last line"));
     }
 
     #[test]
@@ -364,7 +519,12 @@ mod tests {
         assert!(text.contains("a approve"));
         let narrow = screen(&state, &vault, 40, 14);
         assert!(narrow.contains("Graph Diff"));
-        assert!(narrow.contains("Read spec → Implement mapping"));
+        press(&mut state, KeyCode::PageDown);
+        let next_page = screen(&state, &vault, 40, 14);
+        assert!(
+            narrow.contains("Read spec → Implement mapping")
+                || next_page.contains("Read spec → Implement mapping")
+        );
         assert_eq!(
             press(&mut state, KeyCode::Char('a')),
             Action::ApplyProposal(id)

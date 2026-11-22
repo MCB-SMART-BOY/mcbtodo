@@ -2,7 +2,9 @@ use std::num::NonZeroUsize;
 
 use chrono::{DateTime, NaiveDate, TimeDelta, TimeZone, Utc};
 use chrono_tz::{America::New_York, Asia::Kathmandu, Pacific::Apia, UTC};
-use mcbtodo_workflow::schedule::{DstResolution, MissedPolicy, Schedule, ScheduleError};
+use mcbtodo_workflow::schedule::{
+    ClockScheduleError, DstResolution, Fold, Missed, MissedPolicy, Schedule, ScheduleError, Trigger,
+};
 
 fn utc(year: i32, month: u32, day: u32, hour: u32, minute: u32) -> DateTime<Utc> {
     Utc.with_ymd_and_hms(year, month, day, hour, minute, 0)
@@ -13,6 +15,76 @@ fn replay(limit: usize) -> MissedPolicy {
     MissedPolicy::ReplayLimited {
         limit: NonZeroUsize::new(limit).unwrap(),
     }
+}
+
+#[test]
+fn clock_trigger_validates_replay_bounds_and_rejects_event_triggers() {
+    let anchor = utc(2026, 11, 20, 12, 0);
+    let trigger = Trigger::Interval {
+        anchor,
+        seconds: 60,
+    };
+    for limit in [0, 17, u8::MAX] {
+        assert!(matches!(
+            trigger.clock_schedule(Missed::ReplayLimited { limit }),
+            Err(ClockScheduleError::ReplayLimit)
+        ));
+    }
+    for limit in [1, 16] {
+        let (schedule, policy) = trigger
+            .clock_schedule(Missed::ReplayLimited { limit })
+            .unwrap();
+        assert_eq!(policy, replay(usize::from(limit)));
+        assert_eq!(
+            schedule.next_after(anchor),
+            Some(anchor + TimeDelta::minutes(1))
+        );
+    }
+    assert!(matches!(
+        Trigger::Dependency {
+            upstream_revision: "revision".into()
+        }
+        .clock_schedule(Missed::Skip),
+        Err(ClockScheduleError::DependencyTrigger)
+    ));
+    assert!(matches!(
+        Trigger::WorkUnitCompleted {
+            work_unit_id: uuid::Uuid::nil()
+        }
+        .clock_schedule(Missed::Skip),
+        Err(ClockScheduleError::CompletionTrigger)
+    ));
+}
+
+#[test]
+fn cron_trigger_validates_raw_inputs_and_maps_both_fold_occurrences() {
+    let trigger = |expression: &str, timezone: &str| Trigger::Cron {
+        expression: expression.into(),
+        timezone: timezone.into(),
+        fold: Fold::Both,
+    };
+    assert!(matches!(
+        trigger("30 1 * * *", "invalid").clock_schedule(Missed::RunOnce),
+        Err(ClockScheduleError::UnknownTimezone(_))
+    ));
+    for oversized in [
+        trigger(&"*".repeat(257), "UTC"),
+        trigger("30 1 * * *", &"x".repeat(97)),
+    ] {
+        assert!(matches!(
+            oversized.clock_schedule(Missed::RunOnce),
+            Err(ClockScheduleError::CronSpecTooLong)
+        ));
+    }
+    let (schedule, policy) = trigger("30 1 * * *", "America/New_York")
+        .clock_schedule(Missed::ReplayLimited { limit: 2 })
+        .unwrap();
+    let missed = schedule.missed(utc(2026, 11, 1, 5, 0), utc(2026, 11, 1, 7, 0), policy);
+    assert_eq!(missed.total, 2);
+    assert_eq!(
+        missed.occurrences,
+        [utc(2026, 11, 1, 5, 30), utc(2026, 11, 1, 6, 30)]
+    );
 }
 
 #[test]
