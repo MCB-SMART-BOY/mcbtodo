@@ -82,7 +82,8 @@ impl Timer {
                 | Request::ListReminderNotifications { .. }
                 | Request::CaptureTask { .. }
                 | Request::CreateAllDayEvent { .. }
-                | Request::CreatePlannedProject { .. },
+                | Request::CreatePlannedProject { .. }
+                | Request::CreateReminder { .. },
                 _,
             ) => {
                 return Ok(Err("expected a timer command"));

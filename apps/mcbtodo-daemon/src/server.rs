@@ -265,6 +265,21 @@ impl Server {
                     |synced| Response::PlannedProjectCreated { project_id, synced },
                 )
             }
+            Request::CreateReminder {
+                reminder_id,
+                target_id,
+                title,
+                at,
+            } => create_in_vault(
+                self.runtime.paths(),
+                "Reminder",
+                reminder_id,
+                |commands| commands.try_create_one_time_reminder(reminder_id, target_id, at, title),
+                |synced| Response::ReminderCreated {
+                    reminder_id,
+                    synced,
+                },
+            ),
             Request::ListNotifications { before } => {
                 match self.runtime.notifications().workflow_page(before) {
                     Ok(page) => Response::Notifications(page),
@@ -369,6 +384,7 @@ fn create_in_vault(
             (ErrorCode::Conflict, "Vault is busy".into())
         }
         WriteError::InvalidDocument(_) => (ErrorCode::InvalidRequest, error.to_string()),
+        WriteError::ReminderTargetNotFound { .. } => (ErrorCode::NotFound, error.to_string()),
         _ => {
             eprintln!("mcbtodo-daemon: creating {label} {id}: {error:#}");
             (

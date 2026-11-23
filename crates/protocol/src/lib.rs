@@ -11,7 +11,7 @@ pub use client::request;
 pub use mcbtodo_ports::focus::TimerState;
 pub use wire::ProtocolError;
 
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, FixedOffset, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -60,6 +60,13 @@ pub enum Request {
         title: String,
         dates: ProjectDates,
     },
+    /// Create a one-time reminder in the daemon's default Vault.
+    CreateReminder {
+        reminder_id: Uuid,
+        target_id: Option<Uuid>,
+        title: String,
+        at: DateTime<FixedOffset>,
+    },
     Workflow(workflow::WorkflowRequest),
 }
 
@@ -95,6 +102,11 @@ pub enum Response {
     /// The Project is visible. `synced` is false if its durability is uncertain.
     PlannedProjectCreated {
         project_id: Uuid,
+        synced: bool,
+    },
+    /// The reminder is visible. `synced` is false if its durability is uncertain.
+    ReminderCreated {
+        reminder_id: Uuid,
         synced: bool,
     },
     Workflow(workflow::WorkflowResponse),

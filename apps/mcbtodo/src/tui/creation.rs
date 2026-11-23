@@ -352,20 +352,51 @@ impl State {
             return;
         }
         let id = Id::new_v4();
-        let saved = VaultCommands::new(root, vault.timezone()).create_reminder(
-            id,
-            target_id,
-            ReminderSchedule::Once { at },
-            request.title,
-            String::new(),
-        );
+        let saved = if cfg!(target_os = "linux") {
+            create_via_daemon(
+                paths,
+                Request::CreateReminder {
+                    reminder_id: id,
+                    target_id,
+                    title: request.title,
+                    at: at.fixed_offset(),
+                },
+                |response| match response {
+                    Response::ReminderCreated {
+                        reminder_id,
+                        synced,
+                    } if reminder_id == id => Some(synced),
+                    _ => None,
+                },
+            )
+            .map(|synced| publication_message("Reminder", id, synced))
+        } else {
+            local_publication(
+                "Reminder",
+                VaultCommands::new(root, vault.timezone()).create_reminder(
+                    id,
+                    target_id,
+                    ReminderSchedule::Once { at },
+                    request.title,
+                    String::new(),
+                ),
+            )
+        };
         let saved = match saved {
-            Ok(_) => "Reminder saved".to_owned(),
-            Err(WriteError::PublishedButNotSynced { source, .. }) => {
-                format!("Reminder published · directory sync failed: {source}")
+            Ok(message) => message,
+            Err(CreationError::Unknown) => {
+                self.overlay = Overlay::None;
+                self.reload(root, vault);
+                self.message =
+                    format!("Reminder outcome unknown · Check UUID {id} before retrying");
+                return;
             }
-            Err(error) => {
-                self.message = format!("Reminder failed · {error:#}");
+            Err(CreationError::Rejected(message)) => {
+                self.message = format!("Reminder failed · {message}");
+                return;
+            }
+            Err(CreationError::StaleRevision) => {
+                self.message = "Reminder failed · Vault changed".into();
                 return;
             }
         };

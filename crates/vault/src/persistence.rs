@@ -1557,7 +1557,23 @@ impl VaultStore {
         &self,
         request: CreateReminder,
     ) -> Result<PersistedDocument, WriteError> {
-        let (lock, vault) = self.locked_snapshot()?;
+        self.create_reminder_with(request, lock)
+    }
+
+    /// Publishes a reminder without waiting for the writer lock.
+    pub fn try_create_reminder(
+        &self,
+        request: CreateReminder,
+    ) -> Result<PersistedDocument, WriteError> {
+        self.create_reminder_with(request, try_lock)
+    }
+
+    fn create_reminder_with(
+        &self,
+        request: CreateReminder,
+        acquire_lock: fn(&Path) -> Result<File>,
+    ) -> Result<PersistedDocument, WriteError> {
+        let (lock, vault) = self.locked_snapshot_with(acquire_lock)?;
         let id = request.reminder.id;
         check_new_id(&vault, id)?;
         if let Some(target_id) = request.reminder.target_id

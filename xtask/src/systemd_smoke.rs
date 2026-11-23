@@ -69,6 +69,7 @@ pub(crate) fn run(root: &Path, bin_dir: &Path) -> Result<()> {
             ])
             .arg("--")
             .arg(&smoke.bwrap)
+            .args(["--unsetenv", "DBUS_SESSION_BUS_ADDRESS"])
             .args(smoke.sandbox_args())
             .arg(directory.join("mcbtodo-daemon")),
         "starting the transient user service",
@@ -151,6 +152,41 @@ pub(crate) fn run(root: &Path, bin_dir: &Path) -> Result<()> {
         }
     }
 
+    const REMINDER_TITLE: &str = "Review notes from systemd smoke";
+    let timezone = WorkspacePaths::from_home(smoke.workspace.clone())
+        .load_config()?
+        .timezone;
+    let at = chrono::DateTime::from_timestamp(chrono::Utc::now().timestamp() - 60, 0)
+        .context("smoke reminder timestamp out of range")?;
+    let input = at.with_timezone(&timezone).to_rfc3339();
+    crate::smoke::drive_default_tui(
+        smoke.client(),
+        &[
+            ("Month", " cr"),
+            ("Title", &format!("{REMINDER_TITLE}\t{input}\r")),
+            ("Reminder saved", "q"),
+        ],
+    )?;
+    let deadline = Instant::now() + Duration::from_secs(25);
+    loop {
+        let page = smoke.json(&["notifications", "--reminders"])?;
+        if page["notifications"].as_array().is_some_and(|rows| {
+            rows.iter().any(|row| {
+                row["title"] == REMINDER_TITLE
+                    && row["scheduled_at"].as_str().and_then(|timestamp| {
+                        timestamp.parse::<chrono::DateTime<chrono::Utc>>().ok()
+                    }) == Some(at)
+            })
+        }) {
+            break;
+        }
+        ensure!(
+            Instant::now() < deadline,
+            "the saved reminder did not appear in the daemon Inbox: {page}"
+        );
+        thread::sleep(Duration::from_millis(250));
+    }
+
     for (key, title, dates, saved, kind) in [
         (
             "p",
@@ -229,7 +265,7 @@ pub(crate) fn run(root: &Path, bin_dir: &Path) -> Result<()> {
     )?;
     service.diagnostics = false;
     println!(
-        "systemd user service smoke passed (TUI reopen, Task, Project, deadline and all-day event creation, timer recovery, and focus report)"
+        "systemd user service smoke passed (TUI reopen, Task, Project, deadline and all-day event creation, reminder Inbox, timer recovery, and focus report)"
     );
     Ok(())
 }

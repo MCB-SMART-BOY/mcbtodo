@@ -170,6 +170,10 @@ impl ZonedMoment {
     pub fn instant(self) -> DateTime<Utc> {
         self.value.to_utc()
     }
+
+    pub fn fixed_offset(self) -> DateTime<FixedOffset> {
+        self.value
+    }
 }
 
 #[derive(Deserialize)]

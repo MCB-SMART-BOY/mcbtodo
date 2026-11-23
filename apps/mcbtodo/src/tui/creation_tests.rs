@@ -107,7 +107,27 @@ fn reminder_form_requires_an_explicit_matching_timezone_offset() {
 }
 
 #[test]
-fn keyboard_creates_a_one_time_reminder_with_an_explicit_local_offset() {
+fn keyboard_submits_a_one_time_reminder_with_an_explicit_local_offset() {
+    let vault = tests::fixture();
+    let mut state = State::new(day("2026-11-25"));
+    let Action::CreateReminder(request) = press(
+        &mut state,
+        &vault,
+        " crReview notes\t2026-11-25T09:30:00+08:00\n",
+    ) else {
+        panic!("expected reminder creation, got {}", state.message);
+    };
+    assert_eq!(request.title, "Review notes");
+    let Schedule::Reminder { at, target_id } = request.schedule else {
+        panic!("expected reminder schedule");
+    };
+    assert_eq!(at.instant().to_rfc3339(), "2026-11-25T01:30:00+00:00");
+    assert!(target_id.is_none());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn default_reminder_keeps_the_form_and_does_not_write_when_the_daemon_is_absent() {
     let root = tempfile::tempdir().unwrap();
     let paths = mcbtodo_platform::WorkspacePaths::from_home(root.path().to_owned());
     paths.initialize().unwrap();
@@ -124,21 +144,48 @@ fn keyboard_creates_a_one_time_reminder_with_an_explicit_local_offset() {
 
     state.create_reminder(&vault_root, &mut vault, &paths, request);
 
-    assert_eq!(state.message, "Reminder saved");
-    assert!(matches!(state.overlay, Overlay::None));
-    let reminders: Vec<_> = vault.reminders().collect();
-    assert_eq!(reminders.len(), 1);
-    assert_eq!(reminders[0].title, "Review notes");
+    assert!(state.message.contains("Start mcbtodo-daemon"));
+    assert!(matches!(state.overlay, Overlay::CreateForm(_)));
     assert_eq!(
-        reminders[0].data.schedule,
-        mcbtodo_domain::recurrence::ReminderSchedule::Once {
-            at: mcbtodo_domain::time::ZonedMoment::new(
-                "2026-11-25T09:30:00+08:00".parse().unwrap(),
-                ZONE,
-            )
-            .unwrap(),
-        }
+        Vault::load(&vault_root, ZONE).unwrap().reminders().count(),
+        0
     );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn reminder_response_loss_reports_uuid_without_replay_or_local_write() {
+    let home = tempfile::tempdir().unwrap();
+    let paths = WorkspacePaths::from_home(home.path().to_owned());
+    paths.initialize().unwrap();
+    let root = paths.vault_root();
+    let mut vault = Vault::load(&root, ZONE).unwrap();
+    let mut state = State::new(day("2026-11-25"));
+    let Action::CreateReminder(request) = press(
+        &mut state,
+        &vault,
+        " crReview notes\t2026-11-25T09:30:00+08:00\n",
+    ) else {
+        panic!("expected reminder creation");
+    };
+    let sent = disconnect_after_request(&paths, || {
+        state.create_reminder(&root, &mut vault, &paths, request);
+    });
+    let mcbtodo_protocol::Request::CreateReminder {
+        reminder_id,
+        title,
+        at,
+        ..
+    } = sent
+    else {
+        panic!("expected a reminder request");
+    };
+    assert_eq!(title, "Review notes");
+    assert_eq!(at.to_rfc3339(), "2026-11-25T09:30:00+08:00");
+    assert!(matches!(state.overlay, Overlay::None));
+    assert!(state.message.contains("outcome unknown"));
+    assert!(state.message.contains(&reminder_id.to_string()));
+    assert_eq!(Vault::load(&root, ZONE).unwrap().reminders().count(), 0);
 }
 
 #[test]

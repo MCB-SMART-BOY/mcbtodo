@@ -49,7 +49,7 @@ systemctl --user enable --now mcbtodo-daemon.service
 mcbtodo timer status --json
 ```
 
-服务启动后，在任意终端运行 `mcbtodo` 打开 TUI。`:timer status` 查询服务中的计时。在 Outline 选中 Project，按 `Space c t` 通过服务保存 Task。在默认 Vault 的日历视图按 `Space c` 可从菜单创建 Project、全天事件和 Deadline，由服务保存。按 `q` 关闭 TUI，再次打开可以继续查看同一计时会话。服务跟随 systemd 用户管理器，在用户登录时启动。
+服务启动后，在任意终端运行 `mcbtodo` 打开 TUI。`:timer status` 查询服务中的计时。在 Outline 选中 Project，按 `Space c t` 通过服务保存 Task。在默认 Vault 的日历视图按 `Space c` 可从菜单创建 Project、全天事件、Deadline 和单次提醒，由服务保存。到期提醒可通过 `mcbtodo notifications --reminders` 查询。按 `q` 关闭 TUI，再次打开可以继续查看同一计时会话。服务跟随 systemd 用户管理器，在用户登录时启动。
 
 服务默认使用一个 Worker 槽。可以在 TUI 的 Settings → Daemon 中设置 1 到 4
 个槽，保存后运行 `systemctl --user restart mcbtodo-daemon.service`。服务覆盖
@@ -68,7 +68,7 @@ journalctl --user-unit mcbtodo-daemon.service -b -n 50
 - 若日志提示状态目录缺失，先以服务用户运行 `mcbtodo init`。若提示目录权限错误，检查 `~/.mcbtodo/state` 的属主和权限。该目录应为当前用户所有，权限为 `0700`。
 - 若日志提示已有守护进程持有锁，先停止在终端中手动启动的 `mcbtodo-daemon`，再重启用户服务。
 
-从仓库根目录可运行实际的用户服务冒烟测试。`xtask` 用 Bubblewrap（`bwrap`）挂载临时 home，在 systemd 用户管理器中启动临时服务。测试在两个先后启动的 TUI 进程中读取同一个持续计时的会话，通过 TUI 创建 Task、Project、Deadline 和跨月全天事件，再验证计时检查点、服务自动重启以及 Markdown 和 JSON 报告。JSON 由 Rust 解析。
+从仓库根目录可运行实际的用户服务冒烟测试。`xtask` 用 Bubblewrap（`bwrap`）挂载临时 home，在 systemd 用户管理器中启动临时服务。测试在两个先后启动的 TUI 进程中读取同一个持续计时的会话，通过 TUI 创建 Task、Project、Deadline、跨月全天事件和单次提醒，再验证提醒进入 Inbox、计时检查点、服务自动重启以及 Markdown 和 JSON 报告。临时服务禁用桌面通知。JSON 由 Rust 解析。
 
 ```sh
 cargo build --release --locked --workspace --bin mcbtodo --bin mcbtodo-daemon --bin mcbtodo-worker

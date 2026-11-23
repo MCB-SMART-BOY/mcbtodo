@@ -19,7 +19,7 @@ use mcbtodo_domain::{
     Availability, CalendarEntry, CalendarEvent, CalendarKind, EvidenceRef, Id, InboxEntry,
     Occurrence, Project, Task, TaskGraph, TimeBlock, WorkUnit, WorkflowRevisionHash,
     recurrence::{Reminder, ReminderSchedule},
-    time::{DateSpan, DateTimeSpan, Deadline, Span},
+    time::{DateSpan, DateTimeSpan, Deadline, Span, ZonedMoment},
 };
 use mcbtodo_vault::{
     AddWorkUnitGraph, BindWorkflow, CaptureInboxEntry, CaptureTask, CompleteWorkUnit, CreateEvent,
@@ -426,16 +426,28 @@ impl VaultCommands {
         title: String,
         body: String,
     ) -> Result<PersistedDocument, WriteError> {
-        validate_markdown(&title, &body).map_err(WriteError::InvalidDocument)?;
-        VaultStore::new(&self.root, self.timezone).create_reminder(CreateReminder {
-            reminder: Reminder {
-                id,
-                target_id,
-                schedule,
-            },
+        VaultStore::new(&self.root, self.timezone)
+            .create_reminder(reminder_draft(id, target_id, schedule, title, body)?)
+    }
+
+    /// Validates the submitted offset against the workspace timezone and
+    /// publishes a one-time reminder without waiting for a writer.
+    pub fn try_create_one_time_reminder(
+        &self,
+        id: Id,
+        target_id: Option<Id>,
+        at: DateTime<FixedOffset>,
+        title: String,
+    ) -> Result<PersistedDocument, WriteError> {
+        let at = ZonedMoment::new(at, self.timezone)
+            .map_err(|error| WriteError::InvalidDocument(error.into()))?;
+        VaultStore::new(&self.root, self.timezone).try_create_reminder(reminder_draft(
+            id,
+            target_id,
+            ReminderSchedule::Once { at },
             title,
-            body,
-        })
+            String::new(),
+        )?)
     }
 
     /// Replaces one WorkUnit's prerequisites after validating the candidate DAG.
@@ -471,6 +483,25 @@ impl VaultCommands {
             expected_revision,
         })
     }
+}
+
+fn reminder_draft(
+    id: Id,
+    target_id: Option<Id>,
+    schedule: ReminderSchedule,
+    title: String,
+    body: String,
+) -> Result<CreateReminder, WriteError> {
+    validate_markdown(&title, &body).map_err(WriteError::InvalidDocument)?;
+    Ok(CreateReminder {
+        reminder: Reminder {
+            id,
+            target_id,
+            schedule,
+        },
+        title,
+        body,
+    })
 }
 
 pub fn validate_markdown(title: &str, body: &str) -> Result<()> {

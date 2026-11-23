@@ -274,6 +274,14 @@ creates both records and reads them back as non-busy calendar entries. A
 deadline still creates a Project with a date-only deadline. External Vaults
 use the same application command in the foreground.
 
+The Linux default-Vault TUI also saves one-time reminders through the
+Daemon. IPC tests cover offset validation against the configured timezone,
+missing targets, writer-lock contention, and duplicate UUID rejection.
+The TUI keeps the draft if the socket is unavailable before submission and
+reports the UUID if the connection is lost after submission. The Linux
+AArch64 systemd smoke exercises the actual form and verifies the scheduled
+instant in the durable reminder Inbox with desktop notifications disabled.
+
 ## Latest Review
 
 On 2026-11-22, the Linux AArch64 release packaging follow-up verified all

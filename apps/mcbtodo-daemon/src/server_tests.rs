@@ -286,6 +286,83 @@ fn planned_project_creation_preserves_calendar_kind_and_checks_the_writer_lock()
 }
 
 #[test]
+fn reminder_creation_validates_the_offset_target_and_writer_lock_over_ipc() -> Result<()> {
+    use mcbtodo_domain::recurrence::ReminderSchedule;
+    use mcbtodo_vault::Vault;
+
+    let dir = private_tempdir()?;
+    let paths = WorkspacePaths::from_home(dir.path().to_owned());
+    paths.initialize()?;
+    let root = paths.vault_root();
+    let timezone = paths.load_config()?.timezone;
+    let socket = paths.socket_path();
+    let mut server = Server::open(paths, crate::DEFAULT_WORKER_SLOTS)?;
+    let reminder_id = Uuid::new_v4();
+    let command = |at: &str, target_id| Request::CreateReminder {
+        reminder_id,
+        target_id,
+        title: "Review notes".into(),
+        at: at.parse().unwrap(),
+    };
+    let valid_time = "2026-11-30T09:00:00+00:00";
+    for (request, expected) in [
+        (
+            command("2026-11-30T09:00:00+08:00", None),
+            ErrorCode::InvalidRequest,
+        ),
+        (
+            command(valid_time, Some(Uuid::new_v4())),
+            ErrorCode::NotFound,
+        ),
+    ] {
+        assert!(matches!(
+            status(&mut server, socket.clone(), request),
+            Response::Error { code, .. } if code == expected
+        ));
+    }
+    let valid = command(valid_time, None);
+    let lock = fs::File::options()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(root.join(".mcbtodo-vault.lock"))?;
+    lock.lock()?;
+    assert!(matches!(
+        status(&mut server, socket.clone(), valid.clone()),
+        Response::Error {
+            code: ErrorCode::Conflict,
+            ..
+        }
+    ));
+    drop(lock);
+    assert_eq!(Vault::load(&root, timezone)?.reminders().count(), 0);
+    assert_eq!(
+        status(&mut server, socket.clone(), valid.clone()),
+        Response::ReminderCreated {
+            reminder_id,
+            synced: true
+        }
+    );
+    assert!(matches!(
+        status(&mut server, socket, valid),
+        Response::Error {
+            code: ErrorCode::Conflict,
+            ..
+        }
+    ));
+    let vault = Vault::load(&root, timezone)?;
+    let reminders: Vec<_> = vault.reminders().collect();
+    assert_eq!(reminders.len(), 1);
+    assert_eq!(reminders[0].data.id, reminder_id);
+    assert_eq!(reminders[0].title, "Review notes");
+    let ReminderSchedule::Once { at } = reminders[0].data.schedule else {
+        panic!("expected a one-time reminder");
+    };
+    assert_eq!(at.fixed_offset().to_rfc3339(), valid_time);
+    Ok(())
+}
+
+#[test]
 fn daemon_answers_commands_and_recovers_running_timer_over_ipc() -> anyhow::Result<()> {
     let dir = private_tempdir()?;
     let socket = dir.path().join("s");
