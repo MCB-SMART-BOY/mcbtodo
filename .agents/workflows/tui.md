@@ -144,6 +144,13 @@ Use the same viewport for Workflow trace. In 24×5, verify the step label,
 wrapped output, the final row, horizontal panning and Escape. Preserve
 Left and Right for adjacent step requests and `H` and `L` for panning.
 
+Exercise a held Daemon reply for a Workflow trace or review. Keep terminal
+input responsive and show loading feedback. Esc, selecting another run, and
+leaving Workflow discard the old detail reply. Reopening Workflow queues at
+most one first-page refresh behind the in-flight read. Verify that the
+confirmation key submits only after the review opens, with the token derived
+from the displayed run.
+
 Project the Graph list and dependency edit from the installed Vault snapshot.
 Refresh the cached nodes when the validated snapshot changes and format only
 visible rows. At 96×5, give the Graph list the full width and check that the

@@ -178,14 +178,14 @@ pub fn run(
             redraw |=
                 state
                     .workflow
-                    .poll_page(paths, state.view == View::Workflow, &mut state.message);
+                    .poll_read(paths, state.view == View::Workflow, &mut state.message);
             if redraw {
                 let model = present(&state, &vault);
                 terminal.draw(|frame| render::draw(frame, &model, theme))?;
                 redraw = false;
             }
             // Check workspace changes and query replies even when no keys are pressed.
-            if (local_watcher.is_some() || connected || state.workflow.is_loading_page())
+            if (local_watcher.is_some() || connected || state.workflow.has_pending_read())
                 && !event::poll(Duration::from_millis(50))?
             {
                 continue;

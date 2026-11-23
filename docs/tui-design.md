@@ -87,6 +87,13 @@ like `a` and `d`. The confirmation key shown in the review submits the decision.
 In a trace, `:workflow step previous`, `:workflow step next`, and
 `:workflow step refresh` use the same actions as Left, Right, and `r`.
 
+Workflow pages, trace steps, and approval previews load in the background.
+The terminal keeps the run list or current trace visible while reading.
+Esc dismisses a pending detail read. Moving to another run or leaving
+Workflow also discards the pending detail, even if you return before the
+reply arrives. Approval still requires the confirmation key after the review
+has loaded.
+
 `TimelineScreenModel` projects the two-week date labels, occurrence markers,
 selected row and compact list labels. The renderer switches to the scrollable
 list below 51 content columns or five content rows. Both layouts keep the

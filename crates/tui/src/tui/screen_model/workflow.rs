@@ -93,6 +93,7 @@ impl<'a> WorkflowScreenModel<'a> {
         let refresh = keys.label(Action::Reload);
         let help = keys.label(Action::Help);
         let vertical = keys.vertical_label();
+        let loading_step = state.is_loading_step();
         let (panel, hint, compact_hint) = match (&state.panel, state.selected()) {
             (Panel::Confirm(decision), _) => (
                 WorkflowPanel::Confirm(WorkflowConfirmation::project(decision, keys)),
@@ -122,14 +123,22 @@ impl<'a> WorkflowScreenModel<'a> {
                 Some(run),
             ) => {
                 let horizontal = keys.horizontal_label();
+                let (hint, compact_hint) = if loading_step {
+                    ("Esc cancel · Loading step…".into(), "Esc cancel".into())
+                } else {
+                    (
+                        format!("Esc runs  {horizontal} step  {vertical} scroll  w wrap  HL pan"),
+                        format!("Esc  {horizontal} step  {vertical}"),
+                    )
+                };
                 (
                     WorkflowPanel::Trace {
                         title: format!(" Step {}/{} · {} ", index + 1, run.step_count, run.id),
                         text,
                         viewport,
                     },
-                    format!("Esc runs  {horizontal} step  {vertical} scroll  w wrap  HL pan"),
-                    format!("Esc  {horizontal} step  {vertical}"),
+                    hint,
+                    compact_hint,
                 )
             }
             (Panel::Runs | Panel::InspectDecision { .. }, Some(run)) => {
@@ -168,9 +177,15 @@ impl<'a> WorkflowScreenModel<'a> {
                     details.push(super::display_line(detail));
                 }
                 details.push(format!("Revision  {}", super::display_line(&run.revision)));
-                let loading = state.is_loading_page();
+                let loading_page = state.is_loading_page();
+                let inspecting = matches!(state.panel, Panel::InspectDecision { .. });
                 let older = state.next_before.is_some();
-                let (hint, compact_hint) = if loading {
+                let (hint, compact_hint) = if loading_step || inspecting {
+                    (
+                        format!("Esc cancel  {vertical} runs  {help} help"),
+                        format!("Esc cancel  {vertical}"),
+                    )
+                } else if loading_page {
                     let hint = format!("{vertical} runs  {help} help");
                     (hint.clone(), hint)
                 } else {
@@ -205,7 +220,11 @@ impl<'a> WorkflowScreenModel<'a> {
                 };
                 (
                     WorkflowPanel::Runs {
-                        title: if loading {
+                        title: if loading_step {
+                            " Loading step… "
+                        } else if inspecting {
+                            " Loading review… "
+                        } else if loading_page {
                             " Loading runs… "
                         } else if older {
                             " Runs · n older "

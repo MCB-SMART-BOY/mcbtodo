@@ -25,27 +25,70 @@ pub(super) struct State {
     pub(super) next_before: Option<Uuid>,
     pub(super) loaded: bool,
     pub(super) panel: Panel,
-    pending_page: Option<PendingPage>,
+    pending_read: Option<PendingRead>,
 }
 
-struct PendingPage {
-    before: Option<Uuid>,
-    reply: Receiver<Result<WorkflowRunPage>>,
-    refresh_after: bool,
+struct PendingRead {
+    request: ReadRequest,
+    reply: Receiver<Result<ReadReply>>,
+    completion: ReadCompletion,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum Operation {
-    List {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ReadRequest {
+    List { before: Option<Uuid> },
+    Step { run_id: Uuid, index: u32 },
+    Review { run_id: Uuid },
+}
+
+impl ReadRequest {
+    pub(super) fn action(self) -> Action {
+        Action::Workflow(Operation::Read(self))
+    }
+
+    fn fetch(self, paths: &WorkspacePaths) -> Result<ReadReply> {
+        match self {
+            Self::List { before } => Ok(ReadReply::Page {
+                before,
+                page: daemon_client::workflow_runs(paths, before)?,
+            }),
+            Self::Step { run_id, index } => Ok(ReadReply::Step {
+                run_id,
+                index,
+                text: serde_json::to_string_pretty(&daemon_client::workflow_step(
+                    paths, run_id, index,
+                )?)?,
+            }),
+            Self::Review { run_id } => daemon_client::workflow_run(paths, run_id)
+                .map(Box::new)
+                .map(ReadReply::Review),
+        }
+    }
+}
+
+enum ReadReply {
+    Page {
         before: Option<Uuid>,
+        page: WorkflowRunPage,
     },
     Step {
         run_id: Uuid,
         index: u32,
+        text: String,
     },
-    Review {
-        run_id: Uuid,
-    },
+    Review(Box<RunSummary>),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReadCompletion {
+    Apply,
+    Discard,
+    Refresh,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum Operation {
+    Read(ReadRequest),
     Decide {
         run_id: Uuid,
         node: String,
@@ -101,6 +144,13 @@ impl State {
         refresh()
     }
 
+    pub(super) fn close(&mut self) {
+        self.panel = Panel::Runs;
+        if let Some(pending) = &mut self.pending_read {
+            pending.completion = ReadCompletion::Discard;
+        }
+    }
+
     pub(super) fn command_for_key(&self, code: KeyCode) -> Option<WorkflowCommand> {
         match (&self.panel, code) {
             (Panel::Runs, KeyCode::Char('r')) => Some(WorkflowCommand::Refresh),
@@ -124,6 +174,7 @@ impl State {
 
     pub(super) fn run_command(&mut self, command: WorkflowCommand, message: &mut String) -> Action {
         match command {
+            WorkflowCommand::Step(_) if self.is_loading_step() => Action::Continue,
             WorkflowCommand::Step(direction) => {
                 let Panel::Trace { index, .. } = self.panel else {
                     *message = "Open a Workflow trace first".into();
@@ -140,14 +191,17 @@ impl State {
                 *message = "Open the Workflow runs list first".into();
                 Action::Continue
             }
-            WorkflowCommand::Trace | WorkflowCommand::Review { .. } if self.is_loading_page() => {
+            WorkflowCommand::Trace | WorkflowCommand::Review { .. }
+                if self.is_loading_page() || self.is_loading_step() =>
+            {
                 Action::Continue
             }
             WorkflowCommand::Refresh => refresh(),
             WorkflowCommand::Older => match self.next_before {
-                Some(before) => Action::Workflow(Operation::List {
+                Some(before) => ReadRequest::List {
                     before: Some(before),
-                }),
+                }
+                .action(),
                 None => {
                     *message = "No older runs".into();
                     Action::Continue
@@ -161,7 +215,7 @@ impl State {
                     .map(|run| run.id)
                 {
                     self.panel = Panel::InspectDecision { approved };
-                    Action::Workflow(Operation::Review { run_id })
+                    ReadRequest::Review { run_id }.action()
                 } else {
                     *message = "Select a run waiting for approval".into();
                     Action::Continue
@@ -171,6 +225,9 @@ impl State {
     }
 
     pub(super) fn handle(&mut self, key: KeyEvent, keys: &Keymap) -> Option<Action> {
+        if key.code == KeyCode::Esc && self.cancel_detail() {
+            return Some(Action::Continue);
+        }
         if let Panel::Confirm(decision) = &self.panel {
             return Some(match key.code {
                 KeyCode::Esc => {
@@ -230,25 +287,40 @@ impl State {
             };
         }
 
-        Some(match key.code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                self.row = move_row(self.row, true, self.runs.len());
-                Action::Continue
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.row = move_row(self.row, false, self.runs.len());
-                Action::Continue
-            }
+        let forward = match key.code {
+            KeyCode::Char('j') | KeyCode::Down => true,
+            KeyCode::Char('k') | KeyCode::Up => false,
             _ => return None,
-        })
+        };
+        let row = move_row(self.row, forward, self.runs.len());
+        if self.row != row {
+            self.cancel_detail();
+            self.row = row;
+        }
+        Some(Action::Continue)
+    }
+
+    fn cancel_detail(&mut self) -> bool {
+        let Some(pending) = &mut self.pending_read else {
+            return false;
+        };
+        if matches!(pending.request, ReadRequest::List { .. })
+            || pending.completion != ReadCompletion::Apply
+        {
+            return false;
+        }
+        pending.completion = ReadCompletion::Discard;
+        self.panel = Panel::Runs;
+        true
     }
 
     fn step(&self, index: u32, message: &mut String) -> Action {
         if let Some(run) = self.selected().filter(|run| index < run.step_count) {
-            Action::Workflow(Operation::Step {
+            ReadRequest::Step {
                 run_id: run.id,
                 index,
-            })
+            }
+            .action()
         } else {
             *message = if matches!(self.panel, Panel::Trace { .. }) {
                 "No further recorded step"
@@ -261,37 +333,60 @@ impl State {
     }
 
     pub(super) fn is_loading_page(&self) -> bool {
-        self.pending_page.is_some()
+        self.pending_read.as_ref().is_some_and(|pending| {
+            pending.completion == ReadCompletion::Refresh
+                || (pending.completion == ReadCompletion::Apply
+                    && matches!(pending.request, ReadRequest::List { .. }))
+        })
     }
 
-    fn request_page(&mut self, paths: &WorkspacePaths, before: Option<Uuid>) -> Result<()> {
-        if let Some(pending) = &mut self.pending_page {
-            // A first-page refresh supersedes an older-page request.
-            pending.refresh_after |= before.is_none() && pending.before.is_some();
-            return Ok(());
+    pub(super) fn is_loading_step(&self) -> bool {
+        self.pending_read.as_ref().is_some_and(|pending| {
+            pending.completion == ReadCompletion::Apply
+                && matches!(pending.request, ReadRequest::Step { .. })
+        })
+    }
+
+    pub(super) fn has_pending_read(&self) -> bool {
+        self.pending_read.is_some()
+    }
+
+    fn request_read(&mut self, paths: &WorkspacePaths, request: ReadRequest) -> Result<()> {
+        if let Some(pending) = &mut self.pending_read {
+            if request == (ReadRequest::List { before: None }) {
+                // Reopening or refreshing uses a single fresh first page.
+                if pending.request != request || pending.completion == ReadCompletion::Discard {
+                    pending.completion = ReadCompletion::Refresh;
+                }
+                return Ok(());
+            }
+            if pending.request == request && pending.completion == ReadCompletion::Apply {
+                return Ok(());
+            }
+            bail!("Reader busy · try again when loading finishes");
         }
         let (sender, reply) = mpsc::channel();
         let paths = paths.clone();
         thread::Builder::new()
-            .name("mcbtodo-workflow-list".into())
+            .name("mcbtodo-workflow-read".into())
             .spawn(move || {
-                let _ = sender.send(daemon_client::workflow_runs(&paths, before));
+                let _ = sender.send(request.fetch(&paths));
             })?;
-        self.pending_page = Some(PendingPage {
-            before,
+        self.pending_read = Some(PendingRead {
+            request,
             reply,
-            refresh_after: false,
+            completion: ReadCompletion::Apply,
         });
         Ok(())
     }
 
-    pub(super) fn poll_page(
+    pub(super) fn poll_read(
         &mut self,
         paths: &WorkspacePaths,
         visible: bool,
         message: &mut String,
     ) -> bool {
-        let Some(pending) = &self.pending_page else {
+        let Some(pending) = &self.pending_read else {
             return false;
         };
         let result = match pending.reply.try_recv() {
@@ -299,53 +394,61 @@ impl State {
             Err(TryRecvError::Empty) => return false,
             Err(TryRecvError::Disconnected) => Err(anyhow::anyhow!("Workflow reader disconnected")),
         };
-        let before = pending.before;
-        let refresh_after = pending.refresh_after;
-        self.pending_page = None;
+        let completion = pending.completion;
+        self.pending_read = None;
         if !visible {
             return false;
         }
-        let result = if refresh_after {
-            self.request_page(paths, None)
-        } else {
-            result.map(|page| self.install_page(before, page))
+        let result = match completion {
+            ReadCompletion::Discard => return true,
+            ReadCompletion::Refresh => self.request_read(paths, ReadRequest::List { before: None }),
+            ReadCompletion::Apply => result.and_then(|reply| match reply {
+                ReadReply::Page { before, page } => {
+                    self.install_page(before, page);
+                    Ok(())
+                }
+                ReadReply::Step {
+                    run_id,
+                    index,
+                    text,
+                } => self.show_step(run_id, index, text),
+                ReadReply::Review(run) => self.review_decision(*run),
+            }),
         };
         if let Err(error) = result {
+            self.dismiss_inspection();
             *message = format!("Workflow · {error:#}");
         }
         true
     }
 
     pub(super) fn execute(&mut self, paths: &WorkspacePaths, command: Operation) -> String {
-        let decision = matches!(command, Operation::Decide { .. });
-        let result = match command {
-            Operation::List { before } => self.request_page(paths, before),
-            Operation::Step { run_id, index } => daemon_client::workflow_step(paths, run_id, index)
-                .and_then(|step| self.show_step(run_id, index, step)),
-            Operation::Review { run_id } => {
-                daemon_client::workflow_run(paths, run_id).and_then(|run| self.review_decision(run))
-            }
+        match command {
+            Operation::Read(request) => match self.request_read(paths, request) {
+                Ok(()) => String::new(),
+                Err(error) => {
+                    self.dismiss_inspection();
+                    format!("Workflow · {error:#}")
+                }
+            },
             Operation::Decide {
                 run_id,
                 node,
                 approved,
                 review,
-            } => daemon_client::decide_workflow(paths, run_id, node, approved, review)
-                .map(|run| self.record_decision(run)),
-        };
-        if result.is_err() && matches!(self.panel, Panel::InspectDecision { .. }) {
-            self.panel = Panel::Runs;
-        }
-        if decision {
-            match result {
-                Ok(()) => "Approval decision recorded · r refresh".into(),
+            } => match daemon_client::decide_workflow(paths, run_id, node, approved, review) {
+                Ok(run) => {
+                    self.record_decision(run);
+                    "Approval decision recorded · r refresh".into()
+                }
                 Err(error) => format!("Decision · {error:#} · r refresh"),
-            }
-        } else {
-            match result {
-                Ok(()) => String::new(),
-                Err(error) => format!("Workflow · {error:#}"),
-            }
+            },
+        }
+    }
+
+    fn dismiss_inspection(&mut self) {
+        if matches!(self.panel, Panel::InspectDecision { .. }) {
+            self.panel = Panel::Runs;
         }
     }
 
@@ -366,18 +469,13 @@ impl State {
         self.loaded = true;
     }
 
-    pub(super) fn show_step(
-        &mut self,
-        run_id: Uuid,
-        index: u32,
-        step: serde_json::Value,
-    ) -> Result<()> {
+    pub(super) fn show_step(&mut self, run_id: Uuid, index: u32, text: String) -> Result<()> {
         if self.selected().map(|run| run.id) != Some(run_id) {
             bail!("Workflow selection changed");
         }
         self.panel = Panel::Trace {
             index,
-            text: serde_json::to_string_pretty(&step)?,
+            text,
             viewport: PannableReview::default(),
         };
         Ok(())
@@ -412,5 +510,5 @@ impl State {
 }
 
 fn refresh() -> Action {
-    Action::Workflow(Operation::List { before: None })
+    ReadRequest::List { before: None }.action()
 }

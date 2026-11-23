@@ -2071,8 +2071,7 @@ workspace check and sandbox smoke passed again with the shared CLI paths.
 
 Workflow page loads now run outside the terminal thread. A held-response test
 verifies that navigation and quit remain available, refresh discards a queued
-older page, and the replacement list preserves selection by run UUID. Review
-inspection, step reads, and decision submission still run synchronously.
+older page, and the replacement list preserves selection by run UUID.
 Linux AArch64 workspace checks passed 734 tests. Example Vault validation and
 the sandbox workspace smoke passed.
 
@@ -2080,3 +2079,11 @@ The trace view uses the same typed commands for step navigation and reload
 from the command prompt and keyboard shortcuts. A test verifies the run UUID,
 step index, and the active panel requirements for dispatch. The Linux AArch64
 workspace check passed 735 tests, and the example Vault and sandbox smoke passed.
+
+Workflow pages, step reads, and approval previews now share one background
+reader slot. The terminal consumes typed replies during its event loop. A
+delayed Unix socket test covers changing selection, pressing Escape, leaving
+and reopening Workflow, and confirming with the token from the loaded run.
+Confirmed decision submission still runs on the terminal thread.
+The Linux AArch64 workspace check passed 736 tests. Example Vault validation,
+Agent registry validation, and the sandbox smoke passed.

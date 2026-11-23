@@ -343,6 +343,9 @@ impl State {
             {
                 self.set_day(day);
             }
+            if self.view == View::Workflow {
+                self.workflow.close();
+            }
             self.view = view;
             self.row = 0;
             self.sync_row(vault, preferred);
@@ -2712,7 +2715,7 @@ mod tests {
             (
                 ":view workflow\n",
                 " uf",
-                Action::Workflow(workflow::Operation::List { before: None }),
+                workflow::ReadRequest::List { before: None }.action(),
                 View::Workflow,
             ),
             (
