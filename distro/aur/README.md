@@ -25,7 +25,7 @@ This checks shell syntax and verifies the committed `.SRCINFO` matches
 `makepkg --printsrcinfo`. It does not fetch sources or assert that a release
 exists.
 
-After a GitHub Release exists for the matching `v<version>` tag and contains
+For a new release, after the matching `v<version>` GitHub Release contains
 the upstream source asset `mcbtodo-<version>-source.tar.gz`:
 
 1. Set `pkgver` to the released version.
@@ -42,10 +42,10 @@ the upstream source asset `mcbtodo-<version>-source.tar.gz`:
    duplicate/adoption rules instead of creating a duplicate.
 7. Run `pkgctl license check` on the final AUR recipe before submission.
 
-The current repository has no `v0.1.0` release tag or source release asset.
-Therefore the checksum is intentionally unset, the package cannot yet pass
-source verification/build, and this recipe is not ready for AUR submission.
-Do not submit `.SRCINFO` with the placeholder checksum.
+## v0.1.0 Status
 
-Publishing is intentionally outside this helper. It does not log in to or
-modify AUR, create Git tags/releases, or push Git changes.
+`mcbtodo 0.1.0-1` is published in the AUR. The recipe pins the source
+archive SHA-256
+`fb15e9fae29a69b8b6852bb2c05926e718ac01195833ee65be52e8e2fc2ef037`.
+The archive sidecar, static metadata check, and an AArch64 `makepkg` build
+were verified before submission. `namcap` was unavailable and was not run.

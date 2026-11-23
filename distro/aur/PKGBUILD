@@ -8,8 +8,7 @@ url='https://github.com/MCB-SMART-BOY/mcbtodo'
 license=('Apache-2.0')
 makedepends=('cargo')
 source=("$pkgname-$pkgver-source.tar.gz::$url/releases/download/v$pkgver/mcbtodo-$pkgver-source.tar.gz")
-# Replace this only with the SHA-256 of the source asset attached to the matching GitHub Release.
-sha256sums=('REPLACE_WITH_RELEASE_SHA256')
+sha256sums=('fb15e9fae29a69b8b6852bb2c05926e718ac01195833ee65be52e8e2fc2ef037')
 
 build() {
   cd "$srcdir/mcbtodo-$pkgver"

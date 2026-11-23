@@ -87,16 +87,21 @@ repository is registered through a `repos.json` pull request to
 `NixOS/nixpkgs`. Neither action is performed by this repository-local
 preparation.
 
-## Current Readiness
+## v0.1.0 Status
 
-- Shared derivation and channel entry points: implemented locally.
-- Nix expression syntax and package metadata: checked locally where the
-  installed Nix tools permit.
-- Full derivation build: not verified until Nixpkgs is available and its
-  locked dependencies can be fetched.
-- Stable NUR/nixpkgs submission: blocked on a committed, tagged source release
-  and a real source archive checksum; Nixpkgs submission also awaits a
-  successful package build and review.
+The tagged source archive is published at the v0.1.0 GitHub Release. Its
+verified SHA-256 is
+`fb15e9fae29a69b8b6852bb2c05926e718ac01195833ee65be52e8e2fc2ef037`.
+Nix evaluation against current nixpkgs unstable succeeds, but a real package
+build is blocked because the project declares Rust 1.100 and current nixpkgs
+provides Rust 1.99.1. The build correctly fails Cargo's `rust-version` check.
+
+No NUR repository or registration PR, and no nixpkgs PR, has been submitted.
+These channels remain blocked until the package can build with the toolchain
+available from nixpkgs unstable. The nixpkgs candidate was based on the
+current upstream branch and passed formatting and evaluation checks, but it
+was not pushed because the actual build failed. Do not report either package
+as available or accepted.
 
 No tag, GitHub Release, external NUR/nixpkgs change, or package publication is
 created by these files.

@@ -71,8 +71,19 @@ for review, not evidence that the package has been accepted or merged.
 
 ## Release status
 
-Recipe files committed under this directory are preparation, not proof of
-publication. Record the exact version, source checksum, submitted repository
-revision or pull request, and final acceptance state after each channel
-operation. The release preparation workflow does not publish packages or
-create GitHub Releases.
+`v0.1.0` is released at
+https://github.com/MCB-SMART-BOY/mcbtodo/releases/tag/v0.1.0. The release
+contains the tracked-source archive, checksum sidecar, and CI-built Linux
+x86_64 and aarch64 archives. The source archive SHA-256 is
+`fb15e9fae29a69b8b6852bb2c05926e718ac01195833ee65be52e8e2fc2ef037`.
+
+- AUR: `mcbtodo 0.1.0-1` published at https://aur.archlinux.org/packages/mcbtodo.
+  The source checksum and AArch64 package build were verified.
+- crates.io: first publication is in progress; verify the exact package list
+  and registry status before treating this channel as complete.
+- NUR and nixpkgs: not submitted. The real build currently fails because
+  nixpkgs unstable's Rust compiler is older than the package's declared
+  `rust-version`; see [Nix status](nix/README.md#v010-status).
+
+The release-preparation workflow validates packages and builds artifacts; it
+does not publish crates or create a GitHub Release.
