@@ -85,10 +85,19 @@ CLI 的 Vault 写命令从已加载快照取得乐观并发控制 token 时使�
 | Linux TUI，外部 Vault，以及非 Linux TUI | 使用本地 Vault 投影和可用的前台编辑功能。外部 Vault 没有独立后台服务。 |
 | MCP | stdio 服务通过共享用例读取选定 Vault。在支持私有队列的平台，业务写入提案需人工批准。批准工作流快照只发布内容寻址 revision，执行授权与入队各有独立入口。 |
 
-Vault 路由与同用户 socket 客户端见 [CLI 入口](../apps/mcbtodo/src/main.rs)、
-[TUI 的查询缓存](../apps/mcbtodo/src/tui/daemon_views.rs)、
-[TUI 的 Vault 路由](../apps/mcbtodo/src/tui/creation.rs)与
+CLI 和 TUI 共用[客户端 IPC 模块](../apps/mcbtodo/src/daemon_client.rs)中的
+请求处理。TUI 通过该模块判断当前 Vault 是否由 Daemon 管理。写入处理保留
+修订冲突、拒绝和提交结果未知的区别。
+帧编解码和同用户身份检查仍由协议和平台层负责。查询缓存和请求分派见
+[TUI 的查询缓存](../apps/mcbtodo/src/tui/daemon_views.rs)与
 [Daemon 的请求分派](../apps/mcbtodo-daemon/src/server.rs)。
+
+截止日期表单接收已读出的日期和 revision，表单按键只改变草稿或发出刷新和
+提交动作。TUI 交互循环处理打开、刷新和提交，连接会话通过 Daemon 查询和提交，
+本地会话通过 Application 执行对应操作。修订冲突后按 `r` 从当前数据来源
+重读 revision，保留用户草稿并要求再次确认。见
+[表单](../apps/mcbtodo/src/tui/deadline.rs)和
+[动作处理](../apps/mcbtodo/src/tui/deadline_io.rs)。
 
 服务端每个投影查询重新加载一次有效 Vault 快照。TUI 按查询参数缓存行或错误，
 供渲染与选择共用。手动重载、写入后重载或 watcher 安装新快照会清除缓存；
@@ -97,6 +106,28 @@ Vault 路由与同用户 socket 客户端见 [CLI 入口](../apps/mcbtodo/src/ma
 有序多帧，客户端收齐后才交付结果。查询索引、服务端变更订阅、GUI 和
 桌面启动器入口仍待实现。帧契约见 [IPC 编解码](../crates/protocol/src/wire.rs)
 与[客户端](../crates/protocol/src/client.rs)。
+
+## 应用边界的演进
+
+`mcbtodo` 继续作为 Cargo 默认入口，在终端中启动 TUI。Linux 默认工作区的
+业务读写逐步集中到 Daemon，Vault 继续持有 Markdown 的解析和一致性规则。
+TUI 与未来的 GUI 共用面向业务的客户端调用，分别维护导航、选中项、草稿与
+渲染。显式外部 Vault 和现有非 Linux 会话保留本地入口，复用 Application
+用例。连接模式遇到服务错误时展示连接状态。
+
+按一条真实的读写路径推进，每阶段校验数据来源、修订冲突、断线行为和现有
+快捷键。
+
+1. **表单和客户端。** 以截止日期验证输入、刷新和提交的分工。后续将 Graph、
+   Inbox 和创建表单按同一边界迁移，路由在会话建立时确定。
+2. **查询和呈现。** 交互循环更新用于展示和选中的同一批查询数据，
+   `ScreenModel` 基于内存状态构造。将请求移到终端循环之外，快速切换视图时
+   只采用与当前查询对应的响应。读取失败可重新加载，提交结果未知时引导
+   用户核对数据。
+3. **连接模式的启动和刷新。** 补齐剩余的文档定位及表单上下文，经 Daemon
+   获取初始状态和刷新信号。完成后可验证连接模式从启动到写入都无需客户端
+   本地 Vault 快照。客户端主题、按键和窗口状态继续由本机管理；提案队列、
+   Agent 策略和备份各自保有独立权限和一致性边界。
 
 本地写入和 IPC 写入共用 `VaultCommands` 与 Vault 的写锁及 revision 校验。
 例如 Task 捕获使用大纲行里的 Project revision，Graph 确认与时间块写入

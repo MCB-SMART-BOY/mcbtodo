@@ -18,6 +18,14 @@ must retain the selected object and occurrence date/time. Shared screen data may
 serve future GUI or web clients, while terminal coordinates and Ratatui styles
 remain presentation details.
 
+For a form backed by the daemon or an explicit local Vault, open it with
+already-loaded context and the observed revision. The key handler edits the
+draft and emits typed actions. The terminal loop executes open, refresh, and
+submit actions against the selected source. Use `daemon_client` for workspace
+IPC write outcomes. Verify that a stale deadline preserves the draft, requires
+an explicit `r` refresh before another submission, and never changes the
+selected source on connection failure.
+
 ## Design System
 
 Centralize theme tokens for background, surface, active surface, border, focus

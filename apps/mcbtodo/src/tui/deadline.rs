@@ -1,11 +1,10 @@
-use anyhow::{Context, Result};
 use chrono::NaiveDate;
+use chrono_tz::Tz;
 use crossterm::event::KeyCode;
-use mcbtodo_application::deadline_edit_context;
 use mcbtodo_domain::{Id, time::Deadline};
-use mcbtodo_vault::{Revision, Vault};
+use mcbtodo_vault::Revision;
 
-use super::{Action, daemon_views::DaemonViews};
+use super::Action;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum EditRevision {
@@ -13,7 +12,7 @@ pub(super) enum EditRevision {
     Daemon(String),
 }
 
-pub(super) const DAEMON_STALE: &str = "Document changed · press r to refresh the revision";
+pub(super) const STALE: &str = "Document changed · press r to refresh the revision";
 
 pub(super) struct Form {
     pub id: Id,
@@ -33,21 +32,15 @@ pub(super) struct Submission {
 }
 
 impl Form {
-    pub(super) fn open(id: Id, vault: &Vault, service: Option<&DaemonViews>) -> Result<Self> {
-        let (revision, deadline) = match service {
-            Some(service) => {
-                let (revision, deadline) = service.deadline_context(id)?;
-                (EditRevision::Daemon(revision), deadline)
-            }
-            None => {
-                let context = deadline_edit_context(vault, id)
-                    .context("Selection does not support deadlines")?;
-                (EditRevision::Local(context.revision), context.deadline)
-            }
-        };
-        let original_day = deadline.and_then(|deadline| deadline.local_date(vault.timezone()));
+    pub(super) fn new(
+        id: Id,
+        revision: EditRevision,
+        deadline: Option<Deadline>,
+        timezone: Tz,
+    ) -> Self {
+        let original_day = deadline.and_then(|deadline| deadline.local_date(timezone));
         let value = original_day.map_or_else(String::new, |date| date.to_string());
-        Ok(Self {
+        Self {
             id,
             value,
             cleared: deadline.is_none(),
@@ -55,20 +48,26 @@ impl Form {
             original_day,
             revision,
             needs_refresh: false,
-        })
+        }
     }
 
-    pub(super) fn handle(
+    pub(super) fn refresh(
         &mut self,
-        code: KeyCode,
-        vault: &Vault,
-        service: Option<&DaemonViews>,
-        message: &mut String,
-    ) -> Option<Action> {
+        revision: EditRevision,
+        deadline: Option<Deadline>,
+        timezone: Tz,
+    ) {
+        self.revision = revision;
+        self.original = deadline;
+        self.original_day = deadline.and_then(|deadline| deadline.local_date(timezone));
+        self.needs_refresh = false;
+    }
+
+    pub(super) fn handle(&mut self, code: KeyCode, message: &mut String) -> Option<Action> {
         match code {
             KeyCode::Esc => return None,
-            KeyCode::Enter if self.needs_refresh && service.is_some() => {
-                *message = DAEMON_STALE.into();
+            KeyCode::Enter if self.needs_refresh => {
+                *message = STALE.into();
                 return Some(Action::Continue);
             }
             KeyCode::Enter => {
@@ -99,29 +98,7 @@ impl Form {
                 self.cleared = false;
             }
             KeyCode::Char('r') if self.needs_refresh => {
-                if let Some(service) = service {
-                    match service.deadline_context(self.id) {
-                        Ok((revision, deadline)) => {
-                            self.revision = EditRevision::Daemon(revision);
-                            self.original = deadline;
-                            self.original_day =
-                                deadline.and_then(|deadline| deadline.local_date(vault.timezone()));
-                        }
-                        Err(error) => {
-                            *message = format!("Deadline refresh failed · {error:#}");
-                            return Some(Action::Continue);
-                        }
-                    }
-                } else {
-                    let Some(context) = deadline_edit_context(vault, self.id) else {
-                        *message = "Selected document is no longer available".into();
-                        return Some(Action::Continue);
-                    };
-                    self.revision = EditRevision::Local(context.revision);
-                }
-                self.needs_refresh = false;
-                *message = "Revision refreshed; review the date before saving".into();
-                return Some(Action::Continue);
+                return Some(Action::RefreshDeadline);
             }
             KeyCode::Char(ch) if ch.is_ascii_digit() || ch == '-' => {
                 if self.value.len() < 10 {

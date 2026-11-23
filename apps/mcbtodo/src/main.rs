@@ -2,6 +2,7 @@ mod agent_discovery;
 #[cfg_attr(not(unix), path = "backup_unsupported.rs")]
 mod backup;
 mod calendar_format;
+mod daemon_client;
 mod doctor;
 mod focus_report;
 mod ical_import;
@@ -29,7 +30,7 @@ use mcbtodo_domain::{
     time::{DateParseError, Deadline, parse_date},
 };
 use mcbtodo_platform::{AppConfig, WorkspacePaths};
-use mcbtodo_protocol::{ProtocolError, Request, Response, TimerState, TimerStatus, request};
+use mcbtodo_protocol::{Request, Response};
 use mcbtodo_vault::Vault;
 
 #[derive(Parser)]
@@ -237,12 +238,12 @@ fn run(cli: Cli) -> Result<()> {
                 TimerCommand::Stop => Request::Stop,
                 TimerCommand::Report(_) => unreachable!("handled above"),
             };
-            let status = timer(&paths, command)?;
+            let status = daemon_client::timer(&paths, command)?;
             if json {
                 serde_json::to_writer_pretty(io::stdout().lock(), &status)?;
                 println!();
             } else {
-                println!("{}", timer_label(&status));
+                println!("{}", focus_report::timer_label(&status));
             }
         }
         Command::Mcp {
@@ -257,7 +258,7 @@ fn run(cli: Cli) -> Result<()> {
             } else {
                 Request::ListNotifications { before }
             };
-            match daemon_request(&paths, request)? {
+            match daemon_client::exchange(&paths, request)? {
                 Response::Notifications(page) if !reminders => {
                     serde_json::to_writer_pretty(io::stdout().lock(), &page)?;
                 }
@@ -345,7 +346,7 @@ fn run(cli: Cli) -> Result<()> {
             let (root, timezone) = location.resolve(&paths)?;
             let date = date.unwrap_or_else(|| Utc::now().with_timezone(&timezone).date_naive());
             let entries = if daemon {
-                daemon_calendar(
+                daemon_client::calendar(
                     &paths,
                     mcbtodo_domain::time::DateSpan::new(date, date)?,
                     timezone,
@@ -435,64 +436,6 @@ pub(crate) fn require_default_focus_vault(paths: &WorkspacePaths, root: &Path) -
         );
     }
     Ok(())
-}
-
-pub(crate) fn timer(paths: &WorkspacePaths, operation: Request) -> Result<TimerStatus> {
-    match daemon_request(paths, operation)? {
-        Response::Status(status) => Ok(status),
-        _ => bail!("unexpected response to timer request"),
-    }
-}
-
-fn daemon_calendar(
-    paths: &WorkspacePaths,
-    window: mcbtodo_domain::time::DateSpan,
-    timezone: Tz,
-) -> Result<Vec<mcbtodo_domain::CalendarItem>> {
-    match daemon_request(
-        paths,
-        Request::Calendar {
-            start: window.start(),
-            through: window.through(),
-            timezone: timezone.name().into(),
-        },
-    )? {
-        Response::Calendar { items } => Ok(items),
-        _ => bail!("unexpected response to calendar request"),
-    }
-}
-
-pub(crate) fn daemon_request(paths: &WorkspacePaths, operation: Request) -> Result<Response> {
-    let socket = paths.socket_path();
-    let exchange = request(&socket, operation);
-    if let Err(ProtocolError::Io(error)) = &exchange
-        && matches!(
-            error.kind(),
-            io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
-        )
-    {
-        return exchange.context("Start mcbtodo-daemon and try again");
-    }
-    match exchange.with_context(|| format!("contacting mcbtodo-daemon at {}", socket.display()))? {
-        Response::Error { code, message } => bail!("{code:?}: {message}"),
-        response => Ok(response),
-    }
-}
-
-pub(crate) fn timer_label(status: &TimerStatus) -> String {
-    let state = match status.state {
-        TimerState::Idle => "idle",
-        TimerState::Running => "running",
-        TimerState::Paused => "paused",
-        TimerState::NeedsReview => "needs review",
-    };
-    match &status.session {
-        Some(session) => format!(
-            "Timer {state} · {}s · {}",
-            session.elapsed_seconds, session.id
-        ),
-        None => format!("Timer {state}"),
-    }
 }
 
 pub(crate) fn today(vault: &Vault) -> NaiveDate {

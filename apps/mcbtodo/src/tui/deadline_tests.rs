@@ -2,6 +2,14 @@ use super::{calendar_tests::screen, creation_tests::press, *};
 
 use mcbtodo_domain::time::Deadline;
 
+fn open_deadline(state: &mut State, vault: &Vault, input: &str) {
+    let Action::OpenDeadline(id) = press(state, vault, input) else {
+        panic!("expected deadline open action");
+    };
+    assert!(matches!(state.overlay, Overlay::Space(_)));
+    state.open_deadline(vault, id);
+}
+
 #[cfg(target_os = "linux")]
 use std::{os::unix::net::UnixListener, thread};
 
@@ -115,7 +123,7 @@ fn deadline_editor_uses_daemon_context_for_a_document_absent_locally() -> Result
     let mut state = State::new("2026-11-25".parse()?);
     state.view = View::Outline;
     state.daemon_views = Some(daemon_views::DaemonViews::new(paths.clone()));
-    press(&mut state, &vault, " d");
+    open_deadline(&mut state, &vault, " d");
     assert!(
         matches!(&state.overlay, Overlay::Deadline(form) if form.value == "2026-12-10"),
         "{}",
@@ -127,7 +135,9 @@ fn deadline_editor_uses_daemon_context_for_a_document_absent_locally() -> Result
     state.set_deadline(&root, &mut vault, submission);
     assert!(state.message.contains("press r"), "{}", state.message);
     assert_eq!(press(&mut state, &vault, "\n"), Action::Continue);
-    press(&mut state, &vault, "r");
+    assert_eq!(press(&mut state, &vault, "r"), Action::RefreshDeadline);
+    assert!(matches!(&state.overlay, Overlay::Deadline(form) if form.needs_refresh));
+    state.refresh_deadline(&root, vault.timezone());
     assert!(
         matches!(&state.overlay, Overlay::Deadline(form) if form.cleared && form.value.is_empty()),
         "{}",
@@ -187,7 +197,7 @@ fn daemon_deadline_keeps_timestamp_and_invalidates_views_after_an_uncertain_writ
     let mut state = State::new("2026-11-25".parse()?);
     state.view = View::Outline;
     state.daemon_views = Some(daemon_views::DaemonViews::new(paths));
-    press(&mut state, &vault, " d");
+    open_deadline(&mut state, &vault, " d");
     assert!(matches!(&state.overlay, Overlay::Deadline(form) if form.value == "2026-12-11"));
     let Action::SetDeadline(submission) = press(&mut state, &vault, "\n") else {
         panic!("expected deadline submission");
@@ -244,10 +254,10 @@ fn default_deadline_editor_never_falls_back_to_a_local_document() -> Result<()> 
         ],
     );
     let mut state = State::new("2026-11-25".parse()?);
-    assert!(creation::is_daemon_vault(&paths, &root)?);
+    assert!(crate::daemon_client::owns_vault(&paths, &root)?);
     state.daemon_views = Some(daemon_views::DaemonViews::new(paths));
     state.view = View::Outline;
-    press(&mut state, &vault, " d");
+    open_deadline(&mut state, &vault, " d");
     peer.join().unwrap()?;
 
     let Action::SetDeadline(submission) = press(&mut state, &vault, "2026-12-10\n") else {
@@ -262,7 +272,7 @@ fn default_deadline_editor_never_falls_back_to_a_local_document() -> Result<()> 
     );
     assert_eq!(std::fs::read(document)?, before);
 
-    press(&mut state, &vault, "\x1b d");
+    open_deadline(&mut state, &vault, "\x1b d");
     assert!(matches!(state.overlay, Overlay::Space(_)));
     assert!(
         state.message.contains("Start mcbtodo-daemon"),
@@ -281,12 +291,13 @@ fn external_deadline_editor_persists_locally() -> Result<()> {
     let root = external.path();
     let id = Id::new_v4();
     write_project(root, id)?;
-    assert!(!creation::is_daemon_vault(&paths, root)?);
+    assert!(!crate::daemon_client::owns_vault(&paths, root)?);
     let mut vault = Vault::load(root, chrono_tz::UTC)?;
     let mut state = State::new("2026-11-25".parse()?);
     state.view = View::Outline;
 
-    let Action::SetDeadline(submission) = press(&mut state, &vault, " d2026-12-10\n") else {
+    open_deadline(&mut state, &vault, " d");
+    let Action::SetDeadline(submission) = press(&mut state, &vault, "2026-12-10\n") else {
         panic!("expected deadline submission");
     };
     state.set_deadline(root, &mut vault, submission);
@@ -302,6 +313,52 @@ fn external_deadline_editor_persists_locally() -> Result<()> {
 }
 
 #[test]
+fn local_deadline_refresh_uses_current_revision_without_discarding_the_draft() -> Result<()> {
+    let external = tempfile::tempdir()?;
+    let root = external.path();
+    let id = Id::new_v4();
+    write_project(root, id)?;
+    let mut vault = Vault::load(root, chrono_tz::UTC)?;
+    let mut state = State::new("2026-11-25".parse()?);
+    state.view = View::Outline;
+    open_deadline(&mut state, &vault, " d");
+
+    let new_deadline = Deadline::Date {
+        value: "2026-12-09".parse()?,
+    };
+    VaultCommands::new(root, vault.timezone()).set_deadline(
+        id,
+        Some(new_deadline),
+        vault.revision(id).unwrap().clone(),
+    )?;
+    let Action::SetDeadline(submission) = press(&mut state, &vault, "2026-12-10\n") else {
+        panic!("expected deadline submission");
+    };
+    state.set_deadline(root, &mut vault, submission);
+    assert!(state.message.contains("press r"), "{}", state.message);
+    assert_eq!(press(&mut state, &vault, "\n"), Action::Continue);
+
+    assert_eq!(press(&mut state, &vault, "r"), Action::RefreshDeadline);
+    state.refresh_deadline(root, vault.timezone());
+    assert!(
+        matches!(&state.overlay, Overlay::Deadline(form) if !form.needs_refresh && form.value == "2026-12-10"),
+        "{}",
+        state.message
+    );
+    let Action::SetDeadline(submission) = press(&mut state, &vault, "\n") else {
+        panic!("expected deadline submission after refreshing");
+    };
+    state.set_deadline(root, &mut vault, submission);
+    assert_eq!(
+        vault.deadline(id),
+        Some(Some(Deadline::Date {
+            value: "2026-12-10".parse()?
+        }))
+    );
+    Ok(())
+}
+
+#[test]
 fn selected_outline_document_can_clear_its_deadline() {
     let vault = tests::fixture();
     let mut state = State::new("2026-11-25".parse().unwrap());
@@ -309,7 +366,7 @@ fn selected_outline_document_can_clear_its_deadline() {
     let id = state.selected_document(&vault).unwrap();
     assert!(vault.deadline(id).is_some());
 
-    press(&mut state, &vault, " d");
+    open_deadline(&mut state, &vault, " d");
     let rendered = screen(&state, &vault, 80, 14);
     assert!(rendered.contains("Deadline ·"), "{rendered}");
     assert!(rendered.contains("Delete clears"), "{rendered}");
@@ -325,7 +382,7 @@ fn selected_outline_document_can_clear_its_deadline() {
 fn selected_outline_document_keeps_invalid_deadline_input_open() {
     let vault = tests::fixture();
     let mut state = State::new("2026-11-25".parse().unwrap());
-    press(&mut state, &vault, " ul d");
+    open_deadline(&mut state, &vault, " ul d");
     press(&mut state, &vault, "\u{7f}2026-02-30\n");
     assert!(matches!(state.overlay, Overlay::Deadline(_)));
     assert!(state.message.contains("expected a date"));
@@ -335,7 +392,7 @@ fn selected_outline_document_keeps_invalid_deadline_input_open() {
 fn deadline_editor_keeps_input_feedback_and_actions_visible_at_28_by_5() {
     let vault = tests::fixture();
     let mut state = State::new("2026-11-25".parse().unwrap());
-    press(&mut state, &vault, " ul d");
+    open_deadline(&mut state, &vault, " ul d");
     press(&mut state, &vault, "\u{7f}2026-02-30\n");
 
     let rendered = screen(&state, &vault, 28, 5);
@@ -353,7 +410,7 @@ fn deadline_editor_keeps_input_feedback_and_actions_visible_at_28_by_5() {
 fn selected_outline_document_can_set_a_new_date_deadline() {
     let vault = tests::fixture();
     let mut state = State::new("2026-11-25".parse().unwrap());
-    press(&mut state, &vault, " ul d");
+    open_deadline(&mut state, &vault, " ul d");
     let id = state.selected_document(&vault).unwrap();
 
     let Action::SetDeadline(submission) = press(&mut state, &vault, "\u{7f}2026-12-10\n") else {
@@ -382,7 +439,7 @@ fn selected_outline_document_without_a_deadline_can_add_one() {
     assert_eq!(state.selected_document(&vault), Some(id));
     assert_eq!(vault.deadline(id), Some(None));
 
-    press(&mut state, &vault, " d");
+    open_deadline(&mut state, &vault, " d");
     assert!(matches!(state.overlay, Overlay::Deadline(_)));
 
     let Action::SetDeadline(submission) = press(&mut state, &vault, "2026-12-10\n") else {

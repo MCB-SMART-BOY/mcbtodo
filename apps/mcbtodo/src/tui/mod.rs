@@ -2,6 +2,7 @@ mod calendar;
 mod creation;
 mod daemon_views;
 mod deadline;
+mod deadline_io;
 mod graph;
 mod keymap;
 mod picker;
@@ -219,6 +220,8 @@ enum Action {
     CreateCalendar(creation::Submission),
     CreateReminder(creation::Submission),
     CreateTimeBlock(time_block::Submission),
+    OpenDeadline(Id),
+    RefreshDeadline,
     SetDeadline(deadline::Submission),
     SetGraphDependencies(graph::Submission),
     CreateTask(creation::Submission),
@@ -673,14 +676,7 @@ impl State {
                             self.message = "Select a Project, Task or WorkUnit first".into();
                             return Continue;
                         };
-                        match deadline::Form::open(id, vault, self.daemon_views.as_ref()) {
-                            Ok(form) => {
-                                self.overlay = Overlay::Deadline(form);
-                                self.message.clear();
-                            }
-                            Err(error) => self.message = format!("{error:#}"),
-                        }
-                        return Continue;
+                        return OpenDeadline(id);
                     }
                     KeyCode::Char('a') => {
                         self.overlay = Overlay::Proposals;
@@ -777,12 +773,7 @@ impl State {
                 return Continue;
             }
             Overlay::Deadline(form) => {
-                if let Some(action) = form.handle(
-                    key.code,
-                    vault,
-                    self.daemon_views.as_ref(),
-                    &mut self.message,
-                ) {
+                if let Some(action) = form.handle(key.code, &mut self.message) {
                     return action;
                 }
                 self.message.clear();
@@ -1039,10 +1030,10 @@ impl State {
         project_id: Id,
         revision: InboxRevision,
     ) {
-        use creation::CreationError;
+        use crate::daemon_client::WriteFailure;
 
         let result = match revision {
-            InboxRevision::Daemon(inbox_revision) => creation::submit_daemon_write(
+            InboxRevision::Daemon(inbox_revision) => crate::daemon_client::submit_write(
                 paths,
                 Request::TriageInbox {
                     inbox_id,
@@ -1067,8 +1058,8 @@ impl State {
                     WriteError::StaleRevision { .. }
                     | WriteError::InboxEntryNotFound { .. }
                     | WriteError::ProjectNotFound { .. },
-                ) => Err(CreationError::StaleRevision),
-                Err(error) => Err(CreationError::Rejected(format!("{error:#}"))),
+                ) => Err(WriteFailure::StaleRevision),
+                Err(error) => Err(WriteFailure::Rejected(format!("{error:#}"))),
             },
         };
         self.message = match result {
@@ -1085,11 +1076,11 @@ impl State {
                     format!("{saved} · {}", self.message)
                 }
             }
-            Err(CreationError::StaleRevision) => {
+            Err(WriteFailure::StaleRevision) => {
                 "Inbox entry or Project changed · r to reload, then retry".into()
             }
-            Err(CreationError::Rejected(error)) => format!("Inbox triage failed · {error}"),
-            Err(CreationError::Unknown) => {
+            Err(WriteFailure::Rejected(error)) => format!("Inbox triage failed · {error}"),
+            Err(WriteFailure::Unknown) => {
                 self.reload(root, vault);
                 format!("Inbox triage outcome unknown · Check entry {inbox_id} before retrying")
             }
@@ -1260,14 +1251,14 @@ impl State {
                         "Dependencies updated · directory sync could not be confirmed".into()
                     }
                 }
-                Err(creation::CreationError::StaleRevision) => {
+                Err(crate::daemon_client::WriteFailure::StaleRevision) => {
                     self.invalidate_daemon_views();
                     "WorkUnit changed · r to reload, then retry".into()
                 }
-                Err(creation::CreationError::Rejected(error)) => {
+                Err(crate::daemon_client::WriteFailure::Rejected(error)) => {
                     format!("Graph edit failed · {error}")
                 }
-                Err(creation::CreationError::Unknown) => {
+                Err(crate::daemon_client::WriteFailure::Unknown) => {
                     self.invalidate_daemon_views();
                     self.sync_row(vault, Some(FocusIdentity::Document(target)));
                     format!("Graph edit outcome unknown · Check WorkUnit {target} before retrying")
@@ -1298,76 +1289,6 @@ impl State {
                 self.message = "WorkUnit changed · r to reload, then retry".into();
             }
             Err(error) => self.message = format!("Graph edit failed · {error:#}"),
-        }
-    }
-
-    fn set_deadline(&mut self, root: &Path, vault: &mut Vault, request: deadline::Submission) {
-        let deadline::Submission {
-            id,
-            deadline,
-            revision,
-        } = request;
-        let revision = match (&self.daemon_views, revision) {
-            (None, deadline::EditRevision::Local(revision)) => revision,
-            (Some(service), deadline::EditRevision::Daemon(revision)) => {
-                use creation::CreationError;
-
-                self.message = match service.set_deadline(id, revision, deadline) {
-                    Ok(synced) => {
-                        self.overlay = Overlay::None;
-                        self.invalidate_daemon_views();
-                        if synced {
-                            "Deadline saved".into()
-                        } else {
-                            "Deadline published · directory sync could not be confirmed".into()
-                        }
-                    }
-                    Err(CreationError::StaleRevision) => {
-                        if let Overlay::Deadline(form) = &mut self.overlay {
-                            form.needs_refresh = true;
-                        }
-                        deadline::DAEMON_STALE.into()
-                    }
-                    Err(CreationError::Rejected(error)) => {
-                        format!("Deadline update failed · {error}")
-                    }
-                    Err(CreationError::Unknown) => {
-                        self.overlay = Overlay::None;
-                        self.invalidate_daemon_views();
-                        format!(
-                            "Deadline update outcome unknown · Check document {id} before retrying"
-                        )
-                    }
-                };
-                return;
-            }
-            _ => {
-                self.message = "Deadline form belongs to a different Vault source".into();
-                return;
-            }
-        };
-        match VaultCommands::new(root, vault.timezone()).set_deadline(id, deadline, revision) {
-            Ok(_) => {
-                self.overlay = Overlay::None;
-                self.reload(root, vault);
-                if self.message == "Vault reloaded" {
-                    self.message = "Deadline saved".into();
-                }
-            }
-            Err(WriteError::StaleRevision { .. }) => {
-                if let Overlay::Deadline(form) = &mut self.overlay {
-                    form.needs_refresh = true;
-                }
-                self.message =
-                    "Document changed · reload the Vault, then press r to refresh the revision"
-                        .into();
-            }
-            Err(WriteError::PublishedButNotSynced { source, .. }) => {
-                self.overlay = Overlay::None;
-                self.reload(root, vault);
-                self.message = format!("Deadline published · directory sync failed: {source}");
-            }
-            Err(error) => self.message = format!("Deadline update failed · {error:#}"),
         }
     }
 }
@@ -1562,7 +1483,7 @@ pub(super) fn run(
 ) -> Result<()> {
     require_terminal()?;
     let mut state = State::new(day);
-    if creation::is_daemon_vault(paths, root)? {
+    if crate::daemon_client::owns_vault(paths, root)? {
         state.daemon_views = Some(daemon_views::DaemonViews::new(paths.clone()));
     }
     state.has_timezone_override = has_timezone_override;
@@ -1644,8 +1565,8 @@ pub(super) fn run(
                     }
                 }
                 Action::Timer(operation) => {
-                    state.message = match crate::timer(paths, operation) {
-                        Ok(status) => crate::timer_label(&status),
+                    state.message = match crate::daemon_client::timer(paths, operation) {
+                        Ok(status) => crate::focus_report::timer_label(&status),
                         Err(error) => format!("Timer failed · {error:#}"),
                     };
                 }
@@ -1661,6 +1582,8 @@ pub(super) fn run(
                 Action::CreateTimeBlock(block) => {
                     state.create_time_block(root, &mut vault, paths, block);
                 }
+                Action::OpenDeadline(id) => state.open_deadline(&vault, id),
+                Action::RefreshDeadline => state.refresh_deadline(root, vault.timezone()),
                 Action::SetDeadline(request) => {
                     state.set_deadline(root, &mut vault, request);
                 }

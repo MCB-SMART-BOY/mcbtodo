@@ -10,8 +10,10 @@ use mcbtodo_domain::{
     time::{DateSpan, Span, ZonedMoment},
 };
 use mcbtodo_platform::WorkspacePaths;
-use mcbtodo_protocol::{ErrorCode, ProjectDates, ProtocolError, Request, Response};
+use mcbtodo_protocol::{ProjectDates, Request, Response};
 use mcbtodo_vault::{Revision, Vault, WriteError};
+
+use crate::daemon_client::{WriteFailure, owns_vault, submit_write};
 
 use super::{Action, Overlay, State, View, time_block};
 
@@ -256,7 +258,7 @@ impl State {
             Schedule::Task { .. } => unreachable!("task submissions use create_task"),
         };
         let label = kind.label();
-        let use_daemon = match is_daemon_vault(paths, root) {
+        let use_daemon = match owns_vault(paths, root) {
             Ok(value) => value,
             Err(error) => {
                 self.message = format!("{label} failed · {error:#}");
@@ -287,7 +289,7 @@ impl State {
                 },
                 _ => unreachable!("expected a calendar submission"),
             };
-            submit_daemon_write(paths, request, |response| match (kind, response) {
+            submit_write(paths, request, |response| match (kind, response) {
                 (Kind::Event, Response::AllDayEventCreated { event_id, synced })
                     if event_id == id =>
                 {
@@ -315,17 +317,17 @@ impl State {
         };
         let saved = match saved {
             Ok(message) => message,
-            Err(CreationError::Unknown) => {
+            Err(WriteFailure::Unknown) => {
                 self.overlay = Overlay::None;
                 self.reload(root, vault);
                 self.message = format!("{label} outcome unknown · Check UUID {id} before retrying");
                 return;
             }
-            Err(CreationError::Rejected(message)) => {
+            Err(WriteFailure::Rejected(message)) => {
                 self.message = format!("{label} failed · {message}");
                 return;
             }
-            Err(CreationError::StaleRevision) => {
+            Err(WriteFailure::StaleRevision) => {
                 self.message = format!("{label} failed · Vault changed");
                 return;
             }
@@ -368,7 +370,7 @@ impl State {
         }
         let id = Id::new_v4();
         let saved = if cfg!(target_os = "linux") {
-            submit_daemon_write(
+            submit_write(
                 paths,
                 Request::CreateReminder {
                     reminder_id: id,
@@ -399,18 +401,18 @@ impl State {
         };
         let saved = match saved {
             Ok(message) => message,
-            Err(CreationError::Unknown) => {
+            Err(WriteFailure::Unknown) => {
                 self.overlay = Overlay::None;
                 self.reload(root, vault);
                 self.message =
                     format!("Reminder outcome unknown · Check UUID {id} before retrying");
                 return;
             }
-            Err(CreationError::Rejected(message)) => {
+            Err(WriteFailure::Rejected(message)) => {
                 self.message = format!("Reminder failed · {message}");
                 return;
             }
-            Err(CreationError::StaleRevision) => {
+            Err(WriteFailure::StaleRevision) => {
                 self.message = "Reminder failed · Vault changed".into();
                 return;
             }
@@ -432,7 +434,7 @@ impl State {
         block: time_block::Submission,
     ) {
         let (unit, when) = (block.unit, block.when);
-        let use_daemon = match is_daemon_vault(paths, root) {
+        let use_daemon = match owns_vault(paths, root) {
             Ok(value) => value,
             Err(error) => {
                 self.message = format!("Time block failed · {error:#}");
@@ -440,7 +442,7 @@ impl State {
             }
         };
         let saved = if use_daemon {
-            submit_daemon_write(
+            submit_write(
                 paths,
                 Request::CreateTimeBlock {
                     work_unit_id: unit,
@@ -467,22 +469,22 @@ impl State {
             );
             match result {
                 Err(WriteError::StaleRevision { .. } | WriteError::WorkUnitNotFound { .. }) => {
-                    Err(CreationError::StaleRevision)
+                    Err(WriteFailure::StaleRevision)
                 }
                 result => local_publication("Time block", result),
             }
         };
         let saved = match saved {
             Ok(message) => message,
-            Err(CreationError::StaleRevision) => {
+            Err(WriteFailure::StaleRevision) => {
                 self.message = "WorkUnit changed · Esc twice, r to reload, then retry".into();
                 return;
             }
-            Err(CreationError::Rejected(message)) => {
+            Err(WriteFailure::Rejected(message)) => {
                 self.message = format!("Time block failed · {message}");
                 return;
             }
-            Err(CreationError::Unknown) => {
+            Err(WriteFailure::Unknown) => {
                 self.overlay = Overlay::None;
                 self.reload(root, vault);
                 self.message = format!(
@@ -527,7 +529,7 @@ impl State {
             unreachable!("create_task receives a task submission");
         };
         let id = Id::new_v4();
-        let use_daemon = match is_daemon_vault(paths, root) {
+        let use_daemon = match owns_vault(paths, root) {
             Ok(value) => value,
             Err(error) => {
                 self.message = format!("Task capture failed · {error:#}");
@@ -535,7 +537,7 @@ impl State {
             }
         };
         let saved = if use_daemon {
-            submit_daemon_write(
+            submit_write(
                 paths,
                 Request::CaptureTask {
                     task_id: id,
@@ -558,30 +560,30 @@ impl State {
             ) {
                 Ok(_) => Ok("Task saved".to_owned()),
                 Err(WriteError::StaleRevision { .. } | WriteError::ProjectNotFound { .. }) => {
-                    Err(CreationError::StaleRevision)
+                    Err(WriteFailure::StaleRevision)
                 }
                 Err(WriteError::PublishedButNotSynced { source, .. }) => {
                     Ok(format!("Task published · directory sync failed: {source}"))
                 }
-                Err(error) => Err(CreationError::Rejected(error.to_string())),
+                Err(error) => Err(WriteFailure::Rejected(error.to_string())),
             }
         } else {
-            Err(CreationError::Rejected(
+            Err(WriteFailure::Rejected(
                 "Task form belongs to the daemon's Vault".into(),
             ))
         };
         let saved = match saved {
             Ok(message) => message,
-            Err(CreationError::StaleRevision) => {
+            Err(WriteFailure::StaleRevision) => {
                 self.message =
                     "Project changed · Esc, reload the Vault, then reopen Task capture".into();
                 return;
             }
-            Err(CreationError::Rejected(message)) => {
+            Err(WriteFailure::Rejected(message)) => {
                 self.message = format!("Task capture failed · {message}");
                 return;
             }
-            Err(CreationError::Unknown) => {
+            Err(WriteFailure::Unknown) => {
                 self.overlay = Overlay::None;
                 self.reload(root, vault);
                 self.message = format!("Task outcome unknown · Check UUID {id} before retrying");
@@ -601,20 +603,6 @@ impl State {
     }
 }
 
-pub(super) enum CreationError {
-    StaleRevision,
-    Rejected(String),
-    Unknown,
-}
-
-pub(super) fn is_daemon_vault(paths: &WorkspacePaths, root: &Path) -> anyhow::Result<bool> {
-    if cfg!(target_os = "linux") {
-        paths.is_default_vault(root)
-    } else {
-        Ok(false)
-    }
-}
-
 fn publication_message(label: &str, id: Id, synced: bool) -> String {
     if synced {
         format!("{label} saved")
@@ -626,38 +614,12 @@ fn publication_message(label: &str, id: Id, synced: bool) -> String {
 fn local_publication(
     label: &str,
     result: Result<mcbtodo_vault::PersistedDocument, WriteError>,
-) -> Result<String, CreationError> {
+) -> Result<String, WriteFailure> {
     match result {
         Ok(_) => Ok(format!("{label} saved")),
         Err(WriteError::PublishedButNotSynced { source, .. }) => Ok(format!(
             "{label} published · directory sync failed: {source}"
         )),
-        Err(error) => Err(CreationError::Rejected(format!("{error:#}"))),
-    }
-}
-
-pub(super) fn submit_daemon_write(
-    paths: &WorkspacePaths,
-    request: Request,
-    confirmation: impl FnOnce(Response) -> Option<bool>,
-) -> Result<bool, CreationError> {
-    match mcbtodo_protocol::request(paths.socket_path(), request) {
-        Ok(Response::Error {
-            code: ErrorCode::StaleRevision,
-            ..
-        }) => Err(CreationError::StaleRevision),
-        Ok(Response::Error { message, .. }) => Err(CreationError::Rejected(message)),
-        Ok(response) => confirmation(response).ok_or(CreationError::Unknown),
-        Err(ProtocolError::Io(error))
-            if matches!(
-                error.kind(),
-                std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
-            ) =>
-        {
-            Err(CreationError::Rejected(
-                "Start mcbtodo-daemon and try again".into(),
-            ))
-        }
-        Err(_) => Err(CreationError::Unknown),
+        Err(error) => Err(WriteFailure::Rejected(format!("{error:#}"))),
     }
 }
