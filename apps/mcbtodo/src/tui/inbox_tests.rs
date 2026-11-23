@@ -51,9 +51,20 @@ fn inbox_view_lists_entries_and_triage_uses_the_observed_revision() {
     };
     assert_eq!(selected, inbox_id);
     assert_eq!(project, project_id);
-    assert_eq!(revision, *vault.revision(inbox_id).unwrap());
+    assert_eq!(
+        revision,
+        InboxRevision::Local(vault.revision(inbox_id).unwrap().clone())
+    );
 
-    state.triage_inbox(temp.path(), &mut vault, inbox_id, project_id, revision);
+    let paths = WorkspacePaths::from_home(temp.path().to_owned());
+    state.triage_inbox(
+        temp.path(),
+        &mut vault,
+        &paths,
+        inbox_id,
+        project_id,
+        revision,
+    );
     assert_eq!(vault.inbox_entries().count(), 1);
     assert_eq!(
         vault.inbox_entries().next().unwrap().data.project_id,
@@ -149,7 +160,15 @@ fn inbox_triage_refuses_to_overwrite_an_external_edit() {
     fs::write(&path, source.replace(TITLE, "Edited elsewhere")).unwrap();
 
     let mut state = State::new("2026-11-20".parse().unwrap());
-    state.triage_inbox(temp.path(), &mut vault, inbox_id, project_id, revision);
+    let paths = WorkspacePaths::from_home(temp.path().to_owned());
+    state.triage_inbox(
+        temp.path(),
+        &mut vault,
+        &paths,
+        inbox_id,
+        project_id,
+        InboxRevision::Local(revision),
+    );
 
     assert!(state.message.contains("changed"));
     let current = Vault::load(temp.path(), vault.timezone()).unwrap();
@@ -161,4 +180,92 @@ fn inbox_triage_refuses_to_overwrite_an_external_edit() {
         current.inbox_entries().next().unwrap().data.project_id,
         None
     );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn inbox_uses_the_entry_and_project_seen_over_ipc() -> Result<()> {
+    use std::{os::unix::net::UnixListener, thread};
+
+    use mcbtodo_protocol::{Response, wire};
+
+    let home = tempfile::tempdir()?;
+    let paths = WorkspacePaths::from_home(home.path().to_owned());
+    paths.initialize()?;
+    let root = paths.vault_root();
+    let mut vault = Vault::load(&root, chrono_tz::UTC)?;
+    let listener = UnixListener::bind(paths.socket_path())?;
+    let inbox_id = Id::from_u128(11);
+    let project_id = Id::from_u128(12);
+    let peer = thread::spawn(move || -> Result<Request> {
+        let (mut stream, _) = listener.accept()?;
+        stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+        assert_eq!(wire::read::<Request>(&mut stream)?, Request::Inbox);
+        wire::write_inbox(
+            &mut stream,
+            vec![InboxSummary {
+                id: inbox_id,
+                title: "Remote research notes".into(),
+                captured_at: "2026-11-20T08:00:00Z".parse()?,
+                project_id: None,
+                tags: vec![],
+                revision: "observed on server".into(),
+            }],
+        )?;
+        let (mut stream, _) = listener.accept()?;
+        stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+        assert!(matches!(wire::read(&mut stream)?, Request::Outline { .. }));
+        wire::write_outline(
+            &mut stream,
+            vec![OutlineItem {
+                id: project_id,
+                title: "Remote project".into(),
+                depth: 0,
+                source_path: "projects/remote/project.md".into(),
+                project_id: Some(project_id),
+                task_id: None,
+                blocked: false,
+                revision: "project revision".into(),
+            }],
+        )?;
+        let (mut stream, _) = listener.accept()?;
+        stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+        let request = wire::read(&mut stream)?;
+        wire::write(
+            &mut stream,
+            &Response::Error {
+                code: mcbtodo_protocol::ErrorCode::StaleRevision,
+                message: "the Inbox entry changed".into(),
+            },
+        )?;
+        Ok(request)
+    });
+    let mut state = State::new("2026-11-20".parse()?);
+    state.daemon_views = Some(super::daemon_views::DaemonViews::new(paths.clone()));
+    state.switch(View::Inbox, &vault);
+    assert!(screen(&state, &vault, 80, 18).contains("Remote research notes"));
+    state.handle(
+        KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE),
+        &vault,
+    );
+    assert!(screen(&state, &vault, 80, 18).contains("Remote project"));
+    let Action::TriageInbox {
+        inbox_id,
+        project_id,
+        revision,
+    } = state.handle(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &vault)
+    else {
+        panic!("expected to triage the entry seen over IPC");
+    };
+    state.triage_inbox(&root, &mut vault, &paths, inbox_id, project_id, revision);
+    assert_eq!(
+        peer.join().unwrap()?,
+        Request::TriageInbox {
+            inbox_id: Id::from_u128(11),
+            project_id: Id::from_u128(12),
+            inbox_revision: "observed on server".into(),
+        }
+    );
+    assert!(state.message.contains("changed"));
+    Ok(())
 }

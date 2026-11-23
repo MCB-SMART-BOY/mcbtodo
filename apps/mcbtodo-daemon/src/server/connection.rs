@@ -131,25 +131,22 @@ fn exchange(
         },
     };
     stream.set_deadline(Instant::now() + TRANSFER_TIMEOUT);
-    if let Response::Outline { items, .. } = response {
-        if let Err(error) = wire::write_outline(&mut stream, items) {
-            eprintln!("mcbtodo-daemon: sending outline: {error}");
-        }
-        return;
-    }
-    let result = match wire::write(&mut stream, &response) {
+    let result = match response {
+        Response::Outline { items, .. } => wire::write_outline(&mut stream, items),
+        Response::Inbox { items, .. } => wire::write_inbox(&mut stream, items),
         // The encoder checks size before writing any bytes.
-        Err(ProtocolError::FrameSize(_)) if matches!(response, Response::Calendar { .. }) => {
-            wire::write(
+        response @ Response::Calendar { .. } => match wire::write(&mut stream, &response) {
+            Err(ProtocolError::FrameSize(_)) => wire::write(
                 &mut stream,
                 &Response::Error {
                     code: ErrorCode::InvalidRequest,
                     message: "calendar result exceeds the IPC size limit; try a smaller date range"
                         .into(),
                 },
-            )
-        }
-        result => result,
+            ),
+            result => result,
+        },
+        response => wire::write(&mut stream, &response),
     };
     if let Err(error) = result {
         eprintln!("mcbtodo-daemon: sending response: {error}");

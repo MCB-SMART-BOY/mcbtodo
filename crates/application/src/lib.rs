@@ -21,7 +21,7 @@ use mcbtodo_domain::{
     recurrence::{Reminder, ReminderSchedule},
     time::{DateSpan, DateTimeSpan, Deadline, Span, ZonedMoment},
 };
-pub use mcbtodo_domain::{CalendarItem, OutlineItem};
+pub use mcbtodo_domain::{CalendarItem, InboxSummary, OutlineItem};
 use mcbtodo_vault::{
     AddWorkUnitGraph, BindWorkflow, CaptureInboxEntry, CaptureTask, CompleteWorkUnit, CreateEvent,
     CreateProject, CreateReminder, CreateTimeBlock, CreateWorkUnit, MaterializeTaskOccurrences,
@@ -508,6 +508,20 @@ impl VaultCommands {
             expected_revision,
         })
     }
+
+    /// Assigns an Inbox entry using the observed IPC revision without waiting for the writer lock.
+    pub fn try_triage_inbox_entry(
+        &self,
+        id: Id,
+        project_id: Id,
+        expected_digest: &str,
+    ) -> Result<PersistedDocument, WriteError> {
+        VaultStore::new(&self.root, self.timezone).try_triage_inbox_entry(
+            id,
+            project_id,
+            expected_digest,
+        )
+    }
 }
 
 fn reminder_draft(
@@ -572,16 +586,6 @@ pub struct WorkUnitSummary {
     pub task_id: Id,
     pub blocked: bool,
     pub estimated_minutes: Option<u32>,
-    pub revision: String,
-}
-
-#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
-pub struct InboxSummary {
-    pub id: Id,
-    pub title: String,
-    pub captured_at: chrono::DateTime<chrono::Utc>,
-    pub project_id: Option<Id>,
-    pub tags: Vec<String>,
     pub revision: String,
 }
 

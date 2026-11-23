@@ -6,7 +6,9 @@ pub mod time;
 use std::{fmt, str::FromStr};
 
 pub use graph::{GraphError, TaskGraph};
-pub use projection::{CalendarEntry, CalendarItem, CalendarKind, Occurrence, OutlineItem};
+pub use projection::{
+    CalendarEntry, CalendarItem, CalendarKind, InboxSummary, Occurrence, OutlineItem,
+};
 
 use serde::{Deserialize, Serialize};
 use time::{DateTimeSpan, Deadline, Span};

@@ -1007,7 +1007,7 @@ fn graph_locates_outline_focus_and_follows_outgoing_and_incoming_edges() {
     let mut state = State::new("2026-11-25".parse().unwrap());
     let mapping_id = Id::parse_str("30000000-0000-4000-8000-000000000002").unwrap();
     state.view = View::Outline;
-    state.row = project_outline(&vault)
+    state.row = mcbtodo_application::project_outline(&vault)
         .iter()
         .position(|item| item.id == mapping_id)
         .unwrap();

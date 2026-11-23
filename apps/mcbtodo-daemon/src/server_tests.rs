@@ -22,6 +22,79 @@ fn status(server: &mut Server, path: PathBuf, command: Request) -> Response {
 }
 
 #[test]
+fn inbox_triage_is_shared_and_checks_the_observed_revision_and_lock() -> Result<()> {
+    let dir = private_tempdir()?;
+    let paths = WorkspacePaths::from_home(dir.path().to_owned());
+    paths.initialize()?;
+    let root = paths.vault_root();
+    let inbox = uuid::Uuid::from_u128(1);
+    let project = uuid::Uuid::from_u128(2);
+    fs::create_dir_all(root.join("projects/inbox-test"))?;
+    fs::write(
+        root.join("projects/inbox-test/project.md"),
+        format!("---\nschema: mcbtodo.project/v1\nid: {project}\n---\n# Inbox test\n"),
+    )?;
+    fs::create_dir_all(root.join("inbox"))?;
+    let note = root.join(format!("inbox/{inbox}.md"));
+    let original = format!(
+        "---\nschema: mcbtodo.inbox-entry/v1\nid: {inbox}\ncaptured_at: \"2026-11-20T08:00:00Z\"\n---\n# Research notes\n\nKeep these notes.\n"
+    );
+    fs::write(&note, &original)?;
+    let socket = paths.socket_path();
+    let mut server = Server::open(paths, crate::DEFAULT_WORKER_SLOTS)?;
+    let mut send = |command| -> Result<serde_json::Value> {
+        let response = status(
+            &mut server,
+            socket.clone(),
+            serde_json::from_value(command)?,
+        );
+        Ok(serde_json::to_value(response)?)
+    };
+    let query = serde_json::json!({"command": "inbox"});
+    let observed = send(query.clone())?;
+    assert_eq!(observed["items"][0]["title"], "Research notes");
+    let triage = |revision| {
+        serde_json::json!({
+            "command": "triage_inbox", "inbox_id": inbox,
+            "project_id": project, "inbox_revision": revision
+        })
+    };
+    let old = triage(observed["items"][0]["revision"].clone());
+    let lock = fs::File::options()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(root.join(".mcbtodo-vault.lock"))?;
+    lock.lock()?;
+    assert_eq!(send(old.clone())?["code"], "conflict");
+    drop(lock);
+    let edited = original.replace("Research notes", "Updated notes");
+    fs::write(&note, &edited)?;
+    assert_eq!(send(old.clone())?["code"], "stale_revision");
+    assert!(!root.join("projects/inbox-test/tasks").exists());
+    let latest = send(query.clone())?;
+    let result = send(triage(latest["items"][0]["revision"].clone()))?;
+    assert_eq!(result["result"], "inbox_triaged", "{result}");
+    let next = send(query)?;
+    assert_eq!(next["items"][0]["project_id"], project.to_string());
+    assert_eq!(send(old)?["code"], "stale_revision");
+    let outline = send(serde_json::json!({"command": "outline", "timezone": "UTC"}))?;
+    assert_eq!(outline["items"][1]["title"], "Updated notes");
+    assert_eq!(outline["items"].as_array().unwrap().len(), 2);
+    assert!(fs::read_to_string(&note)?.contains("Keep these notes."));
+
+    // Restore only the source in the fixture to model a stop just after Task publication.
+    fs::write(&note, edited)?;
+    let retry = triage(latest["items"][0]["revision"].clone());
+    assert_eq!(send(retry)?["result"], "inbox_triaged");
+    assert_eq!(
+        fs::read_dir(root.join("projects/inbox-test/tasks"))?.count(),
+        1
+    );
+    Ok(())
+}
+
+#[test]
 fn task_capture_checks_the_project_revision_and_writer_lock_over_ipc() -> Result<()> {
     use mcbtodo_domain::{Id, Project};
     use mcbtodo_vault::{CreateProject, Vault, VaultStore};

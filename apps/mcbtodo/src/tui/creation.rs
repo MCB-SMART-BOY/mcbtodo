@@ -287,7 +287,7 @@ impl State {
                 },
                 _ => unreachable!("expected a calendar submission"),
             };
-            create_via_daemon(paths, request, |response| match (kind, response) {
+            submit_daemon_write(paths, request, |response| match (kind, response) {
                 (Kind::Event, Response::AllDayEventCreated { event_id, synced })
                     if event_id == id =>
                 {
@@ -368,7 +368,7 @@ impl State {
         }
         let id = Id::new_v4();
         let saved = if cfg!(target_os = "linux") {
-            create_via_daemon(
+            submit_daemon_write(
                 paths,
                 Request::CreateReminder {
                     reminder_id: id,
@@ -440,7 +440,7 @@ impl State {
             }
         };
         let saved = if use_daemon {
-            create_via_daemon(
+            submit_daemon_write(
                 paths,
                 Request::CreateTimeBlock {
                     work_unit_id: unit,
@@ -535,7 +535,7 @@ impl State {
             }
         };
         let saved = if use_daemon {
-            create_via_daemon(
+            submit_daemon_write(
                 paths,
                 Request::CaptureTask {
                     task_id: id,
@@ -601,7 +601,7 @@ impl State {
     }
 }
 
-enum CreationError {
+pub(super) enum CreationError {
     StaleRevision,
     Rejected(String),
     Unknown,
@@ -636,7 +636,7 @@ fn local_publication(
     }
 }
 
-fn create_via_daemon(
+pub(super) fn submit_daemon_write(
     paths: &WorkspacePaths,
     request: Request,
     confirmation: impl FnOnce(Response) -> Option<bool>,

@@ -72,7 +72,7 @@ fn selected_outline_document_without_a_deadline_can_add_one() {
     let vault = tests::fixture();
     let mut state = State::new("2026-11-25".parse().unwrap());
     state.switch(View::Outline, &vault);
-    let (row, id) = project_outline(&vault)
+    let (row, id) = mcbtodo_application::project_outline(&vault)
         .into_iter()
         .enumerate()
         .find_map(|(row, item)| (vault.deadline(item.id) == Some(None)).then_some((row, item.id)))

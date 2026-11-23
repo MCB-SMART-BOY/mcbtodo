@@ -80,6 +80,8 @@ impl Timer {
                 | Request::FocusReport { .. }
                 | Request::Calendar { .. }
                 | Request::Outline { .. }
+                | Request::Inbox
+                | Request::TriageInbox { .. }
                 | Request::ListNotifications { .. }
                 | Request::ListReminderNotifications { .. }
                 | Request::CaptureTask { .. }

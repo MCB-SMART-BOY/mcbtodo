@@ -985,25 +985,51 @@ impl VaultStore {
         &self,
         request: TriageInboxEntry,
     ) -> Result<PersistedDocument, WriteError> {
-        let (_lock, vault) = self.locked_snapshot()?;
+        self.triage_inbox_with(request.id, request.project_id, lock, |revision| {
+            revision == &request.expected_revision
+        })
+    }
+
+    pub fn try_triage_inbox_entry(
+        &self,
+        id: Id,
+        project_id: Id,
+        expected_digest: &str,
+    ) -> Result<PersistedDocument, WriteError> {
+        self.triage_inbox_with(id, project_id, try_lock, |revision| {
+            revision.digest() == expected_digest
+        })
+    }
+
+    fn triage_inbox_with(
+        &self,
+        id: Id,
+        project_id: Id,
+        acquire_lock: fn(&Path) -> Result<File>,
+        matches_revision: impl FnOnce(&Revision) -> bool,
+    ) -> Result<PersistedDocument, WriteError> {
+        let (_lock, vault) = self.locked_snapshot_with(acquire_lock)?;
         let entry = vault
             .inbox
-            .get(&request.id)
-            .ok_or(WriteError::InboxEntryNotFound { id: request.id })?;
-        check_revision(&vault, request.id, &request.expected_revision)?;
-        if !vault.projects.contains_key(&request.project_id) {
-            return Err(WriteError::ProjectNotFound {
-                id: request.project_id,
-            });
-        }
-        let source = fs::read_to_string(&entry.path)
-            .map_err(|error| storage(error, "reading", &entry.path))?;
+            .get(&id)
+            .ok_or(WriteError::InboxEntryNotFound { id })?;
+        let revision = vault
+            .revision(id)
+            .filter(|revision| matches_revision(revision))
+            .ok_or(WriteError::StaleRevision { id })?;
+        let project = vault
+            .projects
+            .get(&project_id)
+            .ok_or(WriteError::ProjectNotFound { id: project_id })?;
+        let source = revision.0.as_ref();
         let (title, body) =
-            document::inbox_task_content(&source).map_err(WriteError::InvalidDocument)?;
+            document::inbox_task_content(source).map_err(WriteError::InvalidDocument)?;
+        let updated =
+            document::set_inbox_project(source, project_id).map_err(WriteError::InvalidDocument)?;
         let task_id = entry.data.task_id();
         let task = Task {
             id: task_id,
-            project_id: request.project_id,
+            project_id,
             status: TaskStatus::Todo,
             priority: Priority::Normal,
             active_period: None,
@@ -1023,27 +1049,20 @@ impl VaultStore {
                 });
             }
         } else {
-            let project = vault
-                .projects
-                .get(&request.project_id)
-                .expect("target Project was validated");
             publish_child(&project.path, "tasks", task_id, task_source, || {
+                check_on_disk(&entry.path, id, revision)?;
                 check_on_disk(
                     &project.path,
-                    request.project_id,
-                    vault
-                        .revision(request.project_id)
-                        .expect("loaded Project revision"),
+                    project_id,
+                    vault.revision(project_id).expect("loaded Project revision"),
                 )
                 .map(|_| ())
             })?;
         }
-        let updated = document::set_inbox_project(&source, request.project_id)
-            .map_err(WriteError::InvalidDocument)?;
         replace(
             entry.path.clone(),
-            request.id,
-            &request.expected_revision,
+            id,
+            revision,
             Revision::from_source(updated),
         )
     }

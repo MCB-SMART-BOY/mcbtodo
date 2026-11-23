@@ -3,7 +3,7 @@ use std::{cell::RefCell, rc::Rc};
 use anyhow::{Error, Result, bail};
 use chrono_tz::Tz;
 use mcbtodo_application::project_outline;
-use mcbtodo_domain::{CalendarItem, OutlineItem, time::DateSpan};
+use mcbtodo_domain::{CalendarItem, InboxSummary, OutlineItem, time::DateSpan};
 use mcbtodo_platform::WorkspacePaths;
 use mcbtodo_protocol::{Request, Response};
 use mcbtodo_vault::Vault;
@@ -13,6 +13,7 @@ pub(super) struct DaemonViews {
     paths: WorkspacePaths,
     calendar: QueryCache<(DateSpan, Tz), CalendarItem>,
     outline: QueryCache<Tz, OutlineItem>,
+    inbox: QueryCache<(), InboxSummary>,
 }
 
 type CachedRows<T> = Result<Rc<[T]>, String>;
@@ -50,6 +51,7 @@ impl DaemonViews {
             paths,
             calendar: QueryCache(RefCell::new(None)),
             outline: QueryCache(RefCell::new(None)),
+            inbox: QueryCache(RefCell::new(None)),
         }
     }
 
@@ -73,8 +75,18 @@ impl DaemonViews {
         })
     }
 
+    pub(super) fn inbox(&self) -> Result<Rc<[InboxSummary]>> {
+        self.inbox.rows((), || {
+            match crate::daemon_request(&self.paths, Request::Inbox)? {
+                Response::Inbox { items, more: false } => Ok(items),
+                _ => bail!("unexpected response to Inbox request"),
+            }
+        })
+    }
+
     pub(super) fn invalidate(&mut self) {
         self.calendar.0.get_mut().take();
         self.outline.0.get_mut().take();
+        self.inbox.0.get_mut().take();
     }
 }

@@ -121,6 +121,27 @@ pub(crate) fn run(root: &Path, bin_dir: &Path) -> Result<()> {
         ],
     )?;
 
+    const INBOX_NOTE: &str = "Inbox note from systemd smoke";
+    smoke.cli(&["vault", "capture-inbox", "--title", INBOX_NOTE])?;
+    crate::smoke::drive_default_tui(
+        smoke.client(),
+        &[
+            ("Month", " ui"),
+            (INBOX_NOTE, "t"),
+            ("Enter assign", "\r"),
+            ("Inbox entry converted to Task", "q"),
+        ],
+    )?;
+    crate::smoke::drive_default_tui(
+        smoke.client(),
+        &[
+            ("Month", " ui"),
+            ("Inbox is empty", &format!(":search {INBOX_NOTE}\r")),
+            (" Picker ", "\r"),
+            (&format!("›   {INBOX_NOTE}"), "q"),
+        ],
+    )?;
+
     const CAPTURED_EVENT: &str = "All-day event from systemd smoke";
     let mut client = smoke.client();
     client.args(["tui", "--date", "2026-11-30"]);

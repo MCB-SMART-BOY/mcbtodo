@@ -415,6 +415,8 @@ Space
 
 当前 Inbox capture 与 triage、Project/Task/WorkUnit 等对象的 schema 和行为，以 README、Vault 实现及 fixture 为准。Inbox triage 从标题、正文与标签生成 Task，Task UUID 由 Inbox UUID 稳定派生；Vault 先发布 Task，再更新保留的 Inbox 来源记录。此流程不宣称跨文件原子性：中断后重试必须精确验证已存在 Task，冲突时失败关闭，不覆盖外部编辑。
 
+Linux 默认 Vault 的 TUI 通过本地 IPC 读取 Inbox 和 Project 列表，并将选择时的 Inbox revision 交给服务校验。服务在 Vault 写锁内执行分流，锁忙时报告冲突。如果只有 Task 已发布，服务会明确报告 Inbox 分流尚未完成。
+
 SQLite 和运行状态位于 `~/.mcbtodo/` 下；完成事件数据库是 Vault 内的 `.mcbtodo-events.sqlite3`。备份需要同时保留配置、Vault 与权威运行状态，具体备份清单以当前实现文档为准。
 
 ### 7.2 Project 示例 `project.md`

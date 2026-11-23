@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::value::RawValue;
 use thiserror::Error;
 
-use mcbtodo_domain::OutlineItem;
+use mcbtodo_domain::{InboxSummary, OutlineItem};
 
 use crate::{ErrorCode, Response};
 
@@ -62,11 +62,26 @@ pub fn write<T: Serialize>(writer: &mut impl Write, body: &T) -> Result<(), Prot
     Ok(())
 }
 
-/// Write one complete Outline response as ordered frames. The reader only
-/// publishes the rows after receiving the final frame.
 pub fn write_outline(
     writer: &mut impl Write,
     items: Vec<OutlineItem>,
+) -> Result<(), ProtocolError> {
+    write_rows(writer, items, |items, more| Response::Outline {
+        items,
+        more,
+    })
+}
+
+pub fn write_inbox(writer: &mut impl Write, items: Vec<InboxSummary>) -> Result<(), ProtocolError> {
+    write_rows(writer, items, |items, more| Response::Inbox { items, more })
+}
+
+/// Write one complete result as ordered frames. The reader only publishes
+/// the rows after receiving the final frame.
+fn write_rows<T: Serialize>(
+    writer: &mut impl Write,
+    items: Vec<T>,
+    make_response: impl Fn(Vec<T>, bool) -> Response,
 ) -> Result<(), ProtocolError> {
     // Leave room for the fixed envelope fields and array separators.
     const ROW_BUDGET: usize = MAX_FRAME_BYTES as usize - 128;
@@ -79,28 +94,16 @@ pub fn write_outline(
                 writer,
                 &Response::Error {
                     code: ErrorCode::InvalidRequest,
-                    message: format!("outline row {} exceeds the IPC size limit", item.id),
+                    message: "a result row exceeds the IPC size limit".into(),
                 },
             );
         }
         if bytes + size > ROW_BUDGET {
-            write(
-                writer,
-                &Response::Outline {
-                    items: std::mem::take(&mut frame),
-                    more: true,
-                },
-            )?;
+            write(writer, &make_response(std::mem::take(&mut frame), true))?;
             bytes = 0;
         }
         frame.push(item);
         bytes += size;
     }
-    write(
-        writer,
-        &Response::Outline {
-            items: frame,
-            more: false,
-        },
-    )
+    write(writer, &make_response(frame, false))
 }

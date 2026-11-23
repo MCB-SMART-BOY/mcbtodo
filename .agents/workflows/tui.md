@@ -181,6 +181,10 @@ monochrome terminal. Use in-memory rows to check indentation, project headings
 and empty state in high contrast.
 
 Keep Inbox titles visible before capture times and tags when rows are clipped.
+For the Linux default Vault, exercise Inbox and Project rows that are absent
+from the client snapshot. Submit the Inbox revision seen when the picker
+opened and verify that a stale revision prompts a reload. The systemd smoke
+assigns an entry in one TUI and opens the resulting Task in a second TUI.
 Use a 24×5 fixture to verify the title, selected source, border, and project
 picker controls. Empty Inbox and project lists show only applicable actions.
 

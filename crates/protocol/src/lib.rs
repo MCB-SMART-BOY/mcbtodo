@@ -12,7 +12,7 @@ pub use mcbtodo_ports::focus::TimerState;
 pub use wire::ProtocolError;
 
 use chrono::{DateTime, FixedOffset, NaiveDate, Utc};
-use mcbtodo_domain::{CalendarItem, OutlineItem};
+use mcbtodo_domain::{CalendarItem, InboxSummary, OutlineItem};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -42,6 +42,14 @@ pub enum Request {
     /// Project the default Vault hierarchy from one validated snapshot.
     Outline {
         timezone: String,
+    },
+    /// List captured Inbox entries from one validated default Vault snapshot.
+    Inbox,
+    /// Assign an observed Inbox entry to a Project and retain its source document.
+    TriageInbox {
+        inbox_id: Uuid,
+        project_id: Uuid,
+        inbox_revision: String,
     },
     /// List terminal workflow notifications, starting strictly before the given run ID.
     ListNotifications {
@@ -115,6 +123,15 @@ pub enum Response {
     Outline {
         items: Vec<OutlineItem>,
         more: bool,
+    },
+    /// Ordered frames on one Inbox connection, assembled by the typed client.
+    Inbox {
+        items: Vec<InboxSummary>,
+        more: bool,
+    },
+    /// The Inbox assignment is visible. `synced` describes its durability.
+    InboxTriaged {
+        synced: bool,
     },
     Notifications(notifications::NotificationPage),
     ReminderNotifications(notifications::ReminderNotificationPage),

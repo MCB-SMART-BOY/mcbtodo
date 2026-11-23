@@ -48,7 +48,7 @@ fn default_picker_opens_a_document_absent_from_the_local_snapshot() -> Result<()
     paths.initialize()?;
     let listener = UnixListener::bind(paths.socket_path())?;
     let id = Id::new_v4();
-    let mut remote = project_outline(&vault).remove(0);
+    let mut remote = mcbtodo_application::project_outline(&vault).remove(0);
     remote.id = id;
     remote.project_id = Some(id);
     remote.title = "New from another client".into();

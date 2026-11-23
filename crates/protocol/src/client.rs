@@ -65,30 +65,51 @@ fn request_with(
     }
     crate::wire::write(&mut stream, &command)?;
     let response = crate::wire::read(&mut stream)?;
-    if matches!(command, Request::Outline { .. }) {
-        read_outline(response, &mut stream)
-    } else {
-        Ok(response)
+    match command {
+        Request::Outline { .. } => read_outline(response, &mut stream),
+        Request::Inbox => read_rows(
+            response,
+            &mut stream,
+            |response| match response {
+                Response::Inbox { items, more } => Some((std::mem::take(items), *more)),
+                _ => None,
+            },
+            |items| Response::Inbox { items, more: false },
+        ),
+        _ => Ok(response),
     }
 }
 
 #[cfg(target_os = "linux")]
-fn read_outline(mut response: Response, stream: &mut impl Read) -> Result<Response, ProtocolError> {
+fn read_outline(response: Response, stream: &mut impl Read) -> Result<Response, ProtocolError> {
+    read_rows(
+        response,
+        stream,
+        |response| match response {
+            Response::Outline { items, more } => Some((std::mem::take(items), *more)),
+            _ => None,
+        },
+        |items| Response::Outline { items, more: false },
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn read_rows<T>(
+    mut response: Response,
+    stream: &mut impl Read,
+    page: impl Fn(&mut Response) -> Option<(Vec<T>, bool)>,
+    complete: impl FnOnce(Vec<T>) -> Response,
+) -> Result<Response, ProtocolError> {
     let mut items = Vec::new();
     loop {
-        match response {
-            Response::Outline { items: page, more } => {
-                items.extend(page);
-                if !more {
-                    return Ok(Response::Outline { items, more: false });
-                }
-            }
-            Response::Error { .. } => return Ok(response),
-            _ => {
-                return Err(
-                    Error::new(ErrorKind::InvalidData, "unexpected outline response").into(),
-                );
-            }
+        if matches!(response, Response::Error { .. }) {
+            return Ok(response);
+        }
+        let (rows, more) = page(&mut response)
+            .ok_or_else(|| Error::new(ErrorKind::InvalidData, "unexpected result page"))?;
+        items.extend(rows);
+        if !more {
+            return Ok(complete(items));
         }
         response = crate::wire::read(stream)?;
     }

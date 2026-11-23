@@ -103,7 +103,7 @@ cargo run --locked -- --vault examples/vault outline
 cargo run --locked -- --vault examples/vault graph
 ```
 
-在 Linux 上，默认 Vault 的 TUI 月历、周历、日历、议程、Timeline 和大纲从 `mcbtodo-daemon` 读取。服务离线时会显示启动提示，TUI 菜单仍可使用。服务恢复后按 `r` 重试。议程日期范围最多 366 天，结果过大时请缩小日期范围。通过 `--vault` 打开的外部 Vault 和非 Linux 前台模式从本地读取。
+在 Linux 上，默认 Vault 的 TUI 月历、周历、日历、议程、Timeline、大纲和 Inbox 从 `mcbtodo-daemon` 读取。服务离线时会显示启动提示，TUI 菜单仍可使用。服务恢复后按 `r` 重试。议程日期范围最多 366 天，结果过大时请缩小日期范围。通过 `--vault` 打开的外部 Vault 和非 Linux 前台模式从本地读取。
 
 `mcbtodo calendar --daemon --date 2026-11-25 --json` 通过同一接口查询默认 Vault，支持 `--timezone`。普通 `calendar` 命令直接读取 Vault，支持 `--vault`。
 
@@ -146,7 +146,7 @@ Linux 上，TUI 将默认 Vault 的 Task 捕获以及 Project、Deadline 和全�
 
 将 `examples/vault/` 中的 `projects/` 与 `calendar/` 作为编辑参考。每个项目目录包含 `project.md`、`tasks/*.md` 和 `units/*.md`，独立日历活动在 `calendar/*.md`；未分类事项保存在 `inbox/*.md`。使用 `mcbtodo.project/v1`、`mcbtodo.task/v1`、`mcbtodo.work-unit/v1`、`mcbtodo.calendar-event/v1` 和 `mcbtodo.inbox-entry/v1` 作为 `schema`，为每个对象分配唯一 UUID，正文第一条非空行写 `# 标题`。修改文件名后，基于 UUID 的引用保持有效。`mcbtodo validate` 校验 YAML、时间范围、引用和依赖环。
 
-快速捕获不要求先选择 Project；`list-inbox` 输出 JSON Lines。分流到已有 Project 时会从 Inbox 标题、正文和标签创建 Task，并在原 Inbox 条目写入 `project_id` 作为来源记录。Task UUID 从 Inbox UUID 稳定派生；若在发布 Task 后中断，重试会验证并复用完全相同的 Task。若目标文件已被修改或与预期不符，操作失败且不会覆盖。每次分流都基于当前 Inbox Markdown revision，过期编辑会被拒绝。
+快速捕获无须先选择 Project。`list-inbox` 输出 JSON Lines。在 TUI 的 Inbox 中按 `t` 可选择 Project。Linux 默认 Vault 由服务读取 Inbox 和 Project 列表，并检查打开选择器时看到的 Inbox revision 后执行分流。分流从 Inbox 标题、正文和标签创建 Task，并在原条目写入 `project_id` 保留来源。Task UUID 从 Inbox UUID 稳定派生。若在发布 Task 后中断，重试会验证并复用完全相同的 Task。目标文件与预期不符或 Inbox revision 过期时，服务拒绝覆盖。
 
 ```sh
 mcbtodo vault capture-inbox --title "Check the backup design" --body "Review recovery cases"

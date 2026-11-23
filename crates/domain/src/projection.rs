@@ -177,3 +177,14 @@ pub struct OutlineItem {
     pub blocked: bool,
     pub revision: String,
 }
+
+/// A captured Markdown Inbox entry and its current assignment.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct InboxSummary {
+    pub id: Id,
+    pub title: String,
+    pub captured_at: chrono::DateTime<chrono::Utc>,
+    pub project_id: Option<Id>,
+    pub tags: Vec<String>,
+    pub revision: String,
+}

@@ -803,7 +803,7 @@ mod tests {
         state.view = View::Inbox;
         let theme = Theme::with_palette(mcbtodo_platform::TuiTheme::Monochrome);
         let screen = render(
-            Content::Inbox(InboxScreenModel::project(Vec::new(), chrono_tz::UTC, 0)),
+            Content::Inbox(InboxScreenModel::project(&[], chrono_tz::UTC, 0)),
             &state,
             (24, 5),
             theme,

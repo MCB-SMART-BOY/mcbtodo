@@ -328,6 +328,24 @@ the selected UUID in Outline. A regression verifies that a document absent
 from the client snapshot is searchable and selectable. An unavailable daemon
 produces a dismissible error panel.
 
+### Shared Inbox query and triage over local IPC
+
+The Linux default-Vault Inbox lists entries from one validated server
+snapshot through ordered response frames. The TUI uses those rows for
+rendering and selection, and builds the Project picker from the server
+Outline. The assignment sends the Inbox revision seen when the picker
+opened. Vault checks that revision under its writer lock. The daemon
+returns a conflict if the lock is busy. The shared writer preserves the
+source entry and checks the exact bytes of an existing derived Task before
+resuming an interrupted assignment. A published Task alone does not count
+as a completed assignment.
+
+The socket regression covers a stale revision, writer contention, a
+successful assignment, and a retry after only the Task was published.
+The TUI regression exercises a captured entry and Project absent from its
+local snapshot. The TUI still loads a local Vault for other functionality
+and uses a client-side file watcher for refresh.
+
 The TUI still loads a local snapshot at startup and uses it for Graph, Inbox,
 some form pickers and remaining foreground edits. File watching still takes place
 in the client. Each new calendar or Outline query scans the Vault in the daemon

@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use chrono::{Datelike, Days, NaiveDate};
 use chrono_tz::Tz;
-use mcbtodo_application::{CalendarItem, InboxSummary, OutlineItem, project_inbox};
+use mcbtodo_application::{CalendarItem, InboxSummary, OutlineItem};
 use mcbtodo_domain::CalendarKind;
 use mcbtodo_vault::Vault;
 use ratatui::text::Line;
@@ -10,7 +10,7 @@ use ratatui::text::Line;
 use super::{
     Overlay, State, View,
     calendar::{self, Lane, Week},
-    creation, deadline, picker, project_rows,
+    creation, deadline, picker,
     review::ReviewViewport,
     settings, timeline,
 };
@@ -637,13 +637,15 @@ impl<'a> ScreenModel<'a> {
                     Err(error) => Self::view_error(" Picker error ", error),
                 }
             }
-            Overlay::InboxProject { row, .. } => Content::InboxProject(ProjectPickerScreenModel {
-                projects: project_rows(vault)
-                    .into_iter()
-                    .map(|(_, title)| display_line(&title))
-                    .collect(),
-                focused: *row,
-            }),
+            Overlay::InboxProject { row, projects, .. } => {
+                Content::InboxProject(ProjectPickerScreenModel {
+                    projects: projects
+                        .iter()
+                        .map(|(_, title)| display_line(title))
+                        .collect(),
+                    focused: *row,
+                })
+            }
             Overlay::Proposals => Content::Proposals(ProposalScreenModel::project(
                 &state.proposals,
                 !state.message.is_empty(),
@@ -719,7 +721,7 @@ impl<'a> ScreenModel<'a> {
                 state.row,
             )),
             View::Inbox => Content::Inbox(InboxScreenModel::project(
-                project_inbox(vault),
+                &state.inbox_rows(vault)?,
                 vault.timezone(),
                 state.row,
             )),
@@ -754,9 +756,9 @@ pub(super) struct InboxRow {
 }
 
 impl InboxScreenModel {
-    pub(super) fn project(entries: Vec<InboxSummary>, timezone: Tz, focused: usize) -> Self {
+    pub(super) fn project(entries: &[InboxSummary], timezone: Tz, focused: usize) -> Self {
         let rows = entries
-            .into_iter()
+            .iter()
             .filter(|entry| entry.project_id.is_none())
             .map(|entry| {
                 let captured = entry.captured_at.with_timezone(&timezone);

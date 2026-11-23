@@ -36,9 +36,8 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use mcbtodo_application::{
-    CalendarItem, OutlineItem, TargetAction, VaultCommands, deadline_edit_context,
-    project_action_targets, project_calendar, project_inbox, project_outline,
-    project_revision_in_snapshot,
+    CalendarItem, InboxSummary, OutlineItem, TargetAction, VaultCommands, deadline_edit_context,
+    project_action_targets, project_calendar, project_inbox, project_revision_in_snapshot,
 };
 use mcbtodo_domain::{CalendarKind, Id, Occurrence, time::Span};
 use mcbtodo_platform::{AppConfig, AppConfigSnapshot, HomeViewPolicy, TuiTheme, WorkspacePaths};
@@ -194,11 +193,18 @@ enum Overlay {
     Proposals,
     InboxProject {
         inbox_id: Id,
-        revision: Revision,
+        revision: InboxRevision,
+        projects: Vec<(Id, String)>,
         row: usize,
     },
     Help(review::ReviewViewport),
     Command(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum InboxRevision {
+    Local(Revision),
+    Daemon(String),
 }
 
 #[derive(PartialEq, Eq, Debug)]
@@ -222,7 +228,7 @@ enum Action {
     TriageInbox {
         inbox_id: Id,
         project_id: Id,
-        revision: Revision,
+        revision: InboxRevision,
     },
 }
 
@@ -398,8 +404,10 @@ impl State {
                     .collect();
             }
             View::Inbox => {
-                return project_inbox(vault)
-                    .into_iter()
+                return self
+                    .inbox_rows(vault)
+                    .unwrap_or_default()
+                    .iter()
                     .filter(|entry| entry.project_id.is_none())
                     .map(|entry| FocusIdentity::Document(entry.id))
                     .collect();
@@ -423,6 +431,13 @@ impl State {
 
     fn outline_rows(&self, vault: &Vault) -> Result<Rc<[OutlineItem]>> {
         daemon_views::outline_rows(vault, self.daemon_views.as_ref())
+    }
+
+    fn inbox_rows(&self, vault: &Vault) -> Result<Rc<[InboxSummary]>> {
+        match &self.daemon_views {
+            Some(service) => service.inbox(),
+            None => Ok(project_inbox(vault).into()),
+        }
     }
 
     fn day_entries(&self, vault: &Vault) -> Result<Vec<CalendarItem>> {
@@ -610,9 +625,9 @@ impl State {
             Overlay::InboxProject {
                 inbox_id,
                 revision,
+                projects,
                 row,
             } => {
-                let projects = project_rows(vault);
                 match key.code {
                     KeyCode::Esc => self.overlay = Overlay::None,
                     KeyCode::Enter => {
@@ -824,17 +839,46 @@ impl State {
             KeyCode::Char('r') => return Reload,
             KeyCode::Char('e') if self.view != View::Workflow => return Edit,
             KeyCode::Char('t') if self.view == View::Inbox => {
-                let Some(inbox_id) = self.selected_document(vault) else {
+                let entries = match self.inbox_rows(vault) {
+                    Ok(entries) => entries,
+                    Err(error) => {
+                        self.message = format!("Inbox unavailable · {error:#}");
+                        return Continue;
+                    }
+                };
+                let Some(entry) = entries
+                    .iter()
+                    .filter(|entry| entry.project_id.is_none())
+                    .nth(self.row)
+                else {
                     self.message = "Inbox is empty".into();
                     return Continue;
                 };
-                let Some(revision) = vault.revision(inbox_id).cloned() else {
+                let inbox_id = entry.id;
+                let revision = if self.daemon_views.is_some() {
+                    Some(InboxRevision::Daemon(entry.revision.clone()))
+                } else {
+                    vault.revision(inbox_id).cloned().map(InboxRevision::Local)
+                };
+                let Some(revision) = revision else {
                     self.message = "Inbox entry has no revision; reload the Vault".into();
                     return Continue;
+                };
+                let outline = match self.outline_rows(vault) {
+                    Ok(outline) => outline,
+                    Err(error) => {
+                        self.message = format!("Project list unavailable · {error:#}");
+                        return Continue;
+                    }
                 };
                 self.overlay = Overlay::InboxProject {
                     inbox_id,
                     revision,
+                    projects: outline
+                        .iter()
+                        .filter(|row| row.depth == 0)
+                        .map(|row| (row.id, row.title.clone()))
+                        .collect(),
                     row: 0,
                 };
                 self.message.clear();
@@ -954,7 +998,7 @@ impl State {
                     self.document_id = Some(id);
                 }
             }
-            View::Day | View::Agenda | View::Outline | View::Timeline => {
+            View::Day | View::Agenda | View::Outline | View::Timeline | View::Inbox => {
                 let ids = self.row_ids(vault);
                 self.row = move_row(self.row, down, ids.len());
                 if let Some(&id) = ids.get(self.row) {
@@ -962,13 +1006,6 @@ impl State {
                 }
             }
             View::Workflow => {}
-            View::Inbox => {
-                let ids = self.row_ids(vault);
-                self.row = move_row(self.row, down, ids.len());
-                if let Some(&id) = ids.get(self.row) {
-                    self.document_id = Some(id);
-                }
-            }
         }
     }
 
@@ -976,24 +1013,66 @@ impl State {
         &mut self,
         root: &Path,
         vault: &mut Vault,
+        paths: &WorkspacePaths,
         inbox_id: Id,
         project_id: Id,
-        revision: Revision,
+        revision: InboxRevision,
     ) {
-        match VaultCommands::new(root, vault.timezone())
-            .triage_inbox_entry(inbox_id, project_id, revision)
-        {
-            Ok(_) => {
+        use creation::CreationError;
+
+        let result = match revision {
+            InboxRevision::Daemon(inbox_revision) => creation::submit_daemon_write(
+                paths,
+                Request::TriageInbox {
+                    inbox_id,
+                    project_id,
+                    inbox_revision,
+                },
+                |response| match response {
+                    mcbtodo_protocol::Response::InboxTriaged { synced } => Some(synced),
+                    _ => None,
+                },
+            ),
+            InboxRevision::Local(revision) => match VaultCommands::new(root, vault.timezone())
+                .triage_inbox_entry(inbox_id, project_id, revision)
+            {
+                Ok(_) => Ok(true),
+                Err(WriteError::PublishedButNotSynced { document, .. })
+                    if document.id == inbox_id =>
+                {
+                    Ok(false)
+                }
+                Err(
+                    WriteError::StaleRevision { .. }
+                    | WriteError::InboxEntryNotFound { .. }
+                    | WriteError::ProjectNotFound { .. },
+                ) => Err(CreationError::StaleRevision),
+                Err(error) => Err(CreationError::Rejected(format!("{error:#}"))),
+            },
+        };
+        self.message = match result {
+            Ok(synced) => {
                 self.reload(root, vault);
+                let saved = if synced {
+                    "Inbox entry converted to Task"
+                } else {
+                    "Inbox entry converted · directory sync could not be confirmed"
+                };
                 if self.message == "Vault reloaded" {
-                    self.message = "Inbox entry converted to Task".into();
+                    saved.into()
+                } else {
+                    format!("{saved} · {}", self.message)
                 }
             }
-            Err(WriteError::StaleRevision { .. }) => {
-                self.message = "Inbox entry changed · r to reload, then retry".into();
+            Err(CreationError::StaleRevision) => {
+                "Inbox entry or Project changed · r to reload, then retry".into()
             }
-            Err(error) => self.message = format!("Inbox triage failed · {error:#}"),
-        }
+            Err(CreationError::Rejected(error)) => format!("Inbox triage failed · {error}"),
+            Err(CreationError::Unknown) => {
+                self.reload(root, vault);
+                format!("Inbox triage outcome unknown · Check entry {inbox_id} before retrying")
+            }
+        };
     }
 
     fn follow_edge(&mut self, forward: bool, vault: &Vault) {
@@ -1179,14 +1258,6 @@ impl State {
             Err(error) => self.message = format!("Deadline update failed · {error:#}"),
         }
     }
-}
-
-fn project_rows(vault: &Vault) -> Vec<(Id, String)> {
-    project_outline(vault)
-        .into_iter()
-        .filter(|row| row.depth == 0)
-        .map(|row| (row.id, row.title))
-        .collect()
 }
 
 fn move_row(row: usize, down: bool, len: usize) -> usize {
@@ -1505,7 +1576,7 @@ pub(super) fn run(
                     inbox_id,
                     project_id,
                     revision,
-                } => state.triage_inbox(root, &mut vault, inbox_id, project_id, revision),
+                } => state.triage_inbox(root, &mut vault, paths, inbox_id, project_id, revision),
                 Action::Edit => {
                     let Some(path) = state.source(&vault) else {
                         state.message =

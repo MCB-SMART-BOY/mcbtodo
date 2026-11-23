@@ -206,6 +206,18 @@ impl Server {
                 timezone,
             } => query_calendar(self.runtime.paths(), start, through, &timezone),
             Request::Outline { timezone } => query_outline(self.runtime.paths(), &timezone),
+            Request::Inbox => query_inbox(self.runtime.paths()),
+            Request::TriageInbox {
+                inbox_id,
+                project_id,
+                inbox_revision,
+            } => create_in_vault(
+                self.runtime.paths(),
+                "Inbox assignment",
+                inbox_id,
+                |commands| commands.try_triage_inbox_entry(inbox_id, project_id, &inbox_revision),
+                |synced| Response::InboxTriaged { synced },
+            ),
             Request::CaptureTask {
                 task_id,
                 project_id,
@@ -422,6 +434,22 @@ fn query_outline(paths: &WorkspacePaths, timezone: &str) -> Response {
     }
 }
 
+fn query_inbox(paths: &WorkspacePaths) -> Response {
+    match paths
+        .load_config()
+        .and_then(|config| VaultQueries::new(paths.vault_root(), config.timezone).list_inbox())
+    {
+        Ok(items) => Response::Inbox { items, more: false },
+        Err(error) => {
+            eprintln!("mcbtodo-daemon: loading Inbox: {error:#}");
+            Response::Error {
+                code: ErrorCode::Internal,
+                message: "could not load the default Vault Inbox; check the daemon log".into(),
+            }
+        }
+    }
+}
+
 fn create_in_vault(
     paths: &WorkspacePaths,
     label: &str,
@@ -443,7 +471,20 @@ fn create_in_vault(
     };
     let error = match create(VaultCommands::new(paths.vault_root(), timezone)) {
         Ok(_) => return created(true),
-        Err(WriteError::PublishedButNotSynced { source, .. }) => {
+        Err(WriteError::PublishedButNotSynced { document, source }) => {
+            if document.id != id {
+                eprintln!(
+                    "mcbtodo-daemon: syncing related document {}: {source}",
+                    document.id
+                );
+                return Response::Error {
+                    code: ErrorCode::Internal,
+                    message: format!(
+                        "Task {} is visible but its durability is uncertain. The Inbox assignment was not saved. Reopen the Inbox before retrying.",
+                        document.id
+                    ),
+                };
+            }
             eprintln!("mcbtodo-daemon: syncing published {label} {id}: {source}");
             return created(false);
         }
@@ -452,6 +493,7 @@ fn create_in_vault(
     let (code, message) = match &error {
         WriteError::StaleRevision { .. }
         | WriteError::ProjectNotFound { .. }
+        | WriteError::InboxEntryNotFound { .. }
         | WriteError::WorkUnitNotFound { .. } => (ErrorCode::StaleRevision, error.to_string()),
         WriteError::DuplicateId { .. } | WriteError::DestinationExists { .. } => (
             ErrorCode::Conflict,
