@@ -1,5 +1,8 @@
 /target/
 
+# Keep local additions out of the tracked synthetic Vault fixture.
+/examples/vault/
+
 # Local workspace when the checkout is used as a temporary home.
 /.mcbtodo/
 /.config/mcbtodo/

@@ -96,6 +96,8 @@ home_view = "restore_last_view"
 
 `examples/vault/` 是供文档和测试共用的合成样例，包含 Rust OS 项目、任务依赖、日历活动和一组重复任务。软件安装后会在用户 home 中初始化空 Vault。日常编辑使用默认 Vault，写入演示使用独立副本。
 
+Git 会忽略该目录中新建的文件，已跟踪的样例仍会随仓库分发，修改它们仍会出现在 `git status` 中。
+
 从仓库根目录进行只读验证：
 
 ```sh
