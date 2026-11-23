@@ -23,7 +23,7 @@ pub(in crate::tui) enum ProposalPanel<'a> {
 }
 
 impl<'a> ProposalScreenModel<'a> {
-    pub(in crate::tui) fn project(review: &'a Review, has_feedback: bool) -> Self {
+    pub(in crate::tui) fn project(review: &'a Review) -> Self {
         let (panel, full_hint, compact_hint) = if let Some(detail) = &review.detail {
             let title = match detail.kind {
                 DetailKind::Proposal => " AI proposal ",
@@ -48,7 +48,7 @@ impl<'a> ProposalScreenModel<'a> {
                 compact_hint,
             )
         } else if review.rows.is_empty() {
-            let message = if has_feedback {
+            let message = if review.list_unavailable {
                 "Proposal list unavailable"
             } else {
                 "No proposals for this Vault and timezone"
@@ -64,7 +64,7 @@ impl<'a> ProposalScreenModel<'a> {
                     labels: review.rows.iter().map(label).collect(),
                     selected: review.row,
                 },
-                "jk select  Enter review  r refresh  Esc back",
+                "jk select  Enter review  r refresh  : command  Esc back",
                 "jk  Enter review  r  Esc",
             )
         };

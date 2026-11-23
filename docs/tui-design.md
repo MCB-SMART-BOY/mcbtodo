@@ -67,6 +67,14 @@ back. Compact pending reviews keep approve, reject, and
 return visible. Read-only reviews show navigation, and an empty list shows
 refresh and return.
 
+Open proposals with `:proposals` or `Space a`. Inside the list,
+`:proposal refresh` and `:proposal review` use the same actions as `r` and
+Enter. The command prompt keeps the current list or detail visible. Esc
+returns to the same selection or preview. To refresh or open a different
+proposal from a detail, return to the list first. Use `a` or `x` in an eligible
+detail to act on the proposal. Approval shows the record in the terminal and
+asks you to type `apply` before the queue commits it.
+
 `GraphScreenModel` projects visible list rows, selected nodes,
 adjacent dependencies and dependency edit previews. The TUI shares cached
 nodes until a validated Vault snapshot replaces them. When the body is too

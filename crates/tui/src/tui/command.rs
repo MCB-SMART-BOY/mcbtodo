@@ -15,6 +15,7 @@ pub(super) enum Command {
     Settings,
     Search(String),
     Proposals,
+    Proposal(ProposalCommand),
     View(View),
     Timer(TimerCommand),
     Create(Kind),
@@ -37,6 +38,9 @@ impl Command {
             ["settings"] => Ok(Self::Settings),
             ["search", query @ ..] if !query.is_empty() => Ok(Self::Search(query.join(" "))),
             ["proposals" | "proposal"] => Ok(Self::Proposals),
+            ["proposal", "refresh"] => Ok(Self::Proposal(ProposalCommand::Refresh)),
+            ["proposal", "review"] => Ok(Self::Proposal(ProposalCommand::Review)),
+            ["proposal", ..] => Err("Usage: proposal refresh|review".into()),
             ["graph", "add-dependency"] => Ok(Self::GraphDependencies(DependencyOperation::Add)),
             ["graph", "remove-dependency"] => {
                 Ok(Self::GraphDependencies(DependencyOperation::Remove))
@@ -95,6 +99,11 @@ pub(super) enum TimerCommand {
     Start,
     Pause,
     Stop,
+}
+
+pub(super) enum ProposalCommand {
+    Refresh,
+    Review,
 }
 
 pub(super) enum WorkflowCommand {

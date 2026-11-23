@@ -47,9 +47,12 @@ impl<'a> ScreenData<'a> {
             return Self::Main(Ok(ViewRows::Workflow));
         }
         match &state.overlay {
-            Overlay::None | Overlay::Time | Overlay::Command(_) => {
-                Self::Main(ViewRows::load(state, vault))
-            }
+            Overlay::None
+            | Overlay::Time
+            | Overlay::Command {
+                from_proposals: false,
+                ..
+            } => Self::Main(ViewRows::load(state, vault)),
             Overlay::Space(viewport) => Self::Space(viewport),
             Overlay::Settings(form) => Self::Settings(form),
             Overlay::Views(viewport) => Self::Views(viewport),
@@ -65,7 +68,11 @@ impl<'a> ScreenData<'a> {
                 Self::Picker(query, *row, picker::matches(vault, query))
             }
             Overlay::InboxProject { row, projects, .. } => Self::InboxProject(projects, *row),
-            Overlay::Proposals => Self::Proposals,
+            Overlay::Proposals
+            | Overlay::Command {
+                from_proposals: true,
+                ..
+            } => Self::Proposals,
             Overlay::Help(viewport) => Self::Help(viewport),
         }
     }

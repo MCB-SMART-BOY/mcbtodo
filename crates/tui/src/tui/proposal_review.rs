@@ -7,7 +7,7 @@ use mcbtodo_domain::Id;
 use mcbtodo_platform::WorkspacePaths;
 use sha2::{Digest, Sha256};
 
-use super::{Action, move_row, review::PannableReview};
+use super::{Action, command::ProposalCommand, move_row, review::PannableReview};
 use mcbtodo_application::graph_diff::GraphDiff;
 
 use mcbtodo_client::proposal::{Operation, Proposal, Queue, Status};
@@ -132,9 +132,33 @@ pub(super) struct Review {
     pub row: usize,
     pub detail: Option<Detail>,
     pub viewport: PannableReview,
+    pub list_unavailable: bool,
 }
 
 impl Review {
+    pub fn list_command_for_key(&self, key: KeyCode) -> Option<ProposalCommand> {
+        if self.detail.is_some() {
+            return None;
+        }
+        match key {
+            KeyCode::Char('r') => Some(ProposalCommand::Refresh),
+            KeyCode::Enter => Some(ProposalCommand::Review),
+            _ => None,
+        }
+    }
+
+    pub fn list_action(&self, command: ProposalCommand) -> Action {
+        if self.detail.is_some() {
+            return Action::Continue;
+        }
+        match command {
+            ProposalCommand::Refresh => Action::Proposals(Request::List),
+            ProposalCommand::Review => self.rows.get(self.row).map_or(Action::Continue, |row| {
+                Action::Proposals(Request::Show(row.id))
+            }),
+        }
+    }
+
     pub fn handle(&mut self, key: KeyEvent, message: &mut String) -> Option<Action> {
         if let Some(detail) = &self.detail {
             match key.code {
@@ -164,12 +188,6 @@ impl Review {
         } else {
             match key.code {
                 KeyCode::Esc => return None,
-                KeyCode::Char('r') => return Some(Action::Proposals(Request::List)),
-                KeyCode::Enter => {
-                    if let Some(summary) = self.rows.get(self.row) {
-                        return Some(Action::Proposals(Request::Show(summary.id)));
-                    }
-                }
                 KeyCode::Char('k') | KeyCode::Up => self.row = self.row.saturating_sub(1),
                 KeyCode::Char('j') | KeyCode::Down => {
                     self.row = move_row(self.row, true, self.rows.len());
@@ -187,19 +205,13 @@ impl Review {
         paths: &WorkspacePaths,
         request: Request,
     ) -> Result<()> {
-        let queue = Queue::open(root, zone, paths)?;
-        if let Request::Reject(id) = request {
-            queue.reject(id)?;
-            self.detail = None;
-            if let Some(row) = self.rows.iter_mut().find(|row| row.id == id) {
-                *row = queue.review(id)?;
-            }
-            return Ok(());
-        }
+        let queue = Queue::open(root, zone, paths);
         match request {
             Request::List => {
                 let previous = self.rows.get(self.row).map(|row| row.id);
-                self.rows = queue.list()?;
+                let rows = queue.and_then(|queue| queue.list());
+                self.list_unavailable = rows.is_err();
+                self.rows = rows?;
                 self.row = self
                     .rows
                     .iter()
@@ -207,7 +219,7 @@ impl Review {
                     .unwrap_or(0);
             }
             Request::Show(id) => {
-                let record = queue.review(id)?;
+                let record = queue?.review(id)?;
                 let mut text = match (&record.operation, record.graph_diff()) {
                     (_, Some(graph)) => graph_preview(graph, &record.target_title),
                     (Operation::PublishWorkflow { draft }, None) => workflow_preview(draft),
@@ -261,7 +273,14 @@ impl Review {
                 });
                 self.viewport = PannableReview::default();
             }
-            Request::Reject(_) => unreachable!("handled above"),
+            Request::Reject(id) => {
+                let queue = queue?;
+                queue.reject(id)?;
+                self.detail = None;
+                if let Some(row) = self.rows.iter_mut().find(|row| row.id == id) {
+                    *row = queue.review(id)?;
+                }
+            }
         }
         Ok(())
     }
@@ -314,6 +333,72 @@ mod tests {
     }
 
     #[test]
+    fn proposal_commands_share_list_actions_and_keep_review_context() {
+        let home = tempfile::tempdir().unwrap();
+        let paths = WorkspacePaths::from_home(home.path().to_owned());
+        let vault = fixture();
+        let unit = "30000000-0000-4000-8000-000000000002".parse().unwrap();
+        let revision = vault.local().revision(unit).unwrap().digest();
+        let operation = serde_json::from_value(json!({
+            "kind": "create_time_block",
+            "work_unit_id": unit,
+            "expected_revision": revision,
+            "start": "2026-11-21T09:00:00+08:00",
+            "end": "2026-11-21T11:00:00+08:00",
+            "availability": "free",
+        }))
+        .unwrap();
+        let id = submit(Path::new(ROOT), ZONE, &paths, operation, None)
+            .unwrap()
+            .proposal_id;
+        let mut state = State::new("2026-11-20".parse().unwrap());
+        let press = |state: &mut State, code| review(state, &vault, &paths, code);
+        let open_prompt = |state: &mut State, input: &str| {
+            assert_eq!(press(state, KeyCode::Char(':')), Action::Continue);
+            for ch in input.chars() {
+                assert_eq!(press(state, KeyCode::Char(ch)), Action::Continue);
+            }
+        };
+
+        open_prompt(&mut state, "proposals");
+        assert_eq!(
+            press(&mut state, KeyCode::Enter),
+            Action::Proposals(Request::List)
+        );
+        let refresh = press(&mut state, KeyCode::Char('r'));
+        open_prompt(&mut state, "proposal refresh");
+        let prompt = screen(&state, &vault, 24, 5);
+        assert!(prompt.contains(":proposal refresh"), "{prompt}");
+        assert!(prompt.contains("pending"), "{prompt}");
+        assert_eq!(press(&mut state, KeyCode::Enter), refresh);
+        assert_eq!(refresh, Action::Proposals(Request::List));
+
+        let review_item = press(&mut state, KeyCode::Enter);
+        press(&mut state, KeyCode::Esc);
+        open_prompt(&mut state, "proposal review");
+        assert_eq!(press(&mut state, KeyCode::Enter), review_item);
+        assert_eq!(review_item, Action::Proposals(Request::Show(id)));
+        let detail = screen(&state, &vault, 80, 24);
+        open_prompt(&mut state, "proposal refresh");
+        assert_eq!(press(&mut state, KeyCode::Esc), Action::Continue);
+        assert_eq!(screen(&state, &vault, 80, 24), detail);
+        open_prompt(&mut state, "proposal review");
+        assert_eq!(press(&mut state, KeyCode::Enter), Action::Continue);
+        assert!(state.proposals.detail.is_some());
+        open_prompt(&mut state, "proposal unknown");
+        assert_eq!(press(&mut state, KeyCode::Enter), Action::Continue);
+        assert!(matches!(state.overlay, Overlay::Proposals));
+        assert!(state.proposals.detail.is_some());
+
+        press(&mut state, KeyCode::Esc);
+        press(&mut state, KeyCode::Esc);
+        open_prompt(&mut state, "proposal review");
+        assert_eq!(press(&mut state, KeyCode::Enter), Action::Continue);
+        assert!(matches!(state.overlay, Overlay::None));
+        assert!(state.proposals.detail.is_none());
+    }
+
+    #[test]
     fn compact_proposal_review_keeps_actions_contextual() {
         use crate::tui::{
             calendar_tests::projected_screen,
@@ -324,10 +409,7 @@ mod tests {
         state.overlay = Overlay::Proposals;
         let screen = |state: &State| {
             let model = ScreenModel {
-                content: Content::Proposals(ProposalScreenModel::project(
-                    &state.proposals,
-                    !state.message.is_empty(),
-                )),
+                content: Content::Proposals(ProposalScreenModel::project(&state.proposals)),
                 chrome: ScreenChrome::project(state, ZONE),
             };
             projected_screen(&model, 28, 6)

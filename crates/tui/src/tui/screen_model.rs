@@ -89,7 +89,7 @@ impl ScreenChrome {
             .into(),
             Overlay::TimeBlock(form) if form.selected().is_none() => "PICKER".into(),
             Overlay::Picker { .. } | Overlay::InboxProject { .. } => "PICKER".into(),
-            Overlay::Command(_) => "COMMAND".into(),
+            Overlay::Command { .. } => "COMMAND".into(),
             Overlay::Views(_) => "VIEWS".into(),
             Overlay::Create(_) => "CREATE".into(),
             Overlay::CreateForm(_) | Overlay::Deadline(_) | Overlay::TimeBlock(_) => {
@@ -176,7 +176,7 @@ impl ScreenChrome {
             Overlay::Time => ScreenFooter::Time {
                 can_add_block: state.view.uses_dates(),
             },
-            Overlay::Command(input) => ScreenFooter::Command(format!(":{input}")),
+            Overlay::Command { input, .. } => ScreenFooter::Command(format!(":{input}")),
             _ => ScreenFooter::Panel,
         };
         Self {
@@ -637,10 +637,9 @@ impl<'a> ScreenModel<'a> {
                     focused: row,
                 })
             }
-            ScreenData::Proposals => Content::Proposals(ProposalScreenModel::project(
-                &state.proposals,
-                !state.message.is_empty(),
-            )),
+            ScreenData::Proposals => {
+                Content::Proposals(ProposalScreenModel::project(&state.proposals))
+            }
             ScreenData::Help(viewport) => Content::Help {
                 viewport,
                 text: shortcuts::help(&state.keymap).join("\n"),

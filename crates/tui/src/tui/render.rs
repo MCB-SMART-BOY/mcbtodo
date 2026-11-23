@@ -187,14 +187,13 @@ pub(super) fn draw(frame: &mut Frame<'_>, model: &ScreenModel<'_>, theme: Theme)
         }
         view => {
             render_view(frame, body, view, theme);
-            let hint = model.main_hint(footer.width, body.height);
-            if matches!(chrome.footer, ScreenFooter::Command(_)) {
-                frame.render_widget(Paragraph::new(hint), footer);
-                return;
-            }
-            hint
+            model.main_hint(footer.width, body.height)
         }
     };
+    if let ScreenFooter::Command(input) = &chrome.footer {
+        frame.render_widget(Paragraph::new(input.as_str()), footer);
+        return;
+    }
     let footer_text = format!(" {hint}");
     let footer_widget = if matches!(model.content, Content::Proposals(_)) {
         Paragraph::new(Line::styled(footer_text, theme.accent()))

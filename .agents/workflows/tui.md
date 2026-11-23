@@ -128,6 +128,11 @@ Use the same rule for the proposal queue. Project empty, list, pending detail
 and read-only detail states before rendering. Keep the primary actions and
 return visible in the compact pending footer. Test that empty and read-only
 states only advertise the actions that apply to their content.
+Exercise `:proposal refresh` and `:proposal review` through the command
+prompt and compare them with `r` and Enter. At 24×5, keep the selected
+proposal and command input visible together. Verify that Esc restores the
+same preview and that a list command issued from a detail does not act on
+the row behind it.
 Wrap proposal detail at grapheme boundaries by default. At 24×5, test that
 Page Down reaches the continuation of a mixed-language line, End reveals the
 last content row, and Home restores the first row. Preserve unwrapped

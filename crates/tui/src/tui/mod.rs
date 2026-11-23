@@ -203,7 +203,10 @@ enum Overlay {
         row: usize,
     },
     Help(review::ReviewViewport),
-    Command(String),
+    Command {
+        input: String,
+        from_proposals: bool,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -482,6 +485,12 @@ impl State {
                 self.message.clear();
                 return Action::Proposals(proposal_review::Request::List);
             }
+            Command::Proposal(command) => {
+                if matches!(self.overlay, Overlay::Proposals) {
+                    return self.proposals.list_action(command);
+                }
+                self.message = "Open the proposal list with :proposals first".into();
+            }
             Command::TimeBlock => {
                 self.overlay = Overlay::None;
                 self.message.clear();
@@ -641,13 +650,24 @@ impl State {
                 }
                 return Continue;
             }
-            Overlay::Command(input) => {
+            Overlay::Command {
+                input,
+                from_proposals,
+            } => {
+                let previous = if *from_proposals {
+                    Overlay::Proposals
+                } else {
+                    Overlay::None
+                };
                 match key.code {
-                    KeyCode::Esc => self.overlay = Overlay::None,
+                    KeyCode::Esc => self.overlay = previous,
                     KeyCode::Enter => {
-                        let input = std::mem::take(input);
-                        self.overlay = Overlay::None;
-                        match Command::parse(&input) {
+                        let parsed = Command::parse(input);
+                        self.overlay = match &parsed {
+                            Ok(Command::Proposal(_)) | Err(_) => previous,
+                            _ => Overlay::None,
+                        };
+                        match parsed {
                             Ok(command) => return self.execute(command, vault),
                             Err(error) => self.message = error,
                         }
@@ -842,6 +862,16 @@ impl State {
                 return Continue;
             }
             Overlay::Proposals => {
+                if key.code == KeyCode::Char(':') {
+                    self.overlay = Overlay::Command {
+                        input: String::new(),
+                        from_proposals: true,
+                    };
+                    return Continue;
+                }
+                if let Some(command) = self.proposals.list_command_for_key(key.code) {
+                    return self.execute(Command::Proposal(command), vault);
+                }
                 if let Some(action) = self.proposals.handle(key, &mut self.message) {
                     return action;
                 }
@@ -927,7 +957,12 @@ impl State {
                 }
             }
             KeyCode::Char(' ') => self.overlay = Overlay::Space(Default::default()),
-            KeyCode::Char(':') => self.overlay = Overlay::Command(String::new()),
+            KeyCode::Char(':') => {
+                self.overlay = Overlay::Command {
+                    input: String::new(),
+                    from_proposals: false,
+                };
+            }
             KeyCode::Char('/') => return self.execute(Command::Search(String::new()), vault),
             KeyCode::Char('?') => return self.execute(Command::Help, vault),
             KeyCode::Esc if self.view == View::Graph => self.graph_selection = None,

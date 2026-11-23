@@ -2094,3 +2094,15 @@ receipt reports the run UUID and advises inspection before retrying. The
 shared client distinguishes a conflict response from an ambiguous internal
 error. The Linux AArch64 workspace check passed 738 tests. Example Vault
 validation, Agent registry validation, and the sandbox smoke passed.
+
+### Proposal list commands, 2026-11-23
+
+Proposal list shortcuts and `:proposal refresh` and `:proposal review`
+dispatch the same typed actions. The prompt keeps the list or preview visible,
+and cancel returns to the same context. A list command cannot act on the
+selection behind an open preview. The existing approval handoff and queue
+revision checks continue to govern writes.
+
+On Linux AArch64, `MCBTODO_REQUIRE_SANDBOX=1 cargo xtask check` passed 739
+tests. Agent registry validation, the example Vault check, and the sandbox
+workspace smoke passed.
