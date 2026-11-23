@@ -30,6 +30,8 @@ and update the affected documents together.
 - [Focus reports](focus-reports.md): timer report semantics and output formats.
 - [Systemd deployment](../deploy/systemd/README.md): Linux user-service
   installation and diagnostics.
+- [Distribution](../distro/README.md): tagged source archives, crates.io
+  publication order, and Linux distribution package locations.
 - [Dependency maintenance](dependency-maintenance.md): Dependabot cadence and
   review expectations for Cargo and GitHub Actions updates.
 - [Workflow example](../examples/workflow/README.md): fixture graph and smoke
