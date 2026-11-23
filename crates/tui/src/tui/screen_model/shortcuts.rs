@@ -199,7 +199,7 @@ pub(in crate::tui) fn help(keys: &Keymap) -> Vec<String> {
         format!("{edit} / {command}edit   Open source in $VISUAL / $EDITOR / hx"),
         format!("{reload}   Reload vault"),
         format!("{command}   view, search, timer, proposals, date, today, reload, quit"),
-        format!("{command}create <kind>   Open a form from the Create menu"),
+        format!("{command}create <kind>   {command}graph add-dependency|remove-dependency"),
         format!("{command}help   Show this help"),
         format!("{quit}   Quit"),
     ]

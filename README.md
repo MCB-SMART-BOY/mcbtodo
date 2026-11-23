@@ -144,6 +144,8 @@ view_workflow = "7"
 
 `:create project|task|event|deadline|reminder|time-block` 和 `Space c` 创建菜单打开同一组表单。`:reminder` 和 `:time-block` 也是可用的简写。按表单提示填写后再按 Enter 提交。
 
+在 Graph 中用 `v` 或 `x` 选择前置 WorkUnit，然后将焦点移到目标。`a` 和 `:graph add-dependency` 打开同一份新增依赖预览，`d` 和 `:graph remove-dependency` 打开移除预览。检查预览后用 `y` 或 Enter 提交。
+
 在 Outline 中选中 Project 后，按 `Space c t` 或输入 `:create task` 可捕获 Task。创建成功后会切换到 Outline 并聚焦新 Task。默认 Vault 的表单使用大纲返回的 Project revision。若该 Project 已被修改，服务会拒绝写入并保留草稿。
 
 Linux 上，TUI 将默认 Vault 的 Task 捕获以及 Project、Deadline 和全天事件创建交给 `mcbtodo-daemon` 保存。服务未启动时表单会保留，启动服务后可以提交。若请求发出后连接中断，TUI 会提示核对对应的 UUID，再决定是否重试。显式选择其他 Vault 时，这些操作由前台直接保存。macOS 和 Windows 也走前台保存路径。

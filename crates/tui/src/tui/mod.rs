@@ -534,6 +534,39 @@ impl State {
                     return self.workflow.open();
                 }
             }
+            Command::GraphDependencies(operation) => {
+                if self.view != View::Graph {
+                    self.message = "Open Graph and select source WorkUnits first".into();
+                    return Action::Continue;
+                }
+                let Some(target) = self.selected_document(vault) else {
+                    return Action::Continue;
+                };
+                let Some(sources) = self.graph_selection.as_ref() else {
+                    self.message = "Select source WorkUnits with v/x first".into();
+                    return Action::Continue;
+                };
+                let preview = match vault {
+                    Workspace::Daemon { timezone, views } => {
+                        views.preview_dependency_change(target, sources, operation, *timezone)
+                    }
+                    Workspace::Local(vault) => {
+                        mcbtodo_application::preview_work_unit_dependency_change(
+                            vault, target, sources, operation,
+                        )
+                    }
+                };
+                match preview {
+                    Ok(edit) => {
+                        self.overlay = Overlay::GraphEdit {
+                            edit,
+                            viewport: review::ReviewViewport::default(),
+                        };
+                        self.message.clear();
+                    }
+                    Err(error) => self.message = format!("Graph edit unavailable · {error:#}"),
+                }
+            }
             Command::Timer(operation) => {
                 return Action::Timer(match operation {
                     TimerCommand::Status => Request::Status,
@@ -914,38 +947,12 @@ impl State {
                 }
             }
             KeyCode::Char('a' | 'd') if self.view == View::Graph => {
-                let Some(target) = self.selected_document(vault) else {
-                    return Continue;
-                };
-                let Some(sources) = self.graph_selection.as_ref() else {
-                    self.message = "Select source WorkUnits with v/x first".into();
-                    return Continue;
-                };
                 let operation = if key.code == KeyCode::Char('a') {
                     mcbtodo_domain::DependencyOperation::Add
                 } else {
                     mcbtodo_domain::DependencyOperation::Remove
                 };
-                let preview = match vault {
-                    Workspace::Daemon { timezone, views } => {
-                        views.preview_dependency_change(target, sources, operation, *timezone)
-                    }
-                    Workspace::Local(vault) => {
-                        mcbtodo_application::preview_work_unit_dependency_change(
-                            vault, target, sources, operation,
-                        )
-                    }
-                };
-                match preview {
-                    Ok(edit) => {
-                        self.overlay = Overlay::GraphEdit {
-                            edit,
-                            viewport: review::ReviewViewport::default(),
-                        };
-                        self.message.clear();
-                    }
-                    Err(error) => self.message = format!("Graph edit unavailable · {error:#}"),
-                }
+                return self.execute(Command::GraphDependencies(operation), vault);
             }
             KeyCode::Enter if matches!(self.view, View::Month | View::Day) => {
                 self.switch(View::Agenda, vault);

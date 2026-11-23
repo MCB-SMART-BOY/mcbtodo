@@ -142,6 +142,8 @@ Vault 快照。快照比较依据源文件路径和 revision。
 截止日期、时间块与文档搜索弹窗由 ScreenModel 投影视图内容和操作提示。
 `:deadline` 与 `Space d` 解析同一焦点 UUID。通过命令行入口验证服务端表单
 仍使用审阅时读取的 revision，并保留冲突刷新与重新确认流程。
+Graph 的 `a`、`d` 与 `:graph add-dependency`、`:graph remove-dependency` 分别
+打开相同预览。用终端测试比较预览，并通过命令入口验证 IPC 提交仍使用审阅 revision。
 在 28×5 验证匹配项、当前输入和 Esc 的位置。在 28×4 无色终端验证时间块
 输入焦点、校验反馈和页脚。继续验证原有 revision 与取消路径。
 时间块的两个菜单与 `:time-block` 复用同一表单入口。验证默认工作区从

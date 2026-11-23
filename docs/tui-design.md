@@ -73,6 +73,9 @@ nodes until a validated Vault snapshot replaces them. When the body is too
 short for dependency headings, the list uses the full terminal width.
 Graph dependency and Workflow reviews share a scrollable viewport with
 grapheme-aware wrapping.
+In Graph, `:graph add-dependency` and `:graph remove-dependency` share the
+preview actions bound to `a` and `d`. They use the marked source WorkUnits and
+the focused target.
 In Graph review, use arrows or `j` and `k`, Page Up or Page Down, or Home and
 End to read the preview. Enter or `y` applies the
 edit and Esc or `n` closes the review.

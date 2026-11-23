@@ -12,6 +12,16 @@ This review traced the checked-out source. The CI runs and smoke results
 recorded below retain their original scope and dates. The current route and
 platform summary lives in the [architecture overview](architecture.md).
 
+### Graph dependency commands (2026-11-23)
+
+`a` and `:graph add-dependency` produce the same review for the selected
+prerequisite UUIDs and focused target. `d` and `:graph remove-dependency`
+share the removal path. The regression compared rendered previews. The
+Linux socket test opens the review from the command prompt and verifies that
+the submission carries the reviewed revision and that the frontend reports
+the revision conflict. On Linux AArch64, all 13 Graph tests, the 718-test
+workspace check, and the example Vault validation passed.
+
 ### Background Outline reads (2026-11-23)
 
 The connected TUI loads Outline and document search rows on a background

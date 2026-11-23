@@ -1285,6 +1285,8 @@ fn graph_dependency_edit_previews_then_confirms_or_cancels() {
         Action::Continue
     );
     let preview = screen(&state, &vault, 72, 18);
+    press(&mut state, &vault, "\x1b:graph add-dependency\n");
+    assert_eq!(screen(&state, &vault, 72, 18), preview);
     assert!(preview.contains("Review dependency changes"), "{preview}");
     assert!(
         preview.contains("阅读 Sv39 规范 → 实现地址转换"),
@@ -1768,7 +1770,7 @@ fn graph_opens_the_selected_daemon_work_unit_absent_from_local_snapshot() -> Res
     assert_eq!(state.selected_document(&vault), Some(first));
     press(&mut state, &vault, "xl");
     assert_eq!(state.selected_document(&vault), Some(second));
-    press(&mut state, &vault, "d");
+    press(&mut state, &vault, ":graph remove-dependency\n");
     assert!(screen(&state, &vault, 80, 22).contains("Reviewed prerequisite → Reviewed dependent"));
     let Action::SetGraphDependencies(edit) = state.handle(
         KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),

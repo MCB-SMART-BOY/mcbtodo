@@ -1,4 +1,5 @@
 use chrono::NaiveDate;
+use mcbtodo_domain::DependencyOperation;
 
 use super::{View, creation::Kind};
 
@@ -18,6 +19,7 @@ pub(super) enum Command {
     Timer(TimerCommand),
     Create(Kind),
     TimeBlock,
+    GraphDependencies(DependencyOperation),
 }
 
 impl Command {
@@ -34,6 +36,13 @@ impl Command {
             ["settings"] => Ok(Self::Settings),
             ["search", query @ ..] if !query.is_empty() => Ok(Self::Search(query.join(" "))),
             ["proposals" | "proposal"] => Ok(Self::Proposals),
+            ["graph", "add-dependency"] => Ok(Self::GraphDependencies(DependencyOperation::Add)),
+            ["graph", "remove-dependency"] => {
+                Ok(Self::GraphDependencies(DependencyOperation::Remove))
+            }
+            ["graph", ..] if parts.len() > 1 => {
+                Err("Usage: graph add-dependency|remove-dependency".into())
+            }
             ["time-block"] | ["create", "time-block"] => Ok(Self::TimeBlock),
             ["reminder"] | ["create", "reminder"] => Ok(Self::Create(Kind::Reminder)),
             ["create", "project"] => Ok(Self::Create(Kind::Project)),
