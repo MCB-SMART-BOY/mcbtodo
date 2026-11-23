@@ -52,8 +52,8 @@ evaluation label; it is not a published version.
 ## NUR Entry
 
 `nur/default.nix` follows the NUR repository function contract and exposes
-`mcbtodo`. Its source is the repository checkout and its version is explicitly
-marked `0.1.0-pre`; it does not claim to represent a tagged release.
+`mcbtodo` for local evaluation. It is not the package repository submitted to
+NUR and does not claim that the package is registered there.
 
 The checked-in entry can be evaluated from this repository. For an upstream
 NUR submission, make a dedicated, slim package repository containing the
@@ -75,17 +75,17 @@ their own directory, so do not make the upstream package depend on this
 repository's relative `../package.nix`. Follow nixpkgs' current package layout
 and review requirements at submission time.
 
-Do not merge a made-up fixed-output hash into either channel. Once a GitHub
-source release exists, calculate its hash from the exact release archive and
-put that verified value in the nixpkgs fetcher. `cargoLock.lockFile` imports
+Do not merge a made-up fixed-output hash into either channel. The v0.1.0
+release archive has verified SHA-256
+`fb15e9fae29a69b8b6852bb2c05926e718ac01195833ee65be52e8e2fc2ef037`;
+use that hash when pinning this exact archive. `cargoLock.lockFile` imports
 the committed Cargo lockfile without requiring a guessed aggregate Cargo
 vendor hash; this repository has no Git-sourced Cargo dependencies.
 
 NUR and nixpkgs are separate upstream contribution paths. A NUR package
 repository is registered through a `repos.json` pull request to
 `nix-community/NUR`; a nixpkgs package is proposed as a pull request to
-`NixOS/nixpkgs`. Neither action is performed by this repository-local
-preparation.
+`NixOS/nixpkgs`.
 
 ## v0.1.0 Status
 
@@ -103,8 +103,8 @@ current upstream branch and passed formatting and evaluation checks, but it
 was not pushed because the actual build failed. Do not report either package
 as available or accepted.
 
-No tag, GitHub Release, external NUR/nixpkgs change, or package publication is
-created by these files.
+The repository-local Nix expressions do not create a GitHub Release, publish a
+NUR repository, or submit a nixpkgs change.
 
 ## Upstream Requirement Evidence
 
@@ -121,6 +121,5 @@ Checked 2026-11-23:
 - Nixpkgs' [contribution guide](https://github.com/NixOS/nixpkgs/blob/master/CONTRIBUTING.md#how-to-create-pull-requests)
   requires testing and asks PR authors to test with sandboxing and report
   only platforms they actually built on.
-- The upstream [GitHub Releases page](https://github.com/MCB-SMART-BOY/mcbtodo/releases)
-  currently reports no releases. Therefore there is no stable tagged source
-  archive or release checksum to pin yet.
+- The v0.1.0 [GitHub Release](https://github.com/MCB-SMART-BOY/mcbtodo/releases/tag/v0.1.0)
+  provides the source archive and checksum used in the status above.
