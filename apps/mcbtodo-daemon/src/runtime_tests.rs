@@ -1466,13 +1466,58 @@ fn wait_until_descendant_exits(descendant_pid: u32) -> Result<()> {
 }
 
 #[cfg(target_os = "linux")]
+// The Bash sandbox does not mount sleep. Stop a child after it writes the
+// marker so the parent remains in wait until the test injects the fault.
+const BLOCKING_SCRIPT: &[u8] =
+    b"(printf '{}' > \"$PROD_OUTPUT_JSON\" && kill -STOP \"$BASHPID\") &\nwait\n";
+
+#[cfg(target_os = "linux")]
+fn wait_for_script_effect(
+    runtime: &mut Runtime,
+    id: Uuid,
+    state_dir: &Path,
+) -> Result<(u32, Vec<u32>)> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        runtime.tick()?;
+        let run = runtime.run(id)?;
+        if run.state == RunState::Running
+            && let Some(WorkerSlot::Active(worker)) = runtime.workers.front()
+        {
+            for entry in fs::read_dir(state_dir)? {
+                let entry = entry?;
+                if entry
+                    .file_name()
+                    .as_encoded_bytes()
+                    .starts_with(b"script-sandbox-")
+                    && fs::read(entry.path().join("output.json")).is_ok_and(|bytes| bytes == b"{}")
+                {
+                    let worker_pid = worker.child.id();
+                    let descendants = process_descendants(worker_pid);
+                    if !descendants.is_empty() {
+                        return Ok((worker_pid, descendants));
+                    }
+                }
+            }
+        }
+        if !matches!(run.state, RunState::Pending | RunState::Running) || Instant::now() >= deadline
+        {
+            let history = runtime.store.history(id)?;
+            bail!(
+                "sandbox script did not write its marker: state={:?}, detail={:?}, trace={history:?}",
+                run.state,
+                run.detail
+            );
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[cfg(target_os = "linux")]
 #[test]
 fn cancelling_running_script_through_daemon_reaps_worker_and_records_unknown() -> Result<()> {
     let base = tempfile::tempdir()?;
-    fs::write(
-        base.path().join("script.sh"),
-        b"while :; do sleep 0.05; done &\nwait\n",
-    )?;
+    fs::write(base.path().join("script.sh"), BLOCKING_SCRIPT)?;
     let revision = publish(base.path(), SCRIPT_GRAPH)?;
     let paths = WorkspacePaths::from_home(base.path().to_owned());
     paths.initialize()?;
@@ -1481,28 +1526,7 @@ fn cancelling_running_script_through_daemon_reaps_worker_and_records_unknown() -
     let id = Uuid::new_v4();
     request_run(&mut runtime, enqueue(id, revision))?;
 
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let (worker_pid, descendants) = loop {
-        runtime.tick()?;
-        let run = runtime.run(id)?;
-        if run.state == RunState::Running
-            && let Some(WorkerSlot::Active(worker)) = runtime.workers.front()
-        {
-            let worker_pid = worker.child.id();
-            let descendants = process_descendants(worker_pid);
-            if !descendants.is_empty() {
-                break (worker_pid, descendants);
-            }
-        }
-        if Instant::now() >= deadline {
-            bail!(
-                "script Worker or sandbox descendants did not start: state={:?}, detail={:?}",
-                run.state,
-                run.detail
-            );
-        }
-        thread::sleep(Duration::from_millis(10));
-    };
+    let (worker_pid, descendants) = wait_for_script_effect(&mut runtime, id, &paths.state_dir())?;
 
     let cancelling = request_run(&mut runtime, WorkflowRequest::Cancel { run_id: id })?;
     assert_eq!(cancelling.state, RunState::Cancelling);
@@ -1551,10 +1575,7 @@ fn cancelling_running_script_through_daemon_reaps_worker_and_records_unknown() -
 fn worker_crash_after_start_becomes_unknown_and_is_not_replayed_after_runtime_restart() -> Result<()>
 {
     let base = tempfile::tempdir()?;
-    fs::write(
-        base.path().join("script.sh"),
-        b"while :; do sleep 0.05; done &\nwait\n",
-    )?;
+    fs::write(base.path().join("script.sh"), BLOCKING_SCRIPT)?;
     let revision = publish(base.path(), SCRIPT_GRAPH)?;
     let paths = WorkspacePaths::from_home(base.path().to_owned());
     paths.initialize()?;
@@ -1563,22 +1584,7 @@ fn worker_crash_after_start_becomes_unknown_and_is_not_replayed_after_runtime_re
     runtime.store.set_authorization(&revision, "run", true)?;
     request_run(&mut runtime, enqueue(id, revision))?;
 
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let (worker_pid, descendants) = loop {
-        runtime.tick()?;
-        if runtime.run(id)?.state == RunState::Running
-            && let Some(WorkerSlot::Active(worker)) = runtime.workers.front()
-        {
-            let descendants = process_descendants(worker.child.id());
-            if !descendants.is_empty() {
-                break (worker.child.id(), descendants);
-            }
-        }
-        if Instant::now() >= deadline {
-            bail!("Worker did not start its sandbox workload");
-        }
-        thread::sleep(Duration::from_millis(10));
-    };
+    let (worker_pid, descendants) = wait_for_script_effect(&mut runtime, id, &paths.state_dir())?;
 
     use rustix::process::{Pid, Signal, kill_process_group};
     let pid = Pid::from_raw(worker_pid as i32).context("invalid Worker pid")?;

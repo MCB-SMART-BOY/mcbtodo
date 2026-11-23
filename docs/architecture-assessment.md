@@ -150,9 +150,21 @@ Local verification passed after these changes:
 - the Windows MCP tool-count regression
 - shell syntax and diff checks for the CI installer
 
-No GitHub Actions run for this revision exists yet. Native macOS and Windows
-runtime verification therefore remains pending until the pushed revision
-finishes its jobs.
+GitHub Actions run `45089026032` passed the native macOS ARM64 and Windows
+x86_64 CLI, TUI, Settings and Vault jobs, along with both cross-target build
+checks. The Linux jobs still failed. AArch64 timed out waiting for the Worker
+crash fixture. The x86_64 package smoke reported an unexpected terminal run,
+and run `45086966515` recorded Bubblewrap's loopback namespace setup failing
+with `Operation not permitted`.
+
+The Worker crash and cancellation fixtures now wait for an observable write
+in the sandbox before injecting the fault. Their Bash scripts use built-ins
+to keep the attempt open. The old `sleep` loop was reproduced locally failing
+at the sandbox's 64 KiB log limit because `sleep` is absent from that sandbox.
+The packaged crash fixture also uses built-ins. The tests still require
+`outcome_unknown`, process cleanup and the applicable restart checks.
+Failure reports include the Daemon history or the smoke run's first trace to
+identify the operation that failed.
 
 ## Latest Review
 

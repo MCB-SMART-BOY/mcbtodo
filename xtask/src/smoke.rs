@@ -1253,7 +1253,7 @@ nodes:
     )?;
     fs::write(
         temp.join("worker-crash-after-effect.sh"),
-        b"printf '{\"marker\":\"worker-crash-after-effect\"}' > \"$PROD_OUTPUT_JSON\"\nwhile :; do sleep 1; done\n",
+        b"(printf '{\"marker\":\"worker-crash-after-effect\"}' > \"$PROD_OUTPUT_JSON\" && kill -STOP \"$BASHPID\") &\nwait\n",
     )?;
     let revision = smoke.cli(&["workflow", "publish", path_arg(&graph)?])?;
     let revision = revision.trim();
@@ -2515,7 +2515,16 @@ impl Smoke<'_> {
                 run["state"].as_str(),
                 Some("succeeded" | "failed" | "cancelled" | "outcome_unknown")
             ) {
-                bail!("unexpected terminal state for {id}: {run}");
+                let first_step = if run["step_count"].as_u64().unwrap_or(0) > 0 {
+                    self.json(&["workflow", "trace", id, "0"])
+                        .map(|step| step["trace"].clone())
+                        .map_err(|error| error.to_string())
+                } else {
+                    Ok(Value::Null)
+                };
+                bail!(
+                    "run {id} ended while waiting for {state}: {run}; first step: {first_step:?}"
+                );
             }
             Ok(false)
         })?;
