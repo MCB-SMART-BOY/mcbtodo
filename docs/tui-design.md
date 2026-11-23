@@ -17,6 +17,8 @@ Vault session resolves the source from its own snapshot.
 The session dispatches the resulting action through the existing client or
 local path. Text entry, resizing, and service responses follow their own
 paths. The daemon receives typed business requests with explicit arguments.
+Proposal confirmation also belongs to the terminal layer. The TUI and CLI
+display the exact record before passing it to the queue for a locked recheck.
 
 The Month model supplies the month title, grid labels, detail lines, compact
 date labels and focused list row. A busy day keeps its `*` marker in both

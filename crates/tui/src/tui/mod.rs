@@ -1231,7 +1231,7 @@ impl State {
     fn apply_proposal(&mut self, root: &Path, vault: &mut Vault, paths: &WorkspacePaths, id: Id) {
         let zone = vault.timezone();
         let apply = mcbtodo_client::proposal::Queue::open(root, zone, paths)
-            .and_then(|queue| mcbtodo_client::proposal::apply_interactively(&queue, id));
+            .and_then(|queue| crate::proposal::apply_interactively(&queue, id));
         if let Err(error) = apply {
             self.message = format!("Proposal apply failed · {error:#}");
             return;

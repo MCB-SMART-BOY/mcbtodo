@@ -3,9 +3,10 @@ use std::path::Path;
 use anyhow::Result;
 use chrono_tz::Tz;
 use clap::Subcommand;
-use mcbtodo_client::proposal::{Queue, apply_interactively, print_review};
+use mcbtodo_client::proposal::Queue;
 use mcbtodo_domain::Id;
 use mcbtodo_platform::WorkspacePaths;
+use mcbtodo_tui::proposal::{apply_interactively, print_review};
 
 #[derive(Subcommand)]
 pub(crate) enum Command {

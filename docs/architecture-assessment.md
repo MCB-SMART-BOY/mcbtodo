@@ -1842,6 +1842,8 @@ perform use-case work independently for some reads and interactions:
   Unix path bytes. A TUI socket test exercises a server-only document and
   a disconnected lookup. Session startup and local file watching still rely
   on a Vault snapshot.
+  Proposal confirmation runs in the terminal crate. The queue API rechecks the
+  reviewed record under lock and is independent of terminal I/O.
   Dependency-change validation,
   readiness impact, and the observed target revision come from the application
   preview; publication still uses the revision-checked application command and

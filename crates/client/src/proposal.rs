@@ -1,9 +1,9 @@
-//! Private proposals from MCP, committed only after interactive review.
+//! Private proposals from MCP with review-bound commits.
 
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
-    io::{self, BufRead, IsTerminal, Write},
+    io::{self, Write},
     path::{Path, PathBuf},
 };
 
@@ -234,6 +234,18 @@ impl Proposal {
     pub fn workflow_revision(&self) -> Option<&str> {
         self.workflow_revision.as_deref()
     }
+
+    /// Whether applying this record needs a fresh approval from the caller.
+    pub fn requires_approval(&self) -> Result<bool> {
+        match (&self.operation, self.status) {
+            (_, Status::Applied) => Ok(false),
+            (Operation::PublishWorkflow { .. }, Status::Applying) => Ok(true),
+            (_, status) => {
+                ensure_pending(status)?;
+                Ok(true)
+            }
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -293,66 +305,6 @@ impl From<Proposal> for Submission {
             workflow_revision: record.workflow_revision,
         }
     }
-}
-
-/// Display the exact review record, confirm through the terminal, and apply it.
-/// The queue verifies the reviewed record again under its lock.
-pub fn apply_interactively(queue: &Queue, id: Id) -> Result<()> {
-    let reviewed = queue.review(id)?;
-    if reviewed.status != Status::Applied {
-        if !matches!(
-            (&reviewed.operation, reviewed.status),
-            (Operation::PublishWorkflow { .. }, Status::Applying)
-        ) {
-            ensure_pending(reviewed.status)?;
-        }
-        let stdin = io::stdin();
-        let stdout = io::stdout();
-        ensure!(
-            stdin.is_terminal() && stdout.is_terminal(),
-            "proposal apply requires an interactive terminal"
-        );
-        print_review(&reviewed)?;
-        print!("Type 'apply' to confirm: ");
-        stdout.lock().flush()?;
-        let mut response = String::new();
-        stdin.lock().read_line(&mut response)?;
-        ensure!(response.trim() == "apply", "proposal was not confirmed");
-    }
-    let ids = queue.apply(&reviewed)?;
-    if let Some(hash) = reviewed.workflow_revision() {
-        println!("Published workflow revision {hash}");
-    } else if let [id] = ids.as_slice() {
-        println!("Applied proposal {} to document {id}", reviewed.id);
-    } else {
-        println!(
-            "Applied proposal {} to {} work units",
-            reviewed.id,
-            ids.len()
-        );
-    }
-    Ok(())
-}
-
-// The JSON serializer escapes ASCII control characters. Escape Unicode controls
-// and formatting characters that could also interfere with terminal review.
-pub fn print_review(value: &impl Serialize) -> Result<()> {
-    let json = serde_json::to_string_pretty(value)?;
-    let mut out = io::stdout().lock();
-    for ch in json.chars() {
-        match ch {
-            '\u{7f}'..='\u{9f}'
-            | '\u{061c}'
-            | '\u{200e}'..='\u{200f}'
-            | '\u{2028}'..='\u{202e}'
-            | '\u{2066}'..='\u{2069}' => {
-                write!(out, "\\u{:04x}", u32::from(ch))?;
-            }
-            ch => write!(out, "{ch}")?,
-        }
-    }
-    writeln!(out)?;
-    Ok(())
 }
 
 /// Queue a typed operation. A repeated request ID with the same operation keeps
@@ -545,18 +497,14 @@ impl Queue {
         self.persist(&record, true)
     }
 
-    fn apply(&self, reviewed: &Proposal) -> Result<Vec<Id>> {
+    /// Commit the exact record approved by the caller.
+    /// The caller acquires approval before calling this method.
+    pub fn apply(&self, reviewed: &Proposal) -> Result<Vec<Id>> {
         let _lock = lock_queue(&self.directory)?;
         let mut record = self.review(reviewed.id)?;
-        if record.status == Status::Applied {
+        if !record.requires_approval()? {
             sync_dir(&self.directory)?;
             return Ok(record.result_ids());
-        }
-        if !matches!(
-            (&record.operation, record.status),
-            (Operation::PublishWorkflow { .. }, Status::Applying)
-        ) {
-            ensure_pending(record.status)?;
         }
         ensure!(&record == reviewed, "proposal changed during review");
         record.operation.validate(record.timezone)?;

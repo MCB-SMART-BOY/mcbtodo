@@ -148,6 +148,8 @@ Daemon Outline 获取候选，刷新保留已审阅的 revision，断连不切�
 UUID，查询失败时显示错误并停止命令。
 编辑键与 `:edit` 复用动作。连接会话根据文档 UUID 查询当前源文件。验证文件
 移动、原始 Unix 路径字节、本地快照尚未包含该 UUID 及断连时的行为。
+提案确认由终端层处理，队列对同一份审阅记录持锁复核。使用 CLI 与 TUI
+伪终端流程验证显式确认和写入。
 
 ## 7. Phase 5 — Process Plugin Protocol
 
