@@ -205,7 +205,8 @@ fn task_capture_publishes_under_selected_project_and_focuses_the_task() {
     let Action::CreateTask(request) = press(&mut state, &vault, " ctWrite tests\n") else {
         panic!("expected task capture, got {}", state.message);
     };
-    state.create_task(root.path(), &mut vault, request);
+    let paths = mcbtodo_platform::WorkspacePaths::from_home(root.path().to_owned());
+    state.create_task(root.path(), &mut vault, &paths, request);
 
     assert!(state.message.contains("Task saved"), "{}", state.message);
     let task_id = state.selected_document(&vault).expect("new task focused");
@@ -229,6 +230,88 @@ fn task_capture_publishes_under_selected_project_and_focuses_the_task() {
     );
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn default_task_capture_keeps_the_form_when_the_daemon_is_absent() {
+    let home = tempfile::tempdir().unwrap();
+    let paths = mcbtodo_platform::WorkspacePaths::from_home(home.path().to_owned());
+    paths.initialize().unwrap();
+    let root = paths.vault_root();
+    let (mut vault, _) = project_vault(&root);
+    let mut state = State::new(day("2026-11-25"));
+    state.switch(View::Outline, &vault);
+    let Action::CreateTask(request) = press(&mut state, &vault, " ctWrite tests\n") else {
+        panic!("expected task capture");
+    };
+    state.create_task(&root, &mut vault, &paths, request);
+    assert!(matches!(state.overlay, Overlay::CreateForm(_)));
+    assert!(state.message.contains("Start mcbtodo-daemon"));
+    assert_eq!(Vault::load(&root, ZONE).unwrap().outline().len(), 1);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn default_task_capture_does_not_repeat_a_request_without_a_response() {
+    use std::{os::unix::net::UnixListener, thread, time::Instant};
+
+    let home = tempfile::tempdir().unwrap();
+    let paths = mcbtodo_platform::WorkspacePaths::from_home(home.path().to_owned());
+    paths.initialize().unwrap();
+    let root = paths.vault_root();
+    let (mut vault, project_id) = project_vault(&root);
+    let observed = vault.revision(project_id).unwrap().digest();
+    let mut state = State::new(day("2026-11-25"));
+    state.switch(View::Outline, &vault);
+    let Action::CreateTask(request) = press(&mut state, &vault, " ctWrite tests\n") else {
+        panic!("expected task capture");
+    };
+
+    let listener = UnixListener::bind(paths.socket_path()).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let server = thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut connection = loop {
+            match listener.accept() {
+                Ok((connection, _)) => break connection,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(Instant::now() < deadline, "no Task request was sent");
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => panic!("accepting Task request: {error}"),
+            }
+        };
+        connection
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let sent =
+            mcbtodo_protocol::wire::read::<mcbtodo_protocol::Request>(&mut connection).unwrap();
+        drop(connection);
+        (sent, listener)
+    });
+    state.create_task(&root, &mut vault, &paths, request);
+    let (sent, listener) = server.join().unwrap();
+    let mcbtodo_protocol::Request::CaptureTask {
+        task_id,
+        project_id: sent_project,
+        project_revision,
+        title,
+    } = sent
+    else {
+        panic!("expected a Task request");
+    };
+    assert_eq!(sent_project, project_id);
+    assert_eq!(project_revision, observed);
+    assert_eq!(title, "Write tests");
+    assert!(matches!(state.overlay, Overlay::None));
+    assert!(state.message.contains("outcome unknown"));
+    assert!(state.message.contains(&task_id.to_string()));
+    assert_eq!(Vault::load(&root, ZONE).unwrap().outline().len(), 1);
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+}
+
 #[test]
 fn task_capture_keeps_form_open_and_preserves_a_concurrent_project_edit() {
     let root = tempfile::tempdir().unwrap();
@@ -246,7 +329,8 @@ fn task_capture_keeps_form_open_and_preserves_a_concurrent_project_edit() {
     fs::write(&project_path, &edited).unwrap();
 
     let mut observed = vault;
-    state.create_task(root.path(), &mut observed, request);
+    let paths = mcbtodo_platform::WorkspacePaths::from_home(root.path().to_owned());
+    state.create_task(root.path(), &mut observed, &paths, request);
     assert!(matches!(state.overlay, Overlay::CreateForm(_)));
     assert!(
         state.message.contains("Project changed"),

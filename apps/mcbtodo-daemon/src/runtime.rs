@@ -198,6 +198,10 @@ struct JobResult {
 struct UncertainWrite(#[source] WriteError);
 
 impl Runtime {
+    pub(super) fn paths(&self) -> &WorkspacePaths {
+        &self.paths
+    }
+
     #[cfg(test)]
     pub(super) fn open_for_test(state_dir: &Path) -> Result<Self> {
         Self::open_with_paths(state_dir, WorkspacePaths::from_home(state_dir.to_owned()))
@@ -1448,19 +1452,8 @@ fn execute_task_create(
         return Ok(None);
     }
     let id = Uuid::new_v4();
-    let task = Task {
-        id,
-        project_id,
-        status: Default::default(),
-        priority: Default::default(),
-        active_period: None,
-        deadline: None,
-        recurrence: None,
-        occurrence: None,
-        tags: Vec::new(),
-    };
     let result = VaultCommands::new(&root, timezone).capture_task(
-        task,
+        Task::new(id, project_id),
         title.clone(),
         String::new(),
         expected_revision,

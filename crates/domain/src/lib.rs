@@ -75,6 +75,22 @@ pub struct Task {
     pub tags: Vec<String>,
 }
 
+impl Task {
+    pub fn new(id: Id, project_id: Id) -> Self {
+        Self {
+            id,
+            project_id,
+            status: TaskStatus::default(),
+            priority: Priority::default(),
+            active_period: None,
+            deadline: None,
+            recurrence: None,
+            occurrence: None,
+            tags: Vec::new(),
+        }
+    }
+}
+
 /// Identifies one persisted occurrence generated from a recurring Task template.
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]

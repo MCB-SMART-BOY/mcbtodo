@@ -1465,7 +1465,7 @@ pub(super) fn run(
                     state.create_reminder(root, &mut vault, paths, request);
                 }
                 Action::CreateTask(request) => {
-                    state.create_task(root, &mut vault, request);
+                    state.create_task(root, &mut vault, paths, request);
                 }
                 Action::CreateTimeBlock(block) => {
                     state.create_time_block(root, &mut vault, block);

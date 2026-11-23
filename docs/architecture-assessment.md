@@ -237,6 +237,15 @@ The sandbox and systemd smoke commands passed with that root's `bin`
 directory. The systemd smoke verified that a second TUI could reopen the
 same timer session and that the service recovered it after a forced restart.
 
+On Linux, the TUI now sends default-Vault Task captures to the Daemon. The
+IPC regression verifies lock contention, stale Project revision rejection,
+and rejection of a second submission using the same Task UUID. The TUI
+regressions cover the service-absent hint, an interrupted response without
+replay or local publication, and offline capture against an external Vault.
+The AArch64 systemd smoke drove the real TUI Task form and read the resulting
+Task from the isolated Vault. Other Vault mutations still use their existing
+entry points.
+
 ## Latest Review
 
 On 2026-11-22, the Linux AArch64 release packaging follow-up verified all

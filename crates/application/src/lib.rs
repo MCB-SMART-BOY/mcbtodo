@@ -211,6 +211,23 @@ impl VaultCommands {
         })
     }
 
+    /// Captures a title-only Task from a remote snapshot without waiting for the writer lock.
+    pub fn try_capture_task(
+        &self,
+        id: Id,
+        project_id: Id,
+        title: &str,
+        project_revision: &str,
+    ) -> Result<PersistedDocument, WriteError> {
+        validate_markdown(title, "").map_err(WriteError::InvalidDocument)?;
+        VaultStore::new(&self.root, self.timezone).try_capture_task(
+            Task::new(id, project_id),
+            title,
+            "",
+            project_revision,
+        )
+    }
+
     /// Captures an unclassified item after applying the shared Markdown policy.
     pub fn capture_inbox_entry(
         &self,

@@ -98,6 +98,20 @@ pub(crate) fn run(root: &Path, bin_dir: &Path) -> Result<()> {
     })?;
     smoke.read_timer_in_tui(started_id)?;
 
+    const CAPTURED_TASK: &str = "Task from systemd smoke";
+    crate::smoke::drive_default_tui(
+        smoke.client(),
+        &[
+            ("Month", " ul ct"),
+            ("Title", &format!("{CAPTURED_TASK}\r")),
+            ("Task saved", "q"),
+        ],
+    )?;
+    ensure!(
+        smoke.cli(&["outline"])?.contains(CAPTURED_TASK),
+        "the Task captured over IPC is absent from the Vault"
+    );
+
     checked_output(
         &mut service.systemctl(&["kill", "--signal=KILL", "--kill-whom=all"]),
         "killing the transient service to test restart",
@@ -138,7 +152,9 @@ pub(crate) fn run(root: &Path, bin_dir: &Path) -> Result<()> {
         "stopping the transient service",
     )?;
     service.diagnostics = false;
-    println!("systemd user service smoke passed (TUI reopen, timer recovery, and focus report)");
+    println!(
+        "systemd user service smoke passed (TUI reopen, Task capture, timer recovery, and focus report)"
+    );
     Ok(())
 }
 

@@ -904,24 +904,52 @@ impl VaultStore {
 
     /// Captures a Task under its Project's `tasks/<uuid>.md` without replacing an existing file.
     pub fn capture_task(&self, request: CaptureTask) -> Result<PersistedDocument, WriteError> {
-        let (_lock, vault) = self.locked_snapshot()?;
-        let project_id = request.task.project_id;
+        self.capture_task_with(
+            request.task,
+            &request.title,
+            &request.body,
+            lock,
+            |revision| revision == &request.expected_revision,
+        )
+    }
+
+    /// Captures a Task using a cross-process revision digest, with no wait for the writer lock.
+    pub fn try_capture_task(
+        &self,
+        task: Task,
+        title: &str,
+        body: &str,
+        project_revision: &str,
+    ) -> Result<PersistedDocument, WriteError> {
+        self.capture_task_with(task, title, body, try_lock, |revision| {
+            revision.digest() == project_revision
+        })
+    }
+
+    fn capture_task_with(
+        &self,
+        task: Task,
+        title: &str,
+        body: &str,
+        acquire_lock: fn(&Path) -> Result<File>,
+        matches_revision: impl FnOnce(&Revision) -> bool,
+    ) -> Result<PersistedDocument, WriteError> {
+        let (_lock, vault) = self.locked_snapshot_with(acquire_lock)?;
+        let project_id = task.project_id;
         let project = vault
             .projects
             .get(&project_id)
             .ok_or(WriteError::ProjectNotFound { id: project_id })?;
-        check_revision(&vault, project_id, &request.expected_revision)?;
-        let id = request.task.id;
+        let revision = vault
+            .revision(project_id)
+            .filter(|revision| matches_revision(revision))
+            .ok_or(WriteError::StaleRevision { id: project_id })?;
+        let id = task.id;
         check_new_id(&vault, id)?;
-        let source = document::render(
-            "mcbtodo.task/v1",
-            &request.task,
-            &request.title,
-            &request.body,
-        )
-        .map_err(WriteError::InvalidDocument)?;
+        let source = document::render("mcbtodo.task/v1", &task, title, body)
+            .map_err(WriteError::InvalidDocument)?;
         publish_child(&project.path, "tasks", id, source, || {
-            check_on_disk(&project.path, project_id, &request.expected_revision)?;
+            check_on_disk(&project.path, project_id, revision)?;
             Ok(())
         })
     }
@@ -1556,7 +1584,14 @@ impl VaultStore {
     }
 
     fn locked_snapshot(&self) -> Result<(LockedRoot, Vault), WriteError> {
-        let lock = self.lock_root()?;
+        self.locked_snapshot_with(lock)
+    }
+
+    fn locked_snapshot_with(
+        &self,
+        acquire_lock: fn(&Path) -> Result<File>,
+    ) -> Result<(LockedRoot, Vault), WriteError> {
+        let lock = self.lock_root_with(acquire_lock)?;
         let vault = Vault::load(&lock.root, self.timezone).map_err(WriteError::InvalidVault)?;
         if let Some(journal) = lock.completions.as_ref()
             && let Some(pending) = journal.pending().map_err(WriteError::Storage)?
@@ -1564,10 +1599,6 @@ impl VaultStore {
             reconcile_completion(journal, pending, &vault)?;
         }
         Ok((lock, vault))
-    }
-
-    fn lock_root(&self) -> Result<LockedRoot, WriteError> {
-        self.lock_root_with(lock)
     }
 
     fn lock_root_with(

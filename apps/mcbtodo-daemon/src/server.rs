@@ -5,13 +5,16 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 use chrono::Datelike;
 use chrono_tz::Tz;
+use mcbtodo_application::VaultCommands;
 use mcbtodo_execution::notification::NotifySend;
 use mcbtodo_platform::WorkspacePaths;
 use mcbtodo_protocol::{ErrorCode, Request, Response};
 use mcbtodo_storage_sqlite::focus::FocusStore;
 use mcbtodo_storage_sqlite::run_store::RunStore;
+use mcbtodo_vault::WriteError;
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::io::Errno;
+use uuid::Uuid;
 
 use crate::endpoint::Endpoint;
 use crate::notifications::{DesktopNotifications, reminders::ReminderPoller};
@@ -196,6 +199,18 @@ impl Server {
     fn reply(&mut self, request: Request) -> Response {
         match request {
             Request::Workflow(command) => self.runtime.handle(command),
+            Request::CaptureTask {
+                task_id,
+                project_id,
+                project_revision,
+                title,
+            } => capture_task(
+                self.runtime.paths(),
+                task_id,
+                project_id,
+                &project_revision,
+                &title,
+            ),
             Request::ListNotifications { before } => {
                 match self.runtime.notifications().workflow_page(before) {
                     Ok(page) => Response::Notifications(page),
@@ -255,6 +270,74 @@ impl Server {
             },
         }
     }
+}
+
+fn capture_task(
+    paths: &WorkspacePaths,
+    task_id: Uuid,
+    project_id: Uuid,
+    project_revision: &str,
+    title: &str,
+) -> Response {
+    let timezone = match paths.load_config() {
+        Ok(config) => config.timezone,
+        Err(error) => {
+            eprintln!(
+                "mcbtodo-daemon: loading workspace configuration for Task capture: {error:#}"
+            );
+            return Response::Error {
+                code: ErrorCode::Internal,
+                message: "could not load workspace configuration".into(),
+            };
+        }
+    };
+    let result = VaultCommands::new(paths.vault_root(), timezone).try_capture_task(
+        task_id,
+        project_id,
+        title,
+        project_revision,
+    );
+    let error = match result {
+        Ok(_) => {
+            return Response::TaskCaptured {
+                task_id,
+                synced: true,
+            };
+        }
+        Err(WriteError::PublishedButNotSynced { source, .. }) => {
+            eprintln!("mcbtodo-daemon: syncing published Task {task_id}: {source}");
+            return Response::TaskCaptured {
+                task_id,
+                synced: false,
+            };
+        }
+        Err(error) => error,
+    };
+    let (code, message) = match &error {
+        WriteError::StaleRevision { .. } | WriteError::ProjectNotFound { .. } => {
+            (ErrorCode::StaleRevision, "Project changed".into())
+        }
+        WriteError::DuplicateId { .. } | WriteError::DestinationExists { .. } => (
+            ErrorCode::Conflict,
+            format!("Task ID {task_id} is already in use"),
+        ),
+        WriteError::Storage(cause)
+            if cause
+                .downcast_ref::<io::Error>()
+                .is_some_and(|error| error.kind() == io::ErrorKind::WouldBlock) =>
+        {
+            (ErrorCode::Conflict, "Vault is busy".into())
+        }
+        WriteError::InvalidDocument(_) => (ErrorCode::InvalidRequest, error.to_string()),
+        _ => {
+            eprintln!("mcbtodo-daemon: capturing Task {task_id}: {error:#}");
+            (
+                ErrorCode::Internal,
+                "could not save Task to the Vault".into(),
+            )
+        }
+    };
+    Response::Error { code, message }
 }
 
 #[cfg(test)]

@@ -79,7 +79,8 @@ impl Timer {
                 Request::Workflow(_)
                 | Request::FocusReport { .. }
                 | Request::ListNotifications { .. }
-                | Request::ListReminderNotifications { .. },
+                | Request::ListReminderNotifications { .. }
+                | Request::CaptureTask { .. },
                 _,
             ) => {
                 return Ok(Err("expected a timer command"));

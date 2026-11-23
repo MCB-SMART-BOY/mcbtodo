@@ -22,6 +22,97 @@ fn status(server: &mut Server, path: PathBuf, command: Request) -> Response {
 }
 
 #[test]
+fn task_capture_checks_the_project_revision_and_writer_lock_over_ipc() -> Result<()> {
+    use mcbtodo_domain::{Id, Project};
+    use mcbtodo_vault::{CreateProject, Vault, VaultStore};
+
+    let dir = private_tempdir()?;
+    let paths = WorkspacePaths::from_home(dir.path().to_owned());
+    paths.initialize()?;
+    let root = paths.vault_root();
+    let timezone = paths.load_config()?.timezone;
+    let project_id = Id::new_v4();
+    let task_id = Id::new_v4();
+    let project = VaultStore::new(&root, timezone).create_project(CreateProject {
+        project: Project {
+            id: project_id,
+            status: Default::default(),
+            active_period: None,
+            deadline: None,
+            tags: Vec::new(),
+        },
+        slug: Some("capture".into()),
+        title: "Capture test".into(),
+        body: String::new(),
+    })?;
+    let request = |project_revision| Request::CaptureTask {
+        task_id,
+        project_id,
+        project_revision,
+        title: "Call the team".into(),
+    };
+    let socket = paths.socket_path();
+    let mut server = Server::open(paths, crate::DEFAULT_WORKER_SLOTS)?;
+    let lock = fs::File::options()
+        .write(true)
+        .open(root.join(".mcbtodo-vault.lock"))?;
+    lock.lock()?;
+    assert!(matches!(
+        status(
+            &mut server,
+            socket.clone(),
+            request(project.revision.digest())
+        ),
+        Response::Error {
+            code: ErrorCode::Conflict,
+            ..
+        }
+    ));
+    drop(lock);
+
+    let mut edited = fs::read_to_string(&project.path)?;
+    edited.push_str("\nExternal edit\n");
+    fs::write(&project.path, &edited)?;
+    assert!(matches!(
+        status(
+            &mut server,
+            socket.clone(),
+            request(project.revision.digest())
+        ),
+        Response::Error {
+            code: ErrorCode::StaleRevision,
+            ..
+        }
+    ));
+    assert!(!root.join("projects/capture/tasks").exists());
+    let current = Vault::load(&root, timezone)?;
+    let command = request(current.revision(project_id).unwrap().digest());
+    assert_eq!(
+        status(&mut server, socket.clone(), command.clone()),
+        Response::TaskCaptured {
+            task_id,
+            synced: true
+        }
+    );
+    assert!(matches!(
+        status(&mut server, socket, command),
+        Response::Error {
+            code: ErrorCode::Conflict,
+            ..
+        }
+    ));
+    assert_eq!(fs::read_to_string(project.path)?, edited);
+    let saved = Vault::load(&root, timezone)?;
+    let rows = saved.outline();
+    assert_eq!(rows.len(), 2);
+    assert!(
+        rows.iter()
+            .any(|row| row.id == task_id && row.title == "Call the team")
+    );
+    Ok(())
+}
+
+#[test]
 fn daemon_answers_commands_and_recovers_running_timer_over_ipc() -> anyhow::Result<()> {
     let dir = private_tempdir()?;
     let socket = dir.path().join("s");

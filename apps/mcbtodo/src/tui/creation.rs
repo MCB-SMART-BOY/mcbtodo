@@ -5,11 +5,12 @@ use chrono_tz::Tz;
 use crossterm::event::KeyCode;
 use mcbtodo_application::VaultCommands;
 use mcbtodo_domain::{
-    Availability, CalendarEvent, Id, Priority, Project, Task,
+    Availability, CalendarEvent, Id, Project, Task,
     recurrence::ReminderSchedule,
     time::{DateSpan, Deadline, Span, ZonedMoment},
 };
 use mcbtodo_platform::WorkspacePaths;
+use mcbtodo_protocol::{ErrorCode, ProtocolError, Request, Response};
 use mcbtodo_vault::{Revision, Vault, WriteError};
 
 use super::{Action, Overlay, State, View};
@@ -353,7 +354,13 @@ impl State {
         };
     }
 
-    pub(super) fn create_task(&mut self, root: &Path, vault: &mut Vault, request: Submission) {
+    pub(super) fn create_task(
+        &mut self,
+        root: &Path,
+        vault: &mut Vault,
+        paths: &WorkspacePaths,
+        request: Submission,
+    ) {
         let Schedule::Task {
             project_id,
             expected_revision,
@@ -362,35 +369,57 @@ impl State {
             unreachable!("create_task receives a task submission");
         };
         let id = Id::new_v4();
-        let title = request.title;
-        let saved = VaultCommands::new(root, vault.timezone()).capture_task(
-            Task {
+        let use_daemon = if cfg!(target_os = "linux") {
+            match paths.is_default_vault(root) {
+                Ok(value) => value,
+                Err(error) => {
+                    self.message = format!("Task capture failed · {error:#}");
+                    return;
+                }
+            }
+        } else {
+            false
+        };
+        let saved = if use_daemon {
+            capture_task_via_daemon(
+                paths,
                 id,
                 project_id,
-                status: Default::default(),
-                priority: Priority::default(),
-                active_period: None,
-                deadline: None,
-                recurrence: None,
-                occurrence: None,
-                tags: Vec::new(),
-            },
-            title,
-            String::new(),
-            expected_revision,
-        );
+                expected_revision.digest(),
+                request.title,
+            )
+        } else {
+            match VaultCommands::new(root, vault.timezone()).capture_task(
+                Task::new(id, project_id),
+                request.title,
+                String::new(),
+                expected_revision,
+            ) {
+                Ok(_) => Ok("Task saved".to_owned()),
+                Err(WriteError::StaleRevision { .. } | WriteError::ProjectNotFound { .. }) => {
+                    Err(TaskCaptureError::ProjectChanged)
+                }
+                Err(WriteError::PublishedButNotSynced { source, .. }) => {
+                    Ok(format!("Task published · directory sync failed: {source}"))
+                }
+                Err(error) => Err(TaskCaptureError::Rejected(error.to_string())),
+            }
+        };
         let saved = match saved {
-            Ok(_) => "Task saved".to_owned(),
-            Err(WriteError::StaleRevision { .. }) => {
+            Ok(message) => message,
+            Err(TaskCaptureError::ProjectChanged) => {
                 self.message =
                     "Project changed · Esc, reload the Vault, then reopen Task capture".into();
                 return;
             }
-            Err(WriteError::PublishedButNotSynced { source, .. }) => {
-                format!("Task published · directory sync failed: {source}")
+            Err(TaskCaptureError::Rejected(message)) => {
+                self.message = format!("Task capture failed · {message}");
+                return;
             }
-            Err(error) => {
-                self.message = format!("Task capture failed · {error:#}");
+            Err(TaskCaptureError::Unknown) => {
+                self.overlay = Overlay::None;
+                self.reload(root, vault);
+                self.message = format!("Task outcome unknown · Check UUID {id} before retrying");
                 return;
             }
         };
@@ -404,5 +433,55 @@ impl State {
         } else {
             self.message = format!("{saved} · {}", self.message);
         }
+    }
+}
+
+enum TaskCaptureError {
+    ProjectChanged,
+    Rejected(String),
+    Unknown,
+}
+
+fn capture_task_via_daemon(
+    paths: &WorkspacePaths,
+    task_id: Id,
+    project_id: Id,
+    project_revision: String,
+    title: String,
+) -> Result<String, TaskCaptureError> {
+    let response = mcbtodo_protocol::request(
+        paths.socket_path(),
+        Request::CaptureTask {
+            task_id,
+            project_id,
+            project_revision,
+            title,
+        },
+    );
+    match response {
+        Ok(Response::TaskCaptured {
+            task_id: id,
+            synced,
+        }) if id == task_id => Ok(if synced {
+            "Task saved".into()
+        } else {
+            format!("Task {id} published · directory sync could not be confirmed")
+        }),
+        Ok(Response::Error {
+            code: ErrorCode::StaleRevision,
+            ..
+        }) => Err(TaskCaptureError::ProjectChanged),
+        Ok(Response::Error { message, .. }) => Err(TaskCaptureError::Rejected(message)),
+        Err(ProtocolError::Io(error))
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+            ) =>
+        {
+            Err(TaskCaptureError::Rejected(
+                "Start mcbtodo-daemon and try again".into(),
+            ))
+        }
+        _ => Err(TaskCaptureError::Unknown),
     }
 }

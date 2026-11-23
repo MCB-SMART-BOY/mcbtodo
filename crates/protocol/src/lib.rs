@@ -39,6 +39,14 @@ pub enum Request {
     ListReminderNotifications {
         before: Option<Uuid>,
     },
+    /// Capture a Task under a Project in the daemon's default Vault.
+    CaptureTask {
+        task_id: Uuid,
+        project_id: Uuid,
+        /// Digest of the Project revision observed when opening the capture form.
+        project_revision: String,
+        title: String,
+    },
     Workflow(workflow::WorkflowRequest),
 }
 
@@ -49,14 +57,23 @@ pub enum Response {
     FocusReport(focus::DailyFocusReport),
     Notifications(notifications::NotificationPage),
     ReminderNotifications(notifications::ReminderNotificationPage),
+    /// The Task is visible. `synced` is false if its durability is uncertain.
+    TaskCaptured {
+        task_id: Uuid,
+        synced: bool,
+    },
     Workflow(workflow::WorkflowResponse),
-    Error { code: ErrorCode, message: String },
+    Error {
+        code: ErrorCode,
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
     Conflict,
+    StaleRevision,
     InvalidRequest,
     UnsupportedVersion,
     NotFound,

@@ -22,6 +22,7 @@
 - Provider 能力声明仅供选择。Approval、Policy、Budget、幂等、revision 授权、取消与结果写入由宿主控制。第三方 sandbox 是附加保障。执行所需隔离不可用时默认拒绝。`AllowUnsandboxed`、`AllowSideEffectFreeOnly` 或 `RequireUserConfirmation` 只有在明确策略与验证支持时才可使用。
 - Worker 从执行层接收明确的完成、取消或结果不明状态。派发结果不明时，Worker 上报绑定 Attempt 的固定状态和所选宿主适配器 ID。Daemon 保存 `outcome_unknown` 并保留已占用预算。运行 Worker 进程用例，检查不确定结果不携带 Provider 错误原文或工件。
 - `cargo run` 默认可启动 TUI。可选工具缺失只影响相应能力。配置语义、CLI/TUI 操作和现有数据保持兼容。必要的不兼容变化须附恢复与迁移路径。
+- 将默认 Vault 的某项 TUI 写入迁入 Daemon 时，验证 revision 冲突、锁竞争和连接中断。连接中断后保留核对写入结果所需的对象 UUID。外部 Vault 的前台路径需要独立回归测试。
 
 ## 3. Phase 1 — Stable Ports
 

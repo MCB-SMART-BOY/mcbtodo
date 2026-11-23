@@ -93,7 +93,8 @@ cargo xtask smoke-systemd --bin-dir target/debug
 
 Run the systemd smoke only in a Linux user session with a reachable user manager.
 It opens the TUI twice against the same service and verifies that the focus
-session advances between clients. It exercises checkpoint recovery after the
+session advances between clients. It captures a Task through the service and
+reads it back from the Vault. It exercises checkpoint recovery after the
 service restarts.
 
 For Cargo installation changes, verify all three binaries in the same Cargo
