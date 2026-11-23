@@ -6,12 +6,13 @@ use anyhow::{Context, Result};
 use chrono::Datelike;
 use chrono_tz::Tz;
 use mcbtodo_application::VaultCommands;
+use mcbtodo_domain::time::DateSpan;
 use mcbtodo_execution::notification::NotifySend;
 use mcbtodo_platform::WorkspacePaths;
 use mcbtodo_protocol::{ErrorCode, Request, Response};
 use mcbtodo_storage_sqlite::focus::FocusStore;
 use mcbtodo_storage_sqlite::run_store::RunStore;
-use mcbtodo_vault::WriteError;
+use mcbtodo_vault::{PersistedDocument, WriteError};
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::io::Errno;
 use uuid::Uuid;
@@ -204,13 +205,38 @@ impl Server {
                 project_id,
                 project_revision,
                 title,
-            } => capture_task(
+            } => create_in_vault(
                 self.runtime.paths(),
+                "Task",
                 task_id,
-                project_id,
-                &project_revision,
-                &title,
+                |commands| {
+                    commands.try_capture_task(task_id, project_id, &title, &project_revision)
+                },
+                |synced| Response::TaskCaptured { task_id, synced },
             ),
+            Request::CreateAllDayEvent {
+                event_id,
+                title,
+                start,
+                through,
+            } => {
+                let span = match DateSpan::new(start, through) {
+                    Ok(span) => span,
+                    Err(error) => {
+                        return Response::Error {
+                            code: ErrorCode::InvalidRequest,
+                            message: error.to_string(),
+                        };
+                    }
+                };
+                create_in_vault(
+                    self.runtime.paths(),
+                    "All-day event",
+                    event_id,
+                    |commands| commands.try_create_all_day_event(event_id, span, title),
+                    |synced| Response::AllDayEventCreated { event_id, synced },
+                )
+            }
             Request::ListNotifications { before } => {
                 match self.runtime.notifications().workflow_page(before) {
                     Ok(page) => Response::Notifications(page),
@@ -272,18 +298,18 @@ impl Server {
     }
 }
 
-fn capture_task(
+fn create_in_vault(
     paths: &WorkspacePaths,
-    task_id: Uuid,
-    project_id: Uuid,
-    project_revision: &str,
-    title: &str,
+    label: &str,
+    id: Uuid,
+    create: impl FnOnce(VaultCommands) -> Result<PersistedDocument, WriteError>,
+    created: impl FnOnce(bool) -> Response,
 ) -> Response {
     let timezone = match paths.load_config() {
         Ok(config) => config.timezone,
         Err(error) => {
             eprintln!(
-                "mcbtodo-daemon: loading workspace configuration for Task capture: {error:#}"
+                "mcbtodo-daemon: loading workspace configuration for {label} creation: {error:#}"
             );
             return Response::Error {
                 code: ErrorCode::Internal,
@@ -291,25 +317,11 @@ fn capture_task(
             };
         }
     };
-    let result = VaultCommands::new(paths.vault_root(), timezone).try_capture_task(
-        task_id,
-        project_id,
-        title,
-        project_revision,
-    );
-    let error = match result {
-        Ok(_) => {
-            return Response::TaskCaptured {
-                task_id,
-                synced: true,
-            };
-        }
+    let error = match create(VaultCommands::new(paths.vault_root(), timezone)) {
+        Ok(_) => return created(true),
         Err(WriteError::PublishedButNotSynced { source, .. }) => {
-            eprintln!("mcbtodo-daemon: syncing published Task {task_id}: {source}");
-            return Response::TaskCaptured {
-                task_id,
-                synced: false,
-            };
+            eprintln!("mcbtodo-daemon: syncing published {label} {id}: {source}");
+            return created(false);
         }
         Err(error) => error,
     };
@@ -319,7 +331,7 @@ fn capture_task(
         }
         WriteError::DuplicateId { .. } | WriteError::DestinationExists { .. } => (
             ErrorCode::Conflict,
-            format!("Task ID {task_id} is already in use"),
+            format!("{label} ID {id} is already in use"),
         ),
         WriteError::Storage(cause)
             if cause
@@ -330,10 +342,10 @@ fn capture_task(
         }
         WriteError::InvalidDocument(_) => (ErrorCode::InvalidRequest, error.to_string()),
         _ => {
-            eprintln!("mcbtodo-daemon: capturing Task {task_id}: {error:#}");
+            eprintln!("mcbtodo-daemon: creating {label} {id}: {error:#}");
             (
                 ErrorCode::Internal,
-                "could not save Task to the Vault".into(),
+                format!("could not save {label} to the Vault"),
             )
         }
     };

@@ -47,6 +47,13 @@ pub enum Request {
         project_revision: String,
         title: String,
     },
+    /// Create a busy, non-recurring all-day event in the daemon's default Vault.
+    CreateAllDayEvent {
+        event_id: Uuid,
+        title: String,
+        start: NaiveDate,
+        through: NaiveDate,
+    },
     Workflow(workflow::WorkflowRequest),
 }
 
@@ -60,6 +67,11 @@ pub enum Response {
     /// The Task is visible. `synced` is false if its durability is uncertain.
     TaskCaptured {
         task_id: Uuid,
+        synced: bool,
+    },
+    /// The event is visible. `synced` is false if its durability is uncertain.
+    AllDayEventCreated {
+        event_id: Uuid,
         synced: bool,
     },
     Workflow(workflow::WorkflowResponse),

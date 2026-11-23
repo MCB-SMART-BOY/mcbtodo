@@ -113,6 +113,80 @@ fn task_capture_checks_the_project_revision_and_writer_lock_over_ipc() -> Result
 }
 
 #[test]
+fn all_day_event_creation_validates_dates_and_refuses_duplicate_ids_over_ipc() -> Result<()> {
+    use chrono::NaiveDate;
+    use mcbtodo_domain::{CalendarKind, Occurrence, time::Span};
+    use mcbtodo_vault::Vault;
+
+    let dir = private_tempdir()?;
+    let paths = WorkspacePaths::from_home(dir.path().to_owned());
+    paths.initialize()?;
+    let root = paths.vault_root();
+    let timezone = paths.load_config()?.timezone;
+    let event_id = Uuid::new_v4();
+    let start = NaiveDate::from_ymd_opt(2026, 11, 30).unwrap();
+    let through = start.succ_opt().unwrap();
+    let command = |start, through| Request::CreateAllDayEvent {
+        event_id,
+        title: "Campus event".into(),
+        start,
+        through,
+    };
+    let socket = paths.socket_path();
+    let mut server = Server::open(paths, crate::DEFAULT_WORKER_SLOTS)?;
+    assert!(matches!(
+        status(&mut server, socket.clone(), command(through, start)),
+        Response::Error {
+            code: ErrorCode::InvalidRequest,
+            ..
+        }
+    ));
+    assert!(Vault::load(&root, timezone)?.calendar().is_empty());
+
+    let lock = fs::File::options()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(root.join(".mcbtodo-vault.lock"))?;
+    lock.lock()?;
+    assert!(matches!(
+        status(&mut server, socket.clone(), command(start, through)),
+        Response::Error {
+            code: ErrorCode::Conflict,
+            ..
+        }
+    ));
+    drop(lock);
+
+    assert_eq!(
+        status(&mut server, socket.clone(), command(start, through)),
+        Response::AllDayEventCreated {
+            event_id,
+            synced: true,
+        }
+    );
+    assert!(matches!(
+        status(&mut server, socket, command(start, through)),
+        Response::Error {
+            code: ErrorCode::Conflict,
+            ..
+        }
+    ));
+    let saved = Vault::load(&root, timezone)?;
+    let entries = saved.calendar();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].id, event_id);
+    assert_eq!(entries[0].kind, CalendarKind::Event);
+    assert!(entries[0].busy);
+    assert!(matches!(
+        entries[0].occurrence,
+        Occurrence::Span(Span::DateSpan(span))
+            if span.start() == start && span.through() == through
+    ));
+    Ok(())
+}
+
+#[test]
 fn daemon_answers_commands_and_recovers_running_timer_over_ipc() -> anyhow::Result<()> {
     let dir = private_tempdir()?;
     let socket = dir.path().join("s");

@@ -5,7 +5,7 @@ use chrono_tz::Tz;
 use crossterm::event::KeyCode;
 use mcbtodo_application::VaultCommands;
 use mcbtodo_domain::{
-    Availability, CalendarEvent, Id, Project, Task,
+    Id, Project, Task,
     recurrence::ReminderSchedule,
     time::{DateSpan, Deadline, Span, ZonedMoment},
 };
@@ -224,7 +224,13 @@ impl Form {
 }
 
 impl State {
-    pub(super) fn create_calendar(&mut self, root: &Path, vault: &mut Vault, request: Submission) {
+    pub(super) fn create_calendar(
+        &mut self,
+        root: &Path,
+        vault: &mut Vault,
+        paths: &WorkspacePaths,
+        request: Submission,
+    ) {
         let commands = VaultCommands::new(root, vault.timezone());
         let id = Id::new_v4();
         let title = request.title;
@@ -233,48 +239,65 @@ impl State {
             Schedule::Project(span) => (
                 Kind::Project,
                 span.start(),
-                commands.create_project(
-                    Project {
-                        id,
-                        status: Default::default(),
-                        active_period: Some(Span::DateSpan(span)),
-                        deadline: None,
-                        tags: Vec::new(),
-                    },
-                    None,
-                    title,
-                    body,
+                local_publication(
+                    "Project",
+                    commands.create_project(
+                        Project {
+                            id,
+                            status: Default::default(),
+                            active_period: Some(Span::DateSpan(span)),
+                            deadline: None,
+                            tags: Vec::new(),
+                        },
+                        None,
+                        title,
+                        body,
+                    ),
                 ),
             ),
-            Schedule::Event(span) => (
-                Kind::Event,
-                span.start(),
-                commands.create_event(
-                    CalendarEvent {
-                        id,
-                        when: Span::DateSpan(span),
-                        recurrence: None,
-                        availability: Availability::Busy,
-                        tags: Vec::new(),
-                    },
-                    title,
-                    body,
-                ),
-            ),
+            Schedule::Event(span) => {
+                let label = Kind::Event.label();
+                let saved = match is_daemon_vault(paths, root) {
+                    Ok(true) => create_via_daemon(
+                        paths,
+                        Request::CreateAllDayEvent {
+                            event_id: id,
+                            title,
+                            start: span.start(),
+                            through: span.through(),
+                        },
+                        |response| match response {
+                            Response::AllDayEventCreated { event_id, synced } if event_id == id => {
+                                Some(synced)
+                            }
+                            _ => None,
+                        },
+                    )
+                    .map(|synced| publication_message(label, id, synced)),
+                    Ok(false) => {
+                        local_publication(label, commands.create_all_day_event(id, span, title))
+                    }
+                    Err(error) => Err(CreationError::Rejected(format!("{error:#}"))),
+                };
+                (Kind::Event, span.start(), saved)
+            }
             Schedule::Deadline(day) => (
                 Kind::Deadline,
                 day,
-                commands.create_project(
-                    Project {
-                        id,
-                        status: Default::default(),
-                        active_period: None,
-                        deadline: Some(Deadline::Date { value: day }),
-                        tags: Vec::new(),
-                    },
-                    None,
-                    title,
-                    body,
+                local_publication(
+                    "Deadline",
+                    commands.create_project(
+                        Project {
+                            id,
+                            status: Default::default(),
+                            active_period: None,
+                            deadline: Some(Deadline::Date { value: day }),
+                            tags: Vec::new(),
+                        },
+                        None,
+                        title,
+                        body,
+                    ),
                 ),
             ),
             Schedule::Reminder { .. } => unreachable!("reminders use create_reminder"),
@@ -282,12 +305,19 @@ impl State {
         };
         let label = kind.label();
         let saved = match saved {
-            Ok(_) => format!("{label} saved"),
-            Err(WriteError::PublishedButNotSynced { source, .. }) => {
-                format!("{label} published · directory sync failed: {source}")
+            Ok(message) => message,
+            Err(CreationError::Unknown) => {
+                self.overlay = Overlay::None;
+                self.reload(root, vault);
+                self.message = format!("{label} outcome unknown · Check UUID {id} before retrying");
+                return;
             }
-            Err(error) => {
-                self.message = format!("{label} failed · {error:#}");
+            Err(CreationError::Rejected(message)) => {
+                self.message = format!("{label} failed · {message}");
+                return;
+            }
+            Err(CreationError::StaleRevision) => {
+                self.message = format!("{label} failed · Vault changed");
                 return;
             }
         };
@@ -369,25 +399,28 @@ impl State {
             unreachable!("create_task receives a task submission");
         };
         let id = Id::new_v4();
-        let use_daemon = if cfg!(target_os = "linux") {
-            match paths.is_default_vault(root) {
-                Ok(value) => value,
-                Err(error) => {
-                    self.message = format!("Task capture failed · {error:#}");
-                    return;
-                }
+        let use_daemon = match is_daemon_vault(paths, root) {
+            Ok(value) => value,
+            Err(error) => {
+                self.message = format!("Task capture failed · {error:#}");
+                return;
             }
-        } else {
-            false
         };
         let saved = if use_daemon {
-            capture_task_via_daemon(
+            create_via_daemon(
                 paths,
-                id,
-                project_id,
-                expected_revision.digest(),
-                request.title,
+                Request::CaptureTask {
+                    task_id: id,
+                    project_id,
+                    project_revision: expected_revision.digest(),
+                    title: request.title,
+                },
+                |response| match response {
+                    Response::TaskCaptured { task_id, synced } if task_id == id => Some(synced),
+                    _ => None,
+                },
             )
+            .map(|synced| publication_message("Task", id, synced))
         } else {
             match VaultCommands::new(root, vault.timezone()).capture_task(
                 Task::new(id, project_id),
@@ -397,26 +430,26 @@ impl State {
             ) {
                 Ok(_) => Ok("Task saved".to_owned()),
                 Err(WriteError::StaleRevision { .. } | WriteError::ProjectNotFound { .. }) => {
-                    Err(TaskCaptureError::ProjectChanged)
+                    Err(CreationError::StaleRevision)
                 }
                 Err(WriteError::PublishedButNotSynced { source, .. }) => {
                     Ok(format!("Task published · directory sync failed: {source}"))
                 }
-                Err(error) => Err(TaskCaptureError::Rejected(error.to_string())),
+                Err(error) => Err(CreationError::Rejected(error.to_string())),
             }
         };
         let saved = match saved {
             Ok(message) => message,
-            Err(TaskCaptureError::ProjectChanged) => {
+            Err(CreationError::StaleRevision) => {
                 self.message =
                     "Project changed · Esc, reload the Vault, then reopen Task capture".into();
                 return;
             }
-            Err(TaskCaptureError::Rejected(message)) => {
+            Err(CreationError::Rejected(message)) => {
                 self.message = format!("Task capture failed · {message}");
                 return;
             }
-            Err(TaskCaptureError::Unknown) => {
+            Err(CreationError::Unknown) => {
                 self.overlay = Overlay::None;
                 self.reload(root, vault);
                 self.message = format!("Task outcome unknown · Check UUID {id} before retrying");
@@ -436,52 +469,63 @@ impl State {
     }
 }
 
-enum TaskCaptureError {
-    ProjectChanged,
+enum CreationError {
+    StaleRevision,
     Rejected(String),
     Unknown,
 }
 
-fn capture_task_via_daemon(
+fn is_daemon_vault(paths: &WorkspacePaths, root: &Path) -> anyhow::Result<bool> {
+    if cfg!(target_os = "linux") {
+        paths.is_default_vault(root)
+    } else {
+        Ok(false)
+    }
+}
+
+fn publication_message(label: &str, id: Id, synced: bool) -> String {
+    if synced {
+        format!("{label} saved")
+    } else {
+        format!("{label} {id} published · directory sync could not be confirmed")
+    }
+}
+
+fn local_publication(
+    label: &str,
+    result: Result<mcbtodo_vault::PersistedDocument, WriteError>,
+) -> Result<String, CreationError> {
+    match result {
+        Ok(_) => Ok(format!("{label} saved")),
+        Err(WriteError::PublishedButNotSynced { source, .. }) => Ok(format!(
+            "{label} published · directory sync failed: {source}"
+        )),
+        Err(error) => Err(CreationError::Rejected(format!("{error:#}"))),
+    }
+}
+
+fn create_via_daemon(
     paths: &WorkspacePaths,
-    task_id: Id,
-    project_id: Id,
-    project_revision: String,
-    title: String,
-) -> Result<String, TaskCaptureError> {
-    let response = mcbtodo_protocol::request(
-        paths.socket_path(),
-        Request::CaptureTask {
-            task_id,
-            project_id,
-            project_revision,
-            title,
-        },
-    );
-    match response {
-        Ok(Response::TaskCaptured {
-            task_id: id,
-            synced,
-        }) if id == task_id => Ok(if synced {
-            "Task saved".into()
-        } else {
-            format!("Task {id} published · directory sync could not be confirmed")
-        }),
+    request: Request,
+    confirmation: impl FnOnce(Response) -> Option<bool>,
+) -> Result<bool, CreationError> {
+    match mcbtodo_protocol::request(paths.socket_path(), request) {
         Ok(Response::Error {
             code: ErrorCode::StaleRevision,
             ..
-        }) => Err(TaskCaptureError::ProjectChanged),
-        Ok(Response::Error { message, .. }) => Err(TaskCaptureError::Rejected(message)),
+        }) => Err(CreationError::StaleRevision),
+        Ok(Response::Error { message, .. }) => Err(CreationError::Rejected(message)),
+        Ok(response) => confirmation(response).ok_or(CreationError::Unknown),
         Err(ProtocolError::Io(error))
             if matches!(
                 error.kind(),
                 std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
             ) =>
         {
-            Err(TaskCaptureError::Rejected(
+            Err(CreationError::Rejected(
                 "Start mcbtodo-daemon and try again".into(),
             ))
         }
-        _ => Err(TaskCaptureError::Unknown),
+        Err(_) => Err(CreationError::Unknown),
     }
 }

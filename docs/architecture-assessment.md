@@ -243,8 +243,7 @@ and rejection of a second submission using the same Task UUID. The TUI
 regressions cover the service-absent hint, an interrupted response without
 replay or local publication, and offline capture against an external Vault.
 The AArch64 systemd smoke drove the real TUI Task form and read the resulting
-Task from the isolated Vault. Other Vault mutations still use their existing
-entry points.
+Task from the isolated Vault.
 
 CI run `45095220559` passed both Linux jobs, both native foreground jobs,
 and both cross-target checks for default-Vault Task capture.
@@ -258,6 +257,15 @@ preserved the existing unit. The systemd smoke exercised the installed
 binaries in a transient user unit and verified TUI reopen, Task capture,
 timer recovery, and reports. Workspace checks passed 672 tests and the
 Daemon's Cargo package listing included the template.
+
+On 2026-11-23, Linux AArch64 testing extended this path to default-Vault
+all-day events. The Daemon IPC regression covers invalid ranges, writer-lock
+contention, duplicate UUID rejection, and inclusive endpoint persistence.
+TUI regressions cover form retention without a service and UUID reporting
+after a lost response, with no replay or foreground write. The systemd smoke
+created an event through the TUI and read the same busy event on November 30
+and December 1 and verified its absence on December 2. Other Vault mutations
+still use their existing entry points.
 
 ## Latest Review
 

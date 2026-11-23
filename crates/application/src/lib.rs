@@ -19,7 +19,7 @@ use mcbtodo_domain::{
     Availability, CalendarEntry, CalendarEvent, CalendarKind, EvidenceRef, Id, InboxEntry,
     Occurrence, Project, Task, TaskGraph, TimeBlock, WorkUnit, WorkflowRevisionHash,
     recurrence::{Reminder, ReminderSchedule},
-    time::{DateSpan, DateTimeSpan, Deadline},
+    time::{DateSpan, DateTimeSpan, Deadline, Span},
 };
 use mcbtodo_vault::{
     AddWorkUnitGraph, BindWorkflow, CaptureInboxEntry, CaptureTask, CompleteWorkUnit, CreateEvent,
@@ -40,6 +40,16 @@ pub struct CalendarEventDraft {
     pub event: CalendarEvent,
     pub title: String,
     pub body: String,
+}
+
+fn all_day_event(id: Id, span: DateSpan) -> CalendarEvent {
+    CalendarEvent {
+        id,
+        when: Span::DateSpan(span),
+        recurrence: None,
+        availability: Availability::Busy,
+        tags: Vec::new(),
+    }
 }
 
 /// Write-side application boundary for Vault-backed business commands.
@@ -90,6 +100,31 @@ impl VaultCommands {
     ) -> Result<PersistedDocument, WriteError> {
         validate_markdown(&title, &body).map_err(WriteError::InvalidDocument)?;
         VaultStore::new(&self.root, self.timezone).create_event(CreateEvent { event, title, body })
+    }
+
+    /// Creates the busy, non-recurring all-day event offered by the quick-create form.
+    pub fn create_all_day_event(
+        &self,
+        id: Id,
+        span: DateSpan,
+        title: String,
+    ) -> Result<PersistedDocument, WriteError> {
+        self.create_event(all_day_event(id, span), title, String::new())
+    }
+
+    /// Creates the same quick event without waiting for the writer lock.
+    pub fn try_create_all_day_event(
+        &self,
+        id: Id,
+        span: DateSpan,
+        title: String,
+    ) -> Result<PersistedDocument, WriteError> {
+        validate_markdown(&title, "").map_err(WriteError::InvalidDocument)?;
+        VaultStore::new(&self.root, self.timezone).try_create_event(CreateEvent {
+            event: all_day_event(id, span),
+            title,
+            body: String::new(),
+        })
     }
 
     /// Atomically publishes imported CalendarEvents after applying shared text validation.

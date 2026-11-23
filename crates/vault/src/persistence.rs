@@ -1480,7 +1480,20 @@ impl VaultStore {
 
     /// Publishes an independent calendar event under `calendar/`.
     pub fn create_event(&self, request: CreateEvent) -> Result<PersistedDocument, WriteError> {
-        let (lock, vault) = self.locked_snapshot()?;
+        self.create_event_with(request, lock)
+    }
+
+    /// Publishes an independent calendar event without waiting for the writer lock.
+    pub fn try_create_event(&self, request: CreateEvent) -> Result<PersistedDocument, WriteError> {
+        self.create_event_with(request, try_lock)
+    }
+
+    fn create_event_with(
+        &self,
+        request: CreateEvent,
+        acquire_lock: fn(&Path) -> Result<File>,
+    ) -> Result<PersistedDocument, WriteError> {
+        let (lock, vault) = self.locked_snapshot_with(acquire_lock)?;
         let id = request.event.id;
         check_new_id(&vault, id)?;
         let source = document::render(

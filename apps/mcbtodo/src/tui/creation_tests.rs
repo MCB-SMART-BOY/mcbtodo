@@ -252,8 +252,6 @@ fn default_task_capture_keeps_the_form_when_the_daemon_is_absent() {
 #[cfg(target_os = "linux")]
 #[test]
 fn default_task_capture_does_not_repeat_a_request_without_a_response() {
-    use std::{os::unix::net::UnixListener, thread, time::Instant};
-
     let home = tempfile::tempdir().unwrap();
     let paths = mcbtodo_platform::WorkspacePaths::from_home(home.path().to_owned());
     paths.initialize().unwrap();
@@ -266,30 +264,9 @@ fn default_task_capture_does_not_repeat_a_request_without_a_response() {
         panic!("expected task capture");
     };
 
-    let listener = UnixListener::bind(paths.socket_path()).unwrap();
-    listener.set_nonblocking(true).unwrap();
-    let server = thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(3);
-        let mut connection = loop {
-            match listener.accept() {
-                Ok((connection, _)) => break connection,
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    assert!(Instant::now() < deadline, "no Task request was sent");
-                    thread::sleep(Duration::from_millis(5));
-                }
-                Err(error) => panic!("accepting Task request: {error}"),
-            }
-        };
-        connection
-            .set_read_timeout(Some(Duration::from_secs(3)))
-            .unwrap();
-        let sent =
-            mcbtodo_protocol::wire::read::<mcbtodo_protocol::Request>(&mut connection).unwrap();
-        drop(connection);
-        (sent, listener)
+    let sent = disconnect_after_request(&paths, || {
+        state.create_task(&root, &mut vault, &paths, request);
     });
-    state.create_task(&root, &mut vault, &paths, request);
-    let (sent, listener) = server.join().unwrap();
     let mcbtodo_protocol::Request::CaptureTask {
         task_id,
         project_id: sent_project,
@@ -306,10 +283,39 @@ fn default_task_capture_does_not_repeat_a_request_without_a_response() {
     assert!(state.message.contains("outcome unknown"));
     assert!(state.message.contains(&task_id.to_string()));
     assert_eq!(Vault::load(&root, ZONE).unwrap().outline().len(), 1);
-    assert_eq!(
-        listener.accept().unwrap_err().kind(),
-        std::io::ErrorKind::WouldBlock
-    );
+}
+
+#[cfg(target_os = "linux")]
+fn disconnect_after_request(
+    paths: &WorkspacePaths,
+    submit: impl FnOnce(),
+) -> mcbtodo_protocol::Request {
+    use std::{io::ErrorKind, os::unix::net::UnixListener, thread, time::Instant};
+
+    let listener = UnixListener::bind(paths.socket_path()).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let server = thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut connection = loop {
+            match listener.accept() {
+                Ok((connection, _)) => break connection,
+                Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                    assert!(Instant::now() < deadline, "no creation request was sent");
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => panic!("accepting creation request: {error}"),
+            }
+        };
+        connection
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let sent = mcbtodo_protocol::wire::read(&mut connection).unwrap();
+        (sent, listener)
+    });
+    submit();
+    let (sent, listener) = server.join().unwrap();
+    assert_eq!(listener.accept().unwrap_err().kind(), ErrorKind::WouldBlock);
+    sent
 }
 
 #[test]
@@ -385,10 +391,11 @@ fn malformed_deadline_date_is_reported_instead_of_using_the_default() {
 
 fn save(state: &mut State, root: &Path, vault: &mut Vault, input: &str) -> Id {
     let before = Vault::load(root, vault.timezone()).unwrap();
+    let paths = WorkspacePaths::from_home(root.to_owned());
     let Action::CreateCalendar(submission) = press(state, vault, input) else {
         panic!("expected a calendar submission, got {}", state.message);
     };
-    state.create_calendar(root, vault, submission);
+    state.create_calendar(root, vault, &paths, submission);
     assert!(matches!(state.overlay, Overlay::None), "{}", state.message);
     let id = state.selected_document(vault).expect("saved item focused");
     assert!(before.revision(id).is_none());
@@ -477,7 +484,8 @@ fn month_selection_creates_an_inclusive_all_day_event_across_month_boundary() {
         panic!("expected all-day event creation");
     };
 
-    state.create_calendar(root.path(), &mut vault, request);
+    let paths = WorkspacePaths::from_home(root.path().to_owned());
+    state.create_calendar(root.path(), &mut vault, &paths, request);
     assert_eq!(state.message, "All-day event saved");
 
     let persisted = Vault::load(root.path(), ZONE).unwrap();
@@ -497,6 +505,64 @@ fn month_selection_creates_an_inclusive_all_day_event_across_month_boundary() {
             .all(|entry| entry.title != "Year-end event"),
         "inclusive event range must not extend beyond December 1"
     );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn default_all_day_event_keeps_its_draft_without_a_daemon() {
+    let home = tempfile::tempdir().unwrap();
+    let paths = WorkspacePaths::from_home(home.path().to_owned());
+    paths.initialize().unwrap();
+    let root = paths.vault_root();
+    let mut vault = Vault::load(&root, ZONE).unwrap();
+    let mut state = State::new(day("2026-11-30"));
+    let Action::CreateCalendar(request) = press(&mut state, &vault, "vl ceCampus event\n\n\n")
+    else {
+        panic!("expected all-day event creation");
+    };
+
+    state.create_calendar(&root, &mut vault, &paths, request);
+
+    assert!(matches!(state.overlay, Overlay::CreateForm(_)));
+    assert!(state.message.contains("Start mcbtodo-daemon"));
+    assert!(screen(&state, &vault, 80, 24).contains("Campus event"));
+    assert!(Vault::load(&root, ZONE).unwrap().calendar().is_empty());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn default_all_day_event_reports_its_identity_without_replaying_a_lost_response() {
+    let home = tempfile::tempdir().unwrap();
+    let paths = WorkspacePaths::from_home(home.path().to_owned());
+    paths.initialize().unwrap();
+    let root = paths.vault_root();
+    let mut vault = Vault::load(&root, ZONE).unwrap();
+    let mut state = State::new(day("2026-11-30"));
+    let Action::CreateCalendar(request) = press(&mut state, &vault, "vl ceCampus event\n\n\n")
+    else {
+        panic!("expected all-day event creation");
+    };
+
+    let sent = disconnect_after_request(&paths, || {
+        state.create_calendar(&root, &mut vault, &paths, request);
+    });
+
+    let mcbtodo_protocol::Request::CreateAllDayEvent {
+        event_id,
+        title,
+        start,
+        through,
+    } = sent
+    else {
+        panic!("expected an all-day event request");
+    };
+    assert_eq!(title, "Campus event");
+    assert_eq!(start, day("2026-11-30"));
+    assert_eq!(through, day("2026-12-01"));
+    assert!(matches!(state.overlay, Overlay::None));
+    assert!(state.message.contains("outcome unknown"));
+    assert!(state.message.contains(&event_id.to_string()));
+    assert!(Vault::load(&root, ZONE).unwrap().calendar().is_empty());
 }
 
 #[test]
@@ -532,7 +598,8 @@ fn failed_vault_write_leaves_form_open_for_retry() {
     else {
         panic!("expected a calendar submission");
     };
-    state.create_calendar(&root.path().join("missing"), &mut vault, request);
+    let paths = WorkspacePaths::from_home(root.path().to_owned());
+    state.create_calendar(&root.path().join("missing"), &mut vault, &paths, request);
     let rendered = screen(&state, &vault, 80, 14);
     assert!(rendered.contains("failed"), "{rendered}");
     assert!(rendered.contains("Retryable event"), "{rendered}");

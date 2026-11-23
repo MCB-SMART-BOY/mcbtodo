@@ -1459,7 +1459,7 @@ pub(super) fn run(
                     };
                 }
                 Action::CreateCalendar(request) => {
-                    state.create_calendar(root, &mut vault, request);
+                    state.create_calendar(root, &mut vault, paths, request);
                 }
                 Action::CreateReminder(request) => {
                     state.create_reminder(root, &mut vault, paths, request);

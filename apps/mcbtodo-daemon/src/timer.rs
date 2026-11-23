@@ -80,7 +80,8 @@ impl Timer {
                 | Request::FocusReport { .. }
                 | Request::ListNotifications { .. }
                 | Request::ListReminderNotifications { .. }
-                | Request::CaptureTask { .. },
+                | Request::CaptureTask { .. }
+                | Request::CreateAllDayEvent { .. },
                 _,
             ) => {
                 return Ok(Err("expected a timer command"));

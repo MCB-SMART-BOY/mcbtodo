@@ -112,6 +112,45 @@ pub(crate) fn run(root: &Path, bin_dir: &Path) -> Result<()> {
         "the Task captured over IPC is absent from the Vault"
     );
 
+    const CAPTURED_EVENT: &str = "All-day event from systemd smoke";
+    let mut client = smoke.client();
+    client.args(["tui", "--date", "2026-11-30"]);
+    crate::smoke::drive_default_tui(
+        client,
+        &[
+            ("Month", "vl ce"),
+            ("Title", &format!("{CAPTURED_EVENT}\r\r\r")),
+            ("All-day event saved", "q"),
+        ],
+    )?;
+    let mut created_id = None;
+    for (day, expected) in [
+        ("2026-11-30", true),
+        ("2026-12-01", true),
+        ("2026-12-02", false),
+    ] {
+        let calendar = smoke.json(&["calendar", "--date", day, "--json"])?;
+        let events: Vec<_> = calendar
+            .as_array()
+            .context("calendar response is not an array")?
+            .iter()
+            .filter(|item| item["title"] == CAPTURED_EVENT)
+            .collect();
+        ensure!(
+            events.len() == usize::from(expected),
+            "unexpected all-day event count on {day}: {events:?}"
+        );
+        if let [event] = events.as_slice() {
+            let id = event["id"].as_str().context("event has no ID")?;
+            ensure!(
+                event["kind"] == "event"
+                    && event["busy"] == true
+                    && *created_id.get_or_insert_with(|| id.to_owned()) == id,
+                "unexpected all-day event on {day}: {event}"
+            );
+        }
+    }
+
     checked_output(
         &mut service.systemctl(&["kill", "--signal=KILL", "--kill-whom=all"]),
         "killing the transient service to test restart",
@@ -153,7 +192,7 @@ pub(crate) fn run(root: &Path, bin_dir: &Path) -> Result<()> {
     )?;
     service.diagnostics = false;
     println!(
-        "systemd user service smoke passed (TUI reopen, Task capture, timer recovery, and focus report)"
+        "systemd user service smoke passed (TUI reopen, Task and all-day event creation, timer recovery, and focus report)"
     );
     Ok(())
 }
