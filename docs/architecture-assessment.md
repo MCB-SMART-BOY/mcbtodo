@@ -2068,3 +2068,10 @@ The CLI now uses the same typed operations for `workflow runs`, `inspect`,
 `trace`, `approve`, and `reject`. The list keeps its JSON envelope and the
 inspect output still includes `approval_review` for approvable runs. The
 workspace check and sandbox smoke passed again with the shared CLI paths.
+
+Workflow page loads now run outside the terminal thread. A held-response test
+verifies that navigation and quit remain available, refresh discards a queued
+older page, and the replacement list preserves selection by run UUID. Review
+inspection, step reads, and decision submission still run synchronously.
+Linux AArch64 workspace checks passed 734 tests. Example Vault validation and
+the sandbox workspace smoke passed.

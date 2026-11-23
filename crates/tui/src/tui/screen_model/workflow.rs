@@ -100,7 +100,9 @@ impl<'a> WorkflowScreenModel<'a> {
                 String::new(),
             ),
             (_, None) => {
-                let label = if state.loaded {
+                let label = if state.is_loading_page() {
+                    "Loading workflow runs…".into()
+                } else if state.loaded {
                     "No workflow runs".into()
                 } else {
                     format!("Run list unavailable · {refresh} retry")
@@ -166,42 +168,50 @@ impl<'a> WorkflowScreenModel<'a> {
                     details.push(super::display_line(detail));
                 }
                 details.push(format!("Revision  {}", super::display_line(&run.revision)));
+                let loading = state.is_loading_page();
                 let older = state.next_before.is_some();
-                let (hint, compact_hint) = match (
-                    run.state == RunState::Waiting,
-                    run.step_count > 0,
-                    older,
-                ) {
-                    (true, true, _) => (
-                        format!(
-                            "{vertical} runs  Enter trace  a approve  d reject  {refresh} refresh"
+                let (hint, compact_hint) = if loading {
+                    let hint = format!("{vertical} runs  {help} help");
+                    (hint.clone(), hint)
+                } else {
+                    match (run.state == RunState::Waiting, run.step_count > 0, older) {
+                        (true, true, _) => (
+                            format!(
+                                "{vertical} runs  Enter trace  a approve  d reject  {refresh} refresh"
+                            ),
+                            format!("a approve  d reject  {help}"),
                         ),
-                        format!("a approve  d reject  {help}"),
-                    ),
-                    (true, false, _) => (
-                        format!("{vertical} runs  a approve  d reject  {refresh} refresh"),
-                        format!("a approve  d reject  {help}"),
-                    ),
-                    (false, true, true) => (
-                        format!("{vertical} runs  Enter trace  n older  {refresh} refresh"),
-                        format!("{vertical}  n older  {refresh}"),
-                    ),
-                    (false, true, false) => (
-                        format!("{vertical} runs  Enter trace  {refresh} refresh"),
-                        format!("{vertical}  Enter  {refresh}"),
-                    ),
-                    (false, false, true) => (
-                        format!("{vertical} runs  n older  {refresh} refresh"),
-                        format!("{vertical}  n older  {refresh}"),
-                    ),
-                    (false, false, false) => {
-                        let hint = format!("{vertical} runs  {refresh} refresh  {help}");
-                        (hint.clone(), hint)
+                        (true, false, _) => (
+                            format!("{vertical} runs  a approve  d reject  {refresh} refresh"),
+                            format!("a approve  d reject  {help}"),
+                        ),
+                        (false, true, true) => (
+                            format!("{vertical} runs  Enter trace  n older  {refresh} refresh"),
+                            format!("{vertical}  n older  {refresh}"),
+                        ),
+                        (false, true, false) => (
+                            format!("{vertical} runs  Enter trace  {refresh} refresh"),
+                            format!("{vertical}  Enter  {refresh}"),
+                        ),
+                        (false, false, true) => (
+                            format!("{vertical} runs  n older  {refresh} refresh"),
+                            format!("{vertical}  n older  {refresh}"),
+                        ),
+                        (false, false, false) => {
+                            let hint = format!("{vertical} runs  {refresh} refresh  {help}");
+                            (hint.clone(), hint)
+                        }
                     }
                 };
                 (
                     WorkflowPanel::Runs {
-                        title: if older { " Runs · n older " } else { " Runs " },
+                        title: if loading {
+                            " Loading runs… "
+                        } else if older {
+                            " Runs · n older "
+                        } else {
+                            " Runs "
+                        },
                         rows,
                         selected: state.row,
                         details,

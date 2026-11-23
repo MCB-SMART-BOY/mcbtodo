@@ -45,6 +45,97 @@ fn open_confirmation(state: &mut State, vault: &Workspace, choice: char, run: Ru
     state.workflow.review_decision(run).unwrap();
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn workflow_refresh_supersedes_an_older_page_without_blocking_input() -> anyhow::Result<()> {
+    use std::{
+        os::unix::net::UnixListener,
+        sync::mpsc,
+        thread,
+        time::{Duration, Instant},
+    };
+
+    use mcbtodo_protocol::{
+        Request, Response, wire,
+        workflow::{WorkflowRequest, WorkflowResponse},
+    };
+
+    let home = tempfile::tempdir()?;
+    let paths = WorkspacePaths::from_home(home.path().to_owned());
+    paths.initialize()?;
+    let listener = UnixListener::bind(paths.socket_path())?;
+    let vault = fixture();
+    let mut state = State::new("2026-11-25".parse()?);
+    open(&mut state, &vault);
+    let first = run(3, RunState::Pending, 0);
+    let selected = run(2, RunState::Pending, 0);
+    let before = Some(selected.id);
+    state.workflow.install_page(
+        None,
+        WorkflowRunPage {
+            runs: vec![first.clone(), selected.clone()],
+            next_before: before,
+        },
+    );
+    let ids = vec![selected.id, first.id];
+    let (entered, ready) = mpsc::channel();
+    let (release, wait) = mpsc::channel();
+    let peer = thread::spawn(move || -> anyhow::Result<()> {
+        for (cursor, runs) in [
+            (before, vec![run(1, RunState::Succeeded, 0)]),
+            (None, vec![selected, first]),
+        ] {
+            let (mut stream, _) = listener.accept()?;
+            stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+            assert!(matches!(
+                wire::read(&mut stream)?,
+                Request::Workflow(WorkflowRequest::List { before }) if before == cursor
+            ));
+            if cursor.is_some() {
+                entered.send(())?;
+                wait.recv_timeout(Duration::from_secs(2))?;
+            }
+            wire::write(
+                &mut stream,
+                &Response::Workflow(WorkflowResponse::Runs {
+                    runs,
+                    next_before: None,
+                }),
+            )?;
+        }
+        Ok(())
+    });
+
+    let Action::Workflow(older) = key(&mut state, &vault, KeyCode::Char('n')) else {
+        panic!("expected an older-page action");
+    };
+    assert_eq!(state.workflow.execute(&paths, older), "");
+    ready.recv_timeout(Duration::from_secs(2))?;
+    assert!(screen(&state, &vault, 65, 22).contains("Loading runs"));
+    assert_eq!(key(&mut state, &vault, KeyCode::Down), Action::Continue);
+    assert_eq!(state.workflow.selected().unwrap().id, ids[0]);
+    assert_eq!(key(&mut state, &vault, KeyCode::Char('q')), Action::Quit);
+    let Action::Workflow(refresh) = key(&mut state, &vault, KeyCode::Char('r')) else {
+        panic!("expected a refresh action");
+    };
+    assert_eq!(state.workflow.execute(&paths, refresh), "");
+    release.send(())?;
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while state.workflow.is_loading_page() && Instant::now() < deadline {
+        state.workflow.poll_page(&paths, true, &mut state.message);
+        assert!(state.workflow.runs.iter().all(|run| ids.contains(&run.id)));
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(!state.workflow.is_loading_page(), "page refresh stalled");
+    peer.join().unwrap()?;
+    let shown: Vec<_> = state.workflow.runs.iter().map(|run| run.id).collect();
+    assert_eq!(shown, ids);
+    assert_eq!(state.workflow.selected().unwrap().id, ids[0]);
+    assert!(state.message.is_empty(), "{}", state.message);
+    Ok(())
+}
+
 #[test]
 fn workflow_prompt_and_keys_share_run_commands() {
     let vault = fixture();

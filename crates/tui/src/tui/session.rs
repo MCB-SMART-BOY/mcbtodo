@@ -175,13 +175,19 @@ pub fn run(
                 redraw |= state.refresh_external(root, &mut vault);
             }
             redraw |= state.poll_outline(&mut vault);
+            redraw |=
+                state
+                    .workflow
+                    .poll_page(paths, state.view == View::Workflow, &mut state.message);
             if redraw {
                 let model = present(&state, &vault);
                 terminal.draw(|frame| render::draw(frame, &model, theme))?;
                 redraw = false;
             }
             // Check workspace changes and query replies even when no keys are pressed.
-            if (local_watcher.is_some() || connected) && !event::poll(Duration::from_millis(50))? {
+            if (local_watcher.is_some() || connected || state.workflow.is_loading_page())
+                && !event::poll(Duration::from_millis(50))?
+            {
                 continue;
             }
             redraw = true;

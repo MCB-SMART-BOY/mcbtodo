@@ -1,3 +1,8 @@
+use std::{
+    sync::mpsc::{self, Receiver, TryRecvError},
+    thread,
+};
+
 use anyhow::{Result, bail};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use mcbtodo_client::daemon_client::{self, WorkflowRunPage};
@@ -20,6 +25,13 @@ pub(super) struct State {
     pub(super) next_before: Option<Uuid>,
     pub(super) loaded: bool,
     pub(super) panel: Panel,
+    pending_page: Option<PendingPage>,
+}
+
+struct PendingPage {
+    before: Option<Uuid>,
+    reply: Receiver<Result<WorkflowRunPage>>,
+    refresh_after: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,6 +117,14 @@ impl State {
     }
 
     pub(super) fn run_command(&mut self, command: WorkflowCommand, message: &mut String) -> Action {
+        if self.is_loading_page()
+            && matches!(
+                command,
+                WorkflowCommand::Trace | WorkflowCommand::Review { .. }
+            )
+        {
+            return Action::Continue;
+        }
         match command {
             WorkflowCommand::Refresh => refresh(),
             WorkflowCommand::Older => match self.next_before {
@@ -241,11 +261,66 @@ impl State {
         }
     }
 
+    pub(super) fn is_loading_page(&self) -> bool {
+        self.pending_page.is_some()
+    }
+
+    fn request_page(&mut self, paths: &WorkspacePaths, before: Option<Uuid>) -> Result<()> {
+        if let Some(pending) = &mut self.pending_page {
+            // A first-page refresh supersedes an older-page request.
+            pending.refresh_after |= before.is_none() && pending.before.is_some();
+            return Ok(());
+        }
+        let (sender, reply) = mpsc::channel();
+        let paths = paths.clone();
+        thread::Builder::new()
+            .name("mcbtodo-workflow-list".into())
+            .spawn(move || {
+                let _ = sender.send(daemon_client::workflow_runs(&paths, before));
+            })?;
+        self.pending_page = Some(PendingPage {
+            before,
+            reply,
+            refresh_after: false,
+        });
+        Ok(())
+    }
+
+    pub(super) fn poll_page(
+        &mut self,
+        paths: &WorkspacePaths,
+        visible: bool,
+        message: &mut String,
+    ) -> bool {
+        let Some(pending) = &self.pending_page else {
+            return false;
+        };
+        let result = match pending.reply.try_recv() {
+            Ok(result) => result,
+            Err(TryRecvError::Empty) => return false,
+            Err(TryRecvError::Disconnected) => Err(anyhow::anyhow!("Workflow reader disconnected")),
+        };
+        let before = pending.before;
+        let refresh_after = pending.refresh_after;
+        self.pending_page = None;
+        if !visible {
+            return false;
+        }
+        let result = if refresh_after {
+            self.request_page(paths, None)
+        } else {
+            result.map(|page| self.install_page(before, page))
+        };
+        if let Err(error) = result {
+            *message = format!("Workflow · {error:#}");
+        }
+        true
+    }
+
     pub(super) fn execute(&mut self, paths: &WorkspacePaths, command: Operation) -> String {
         let decision = matches!(command, Operation::Decide { .. });
         let result = match command {
-            Operation::List { before } => daemon_client::workflow_runs(paths, before)
-                .map(|page| self.install_page(before, page)),
+            Operation::List { before } => self.request_page(paths, before),
             Operation::Step { run_id, index } => daemon_client::workflow_step(paths, run_id, index)
                 .and_then(|step| self.show_step(run_id, index, step)),
             Operation::Review { run_id } => {
