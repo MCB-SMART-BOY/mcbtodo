@@ -77,6 +77,7 @@ impl Timer {
             | (Request::Stop, TimerState::Idle) => (),
             (
                 Request::Workflow(_)
+                | Request::VaultWatch
                 | Request::FocusReport { .. }
                 | Request::Calendar { .. }
                 | Request::Outline { .. }

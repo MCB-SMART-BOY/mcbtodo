@@ -157,6 +157,7 @@ pub(crate) fn run(root: &Path, bin_dir: &Path, sandbox: bool) -> Result<()> {
     let revision = revision.trim();
     ensure!(revision.len() == 64, "publication did not return a SHA-256");
     let mut daemon = smoke.start_daemon()?;
+    smoke.watch_vault_in_tui(&mut daemon)?;
     smoke.create_time_block_in_tui()?;
     ensure!(
         smoke.json(&["workflow", "runs"])?["runs"]
@@ -2450,20 +2451,7 @@ impl Smoke<'_> {
         let (mut child, mut master) = Self::terminal(command, size)?;
         let mut terminal = size.parser();
         for &(marker, keys) in steps {
-            let mut chunk = Vec::new();
-            poll(marker, || {
-                read_terminal(&mut master, &mut chunk)?;
-                terminal.process(&chunk);
-                chunk.clear();
-                ensure!(child.0.try_wait()?.is_none(), "TUI exited early");
-                Ok(terminal.screen().contents().contains(marker))
-            })
-            .with_context(|| {
-                format!(
-                    "TUI screen waiting for {marker}: {}",
-                    terminal.screen().contents()
-                )
-            })?;
+            wait_for_terminal_marker(&mut child, &mut master, &mut terminal, marker)?;
             master.write_all(keys.as_bytes())?;
         }
         poll("TUI exit", || {
@@ -2481,6 +2469,46 @@ impl Smoke<'_> {
             format!("TUI screen at exit wait: {}", terminal.screen().contents())
         })?;
         Ok(terminal)
+    }
+
+    fn watch_vault_in_tui(&self, daemon: &mut Daemon) -> Result<()> {
+        let project = self.paths().vault_root().join("projects/watch-smoke");
+        fs::create_dir(&project)?;
+        let source = project.join("project.md");
+        let document = |title: &str| {
+            format!(
+                "---\nschema: mcbtodo.project/v1\nid: 10000000-0000-4000-8000-000000000009\n---\n# {title}\n"
+            )
+        };
+        fs::write(&source, document("Watch initial project"))?;
+        let (mut child, mut master) = Self::terminal(self.command("mcbtodo"), TERMINAL_SIZE)?;
+        let mut terminal = TERMINAL_SIZE.parser();
+        wait_for_terminal_marker(&mut child, &mut master, &mut terminal, "Month")?;
+        master.write_all(b":outline\r")?;
+        let mut wait =
+            |marker| wait_for_terminal_marker(&mut child, &mut master, &mut terminal, marker);
+        wait("Watch initial project")?;
+        fs::write(&source, document("Watch updated project"))?;
+        wait("Watch updated project")?;
+        fs::write(&source, "invalid Markdown")?;
+        wait("could not load the default Vault outline")?;
+        fs::write(&source, document("Watch repaired project"))?;
+        wait("Watch repaired project")?;
+        daemon.stop()?;
+        wait("Start mcbtodo-daemon")?;
+        fs::write(&source, document("Watch project after restart"))?;
+        *daemon = self.start_daemon()?;
+        wait("Watch project after restart")?;
+        master.write_all(b"q")?;
+        poll("TUI exit after daemon restart", || {
+            let Some(status) = child.0.try_wait()? else {
+                return Ok(false);
+            };
+            ensure!(status.success(), "TUI exited with {status}");
+            Ok(true)
+        })?;
+        fs::remove_dir_all(project)?;
+        Ok(())
     }
 
     fn create_time_block_in_tui(&self) -> Result<()> {
@@ -2608,6 +2636,28 @@ impl Drop for Daemon {
     fn drop(&mut self) {
         let _ = self.stop();
     }
+}
+
+fn wait_for_terminal_marker(
+    child: &mut Daemon,
+    master: &mut fs::File,
+    terminal: &mut vt100::Parser,
+    marker: &str,
+) -> Result<()> {
+    let mut chunk = Vec::new();
+    poll(marker, || {
+        read_terminal(master, &mut chunk)?;
+        terminal.process(&chunk);
+        chunk.clear();
+        ensure!(child.0.try_wait()?.is_none(), "TUI exited early");
+        Ok(terminal.screen().contents().contains(marker))
+    })
+    .with_context(|| {
+        format!(
+            "TUI screen waiting for {marker}: {}",
+            terminal.screen().contents()
+        )
+    })
 }
 
 fn poll(label: &str, mut predicate: impl FnMut() -> Result<bool>) -> Result<()> {

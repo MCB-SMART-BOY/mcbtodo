@@ -29,7 +29,7 @@ use mcbtodo_ports::workflow::{
     WorkflowRunStore, WorkflowStorageCapabilities,
 };
 use mcbtodo_protocol::{
-    ErrorCode, Response, wire,
+    ErrorCode, Response, VaultWatchStatus, wire,
     worker::{
         AttemptIdentity, DaemonMessage, ScriptRunner as WorkerScriptRunner, WorkerArtifact,
         WorkerJob, WorkerMessage, WorkerOutcome, WorkerProtocolError,
@@ -86,6 +86,7 @@ pub struct Runtime {
     worker_limit: usize,
     completions: CompletionPoller,
     vault_watcher: Option<VaultWatcher>,
+    vault_watch_version: Uuid,
     validated_vault: Option<Vault>,
     reminders: Vec<ReminderSummary>,
     vault_generation: u64,
@@ -253,6 +254,7 @@ impl Runtime {
             worker_limit: usize::from(worker_slots),
             completions: CompletionPoller::new(paths.clone()),
             vault_watcher,
+            vault_watch_version: Uuid::new_v4(),
             validated_vault,
             reminders,
             vault_generation: 0,
@@ -263,6 +265,13 @@ impl Runtime {
 
     pub fn reminder_snapshot(&self) -> (u64, &[ReminderSummary]) {
         (self.vault_generation, &self.reminders)
+    }
+
+    pub fn vault_watch_status(&self) -> VaultWatchStatus {
+        VaultWatchStatus {
+            version: self.vault_watch_version,
+            watching: self.vault_watcher.is_some(),
+        }
     }
 
     pub fn notifications(&self) -> &dyn NotificationStore {
@@ -333,6 +342,8 @@ impl Runtime {
         if !changed {
             return;
         }
+        // Projections also need to see a failed validation and the subsequent repair.
+        self.vault_watch_version = Uuid::new_v4();
         match load_vault_snapshot(&self.paths) {
             Ok(vault) => {
                 self.reminders = project_reminders(&vault);

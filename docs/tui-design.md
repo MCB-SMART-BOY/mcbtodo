@@ -16,9 +16,11 @@ the selected UUID through the Daemon before opening the local editor. A local
 Vault session resolves the source from its own snapshot. The default Linux
 session starts with a service projection cache. Explicit external Vault and
 non-Linux sessions start with a validated local snapshot.
-Manual reload and foreground file-watch notifications invalidate the service projection
-cache in connected sessions. Focus is restored from the document or
-occurrence identity. Explicit local sessions reload the Markdown snapshot.
+Manual reload, changes reported by the Daemon, and service reconnection
+invalidate the projection cache in connected sessions. The TUI polls the
+change marker in the background. Focus is restored from the document or
+occurrence identity. Explicit local sessions watch their own Markdown
+files and reload the local snapshot.
 The session dispatches the resulting action through the existing client or
 local path. Text entry, resizing, and service responses follow their own
 paths. The daemon receives typed business requests with explicit arguments.

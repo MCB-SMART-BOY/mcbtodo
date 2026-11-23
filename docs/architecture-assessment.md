@@ -29,8 +29,9 @@ checks. macOS AArch64 and Windows x86-64 cross-checks passed for `mcbtodo`,
 SQLite path. Native execution on those targets was outside this run.
 
 The default Linux terminal session starts with a service projection cache.
-Queries are synchronous and the TUI still uses a local watcher to trigger
-refresh. External Vault and non-Linux terminal sessions load local snapshots.
+Projection queries are synchronous. The connected TUI polls the service's
+Vault change marker in the background. External Vault and non-Linux
+terminal sessions load local snapshots.
 The shared client contains local proposal storage and the terminal crate
 handles confirmation. GUI integration and the external plugin contract
 remain design targets.
@@ -405,7 +406,7 @@ as a completed assignment.
 The socket regression covers a stale revision, writer contention, a
 successful assignment, and a retry after only the Task was published.
 The TUI regression exercises a captured entry and Project supplied through
-IPC. Connected TUI sessions use a client-side file watcher for refresh.
+IPC. Connected TUI sessions poll the Daemon's Vault watch status.
 
 ### Shared Graph browsing over local IPC
 
@@ -421,10 +422,10 @@ subsequent Markdown edits, dependency preview, lock contention, stale target
 revisions, cycle rejection, and reading a successful edit back through the
 service.
 
-The TUI still loads a local snapshot at startup for other forms and external
-editing. File watching still takes place in the client. Each uncached read
-scans the Vault in the daemon and can wait up to the IPC deadline. GUI,
-launcher integration and service-side change notifications remain planned.
+Default Linux TUI sessions use a service projection cache from startup and
+refresh it after changes reported by the Daemon. Each uncached read scans
+the Vault in the daemon and can wait up to the IPC deadline. GUI and
+launcher integration remain planned.
 
 ## Latest Review
 
@@ -1840,13 +1841,15 @@ perform use-case work independently for some reads and interactions:
   The edit key and `:edit` now resolve the selected UUID through the service
   in a connected session. IPC coverage exercises document moves and exact
   Unix path bytes. A TUI socket test exercises a server-only document and
-  a disconnected lookup. After startup, file-watch notifications and manual
+  a disconnected lookup. After startup, service change markers and manual
   reload refresh the service projections using their existing queries. The
   connected reload test covers focus retention for a reordered service
   response with the local Vault path unavailable. The default Linux session
   opens without a local Vault snapshot. The executable smoke checks that the
   TUI opens and reports the offline service even with invalid default Vault
-  Markdown. The TUI still installs a local file watcher.
+  Markdown. A connected smoke test edits a project, breaks and repairs its
+  Markdown, and restarts the daemon with the TUI still open. External Vault
+  sessions keep a local file watcher.
   Proposal confirmation runs in the terminal crate. The queue API rechecks the
   reviewed record under lock and is independent of terminal I/O.
   Dependency-change validation,
@@ -1958,5 +1961,6 @@ parsing, proposal approval, snapshot ownership, or presentation as parity
 failures.
 
 On 2026-11-23, `cargo xtask check` passed 702 tests on Linux AArch64 with
-deadline editing routed through the Daemon for the default Vault. TUI startup
-validation, file watching, and some forms still use a client-side snapshot.
+deadline editing routed through the Daemon for the default Vault. This
+predates the split between local snapshots and connected sessions described
+above.

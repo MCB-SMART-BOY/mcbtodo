@@ -51,7 +51,7 @@ socket 和对端身份。
 
 CLI、TUI 和 Daemon 在入口解析 `WorkspacePaths` 并传给下游组件。
 Daemon 的 watcher、提醒和 WorkUnit 完成事件触发器绑定默认 Vault。
-Daemon 与 TUI 共用 Vault 的去抖文件监听。Daemon 和本地模式的 TUI 各自校验并保留最后有效快照。连接模式的 TUI 监听文件变化并据此刷新服务投影。
+Daemon 和本地模式的 TUI 分别使用 Vault 的去抖文件监听，校验并保留最后有效快照。连接模式的 TUI 在后台查询 Daemon 的 Vault 变更标记。
 Daemon 的提醒扫描从其监听快照取得定义，每次客户端投影查询则单独加载
 当前 Markdown。工作流的 `task.create` 由 Daemon 事件循环通过共享应用
 用例写入默认 Vault。
@@ -83,7 +83,7 @@ CLI 的 Vault 写命令从已加载快照取得乐观并发控制 token 时使�
 | 入口 | Vault 访问路径 |
 | --- | --- |
 | CLI | `validate`、`outline`、`graph`、`vault` 和默认的 `calendar` 使用本地 Vault。`calendar --daemon` 只查询默认 Vault 的单日投影，并拒绝与 `--vault` 或 iCalendar 导入导出组合。计时、通知和工作流运行命令使用 IPC，工作流校验、模拟和发布通过本地应用用例。 |
-| Linux TUI，默认 Vault | 启动时建立服务投影缓存。Month、Week、Day、Agenda、Timeline、大纲、全局搜索、Inbox 列表及分流、Graph 浏览及依赖预览和确认走 IPC。Task 捕获、Project、Deadline 快速创建、全天事件、单次提醒、WorkUnit 时间块和现有截止日期编辑也走 IPC。文件变化仍由前台监听。 |
+| Linux TUI，默认 Vault | 启动时建立服务投影缓存。Month、Week、Day、Agenda、Timeline、大纲、全局搜索、Inbox 列表及分流、Graph 浏览及依赖预览和确认走 IPC。Task 捕获、Project、Deadline 快速创建、全天事件、单次提醒、WorkUnit 时间块和现有截止日期编辑也走 IPC。默认 Vault 的文件监听由 Daemon 持有。 |
 | Linux TUI，外部 Vault，以及非 Linux TUI | 使用本地 Vault 投影和可用的前台编辑功能。外部 Vault 没有独立后台服务。 |
 | MCP | stdio 服务通过共享用例读取选定 Vault。在支持私有队列的平台，业务写入提案需人工批准。批准工作流快照只发布内容寻址 revision，执行授权与入队各有独立入口。 |
 
@@ -102,7 +102,7 @@ CLI 和 TUI 共用[客户端 IPC 模块](../crates/client/src/daemon_client.rs)�
 [动作处理](../crates/tui/src/tui/deadline_io.rs)。
 
 服务端每个投影查询重新加载一次有效 Vault 快照。TUI 按查询参数缓存行或错误，
-供渲染与选择共用。手动重载、写入后重载或 watcher 安装新快照会清除缓存；
+供渲染与选择共用。手动重载、写入后重载或收到 Daemon 变更标记会清除缓存。
 服务不可用时这些视图报告错误。日历查询最多覆盖 366 个含首尾日期，结果
 超出单个 64 KiB 帧时返回错误。大纲、Inbox 和 Graph 可在同一连接传送
 有序多帧，客户端收齐后才交付结果。查询索引、服务端变更订阅、GUI 和
@@ -119,8 +119,10 @@ TUI 与未来的 GUI 共用面向业务的客户端调用，分别维护导航�
 
 连接会话用文档 UUID 向 Daemon 查询当前 Markdown 路径。打开编辑器和恢复终端
 由 TUI 负责。本机 IPC 保留原始 Unix 路径字节，搜索列表中的显示路径用于匹配。
-手动刷新和文件变更通知都会使服务投影缓存失效，并按 UUID 或日历实例恢复焦点。
-文件变更当前仍由前台监听。显式外部 Vault 在刷新时重新验证本地快照。
+手动刷新和 Daemon 变更标记都会使服务投影缓存失效，并按 UUID 或日历实例恢复焦点。
+Daemon 每次启动生成新的标记，检测到文件变化后更新标记，包括 Markdown 校验失败时。
+客户端以约一秒间隔在后台查询标记，断线和重连也触发刷新。每个投影仍独立查询，
+文档写入继续使用所见 revision。显式外部 Vault 由本地监听触发快照重验。
 提案的终端审阅与确认由 `mcbtodo-tui` 提供，CLI 共用这一入口。客户端的队列
 接收已确认的记录，持锁复核记录并提交。
 
@@ -163,7 +165,7 @@ stderr。Daemon 负责授权、预算、修订校验及结果提交。CLI、TUI 
    查询对应的响应。读取失败可重新加载，提交结果未知时引导用户核对数据。
 3. **连接模式的启动和刷新。** 会话启动时选择本地 Vault 快照或服务投影。
    连接模式可在本地 Markdown 校验失败时进入界面，显示服务的查询结果或连接
-   状态。后续将前台文件监听替换为服务端变更信号。客户端主题、按键和窗口
+   状态。Daemon 提供统一的变更信号。客户端主题、按键和窗口
    状态由本机管理。提案队列、Agent 策略和备份各自保有独立权限和一致性边界。
 
 CLI 入口 [main.rs](../apps/mcbtodo/src/main.rs)负责参数解析、工作区初始化及

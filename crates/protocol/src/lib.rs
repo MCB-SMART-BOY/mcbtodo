@@ -23,6 +23,8 @@ use uuid::Uuid;
 #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Request {
     Status,
+    /// Check whether cached default Vault projections should be queried again.
+    VaultWatch,
     /// Starts a new session or resumes the current paused session.
     /// Omit the work unit to start an unassigned session or resume the existing work unit.
     Start {
@@ -142,10 +144,18 @@ pub enum ProjectDates {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VaultWatchStatus {
+    /// Changes on daemon restart or observed file change. This is not a document revision.
+    pub version: Uuid,
+    pub watching: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum Response {
     Status(TimerStatus),
+    VaultWatch(VaultWatchStatus),
     FocusReport(focus::DailyFocusReport),
     Calendar {
         items: Vec<CalendarItem>,

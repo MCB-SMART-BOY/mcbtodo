@@ -296,6 +296,10 @@ fn daemon_vault_watcher_accepts_valid_changes_and_retains_the_last_valid_snapsho
     };
 
     let mut runtime = Runtime::open_with_paths(&paths.state_dir(), paths.clone())?;
+    let initial_watch = runtime.vault_watch_status();
+    assert!(initial_watch.watching);
+    runtime.refresh_vault_snapshot();
+    assert_eq!(runtime.vault_watch_status(), initial_watch);
     assert_eq!(
         runtime
             .validated_vault
@@ -312,6 +316,7 @@ fn daemon_vault_watcher_accepts_valid_changes_and_retains_the_last_valid_snapsho
         format!("---\nschema: mcbtodo.project/v1\nid: {PROJECT}\n---\n\n# Updated\n"),
     )?;
     wait_for_vault_watch(&mut runtime, "Updated", false)?;
+    assert_ne!(runtime.vault_watch_status().version, initial_watch.version);
     assert_eq!(
         runtime
             .validated_vault
@@ -327,8 +332,12 @@ fn daemon_vault_watcher_accepts_valid_changes_and_retains_the_last_valid_snapsho
     wait_for_reminder_title(&mut runtime, "Initial reminder")?;
     fs::write(&reminder_path, reminder_document("Updated reminder"))?;
     wait_for_reminder_title(&mut runtime, "Updated reminder")?;
+    let valid_watch = runtime.vault_watch_status();
+    let valid_generation = runtime.reminder_snapshot().0;
     fs::write(&project_path, "invalid Markdown")?;
     wait_for_vault_watch(&mut runtime, "Updated", true)?;
+    assert_ne!(runtime.vault_watch_status().version, valid_watch.version);
+    assert_eq!(runtime.reminder_snapshot().0, valid_generation);
     assert_eq!(
         runtime
             .validated_vault

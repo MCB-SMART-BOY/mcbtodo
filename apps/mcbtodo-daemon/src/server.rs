@@ -202,6 +202,7 @@ impl Server {
     fn reply(&mut self, request: Request) -> Response {
         match request {
             Request::Workflow(command) => self.runtime.handle(command),
+            Request::VaultWatch => Response::VaultWatch(self.runtime.vault_watch_status()),
             Request::Calendar {
                 start,
                 through,

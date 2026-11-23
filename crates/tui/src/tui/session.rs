@@ -113,18 +113,25 @@ pub fn run(
     {
         state.message = state.workflow.execute(paths, request);
     }
-    let mut watcher = match watch::Watcher::new(root) {
-        Ok(watcher) => {
-            // Close the gap between the local snapshot load and watch registration.
-            if matches!(vault, Workspace::Local(_)) {
+    let (mut local_watcher, mut daemon_watcher) = match &vault {
+        Workspace::Local(_) => match watch::Watcher::new(root) {
+            Ok(watcher) => {
+                // Close the gap between the local snapshot load and watch registration.
                 state.refresh_external(root, &mut vault);
+                (Some(watcher), None)
             }
-            Some(watcher)
-        }
-        Err(error) => {
-            state.message = format!("Auto-reload unavailable · {error:#} · r reload");
-            None
-        }
+            Err(error) => {
+                state.message = format!("Auto-reload unavailable · {error:#} · r reload");
+                (None, None)
+            }
+        },
+        Workspace::Daemon { .. } => match watch::DaemonWatcher::new(paths.clone()) {
+            Ok(watcher) => (None, Some(watcher)),
+            Err(error) => {
+                state.message = format!("Auto-reload unavailable · {error:#} · r reload");
+                (None, None)
+            }
+        },
     };
     match keymap::Keymap::load_config(paths) {
         Ok(keymap) => state.keymap = keymap,
@@ -142,25 +149,34 @@ pub fn run(
         let (screen, mut terminal) = Screen::enter()?;
         let mut redraw = true;
         let handoff = loop {
-            if let Some(active) = watcher.as_mut() {
+            if let Some(active) = local_watcher.as_mut() {
                 match active.changed() {
                     Ok(true) => redraw |= state.refresh_external(root, &mut vault),
                     Ok(false) => {}
                     Err(error) => {
                         state.message = format!("Auto-reload unavailable · {error:#} · r reload");
-                        watcher = None;
+                        local_watcher = None;
                         redraw = true;
                     }
                 }
+            }
+            if let Some(active) = daemon_watcher.as_mut()
+                && active.changed()
+            {
+                state.vault_warning = active
+                    .auto_refresh_unavailable()
+                    .then(|| "Auto-reload unavailable · r reload".into());
+                redraw |= state.refresh_external(root, &mut vault);
             }
             if redraw {
                 let model = present(&state, &vault);
                 terminal.draw(|frame| render::draw(frame, &model, theme))?;
                 redraw = false;
             }
-            // crossterm owns terminal input and resize notifications. Give the
-            // nonblocking inotify queue time even when no keys are pressed.
-            if watcher.is_some() && !event::poll(Duration::from_millis(50))? {
+            // Check for workspace changes even when no keys are pressed.
+            if (local_watcher.is_some() || daemon_watcher.is_some())
+                && !event::poll(Duration::from_millis(50))?
+            {
                 continue;
             }
             redraw = true;

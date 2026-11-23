@@ -9,12 +9,21 @@ use anyhow::{Context, Result, bail};
 use chrono_tz::Tz;
 use mcbtodo_domain::{CalendarItem, Id, time::DateSpan};
 use mcbtodo_platform::WorkspacePaths;
-use mcbtodo_protocol::{ErrorCode, ProtocolError, Request, Response, TimerStatus, request};
+use mcbtodo_protocol::{
+    ErrorCode, ProtocolError, Request, Response, TimerStatus, VaultWatchStatus, request,
+};
 
 pub fn timer(paths: &WorkspacePaths, operation: Request) -> Result<TimerStatus> {
     match exchange(paths, operation)? {
         Response::Status(status) => Ok(status),
         _ => bail!("unexpected response to timer request"),
+    }
+}
+
+pub fn vault_watch_status(paths: &WorkspacePaths) -> Result<VaultWatchStatus> {
+    match exchange(paths, Request::VaultWatch)? {
+        Response::VaultWatch(status) => Ok(status),
+        _ => bail!("unexpected response to Vault watch request"),
     }
 }
 
