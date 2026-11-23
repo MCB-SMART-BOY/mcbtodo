@@ -1,8 +1,6 @@
-use chrono_tz::Tz;
-
 use crate::tui::{
     screen_model::{PickerScreenModel, display_line},
-    time_block::{Choice, Field, Form},
+    time_block::{Field, Form},
 };
 
 pub(in crate::tui) struct TimeBlockScreenModel<'a> {
@@ -21,12 +19,8 @@ pub(in crate::tui) enum TimeBlockPanel<'a> {
 }
 
 impl<'a> TimeBlockScreenModel<'a> {
-    pub(in crate::tui) fn from_form(form: &'a Form, choices: Vec<Choice>, timezone: Tz) -> Self {
-        let (panel, actions) = if let Some(unit) = form.unit {
-            let title = choices
-                .iter()
-                .find(|choice| choice.id == unit)
-                .map_or("Unavailable", |choice| choice.title.as_str());
+    pub(in crate::tui) fn from_form(form: &'a Form) -> Self {
+        let (panel, actions) = if let Some(choice) = form.selected() {
             let focused = usize::from(form.field == Field::End);
             let actions = [
                 (
@@ -40,7 +34,7 @@ impl<'a> TimeBlockScreenModel<'a> {
             ][focused];
             (
                 TimeBlockPanel::Editor {
-                    context: format!("{} · busy · {timezone}", display_line(title)),
+                    context: format!("{} · busy · {}", display_line(&choice.title), form.timezone),
                     fields: [("Start", &form.start), ("End", &form.end)],
                     focused,
                 },
@@ -50,9 +44,9 @@ impl<'a> TimeBlockScreenModel<'a> {
             (
                 TimeBlockPanel::Picker(PickerScreenModel {
                     query: format!("Find WorkUnit: {}▏", display_line(&form.query)),
-                    labels: choices
-                        .into_iter()
-                        .map(|choice| {
+                    labels: form
+                        .matches()
+                        .map(|(_, choice)| {
                             display_line(&format!(
                                 "{}  ·  {} / {}",
                                 choice.title, choice.project, choice.task

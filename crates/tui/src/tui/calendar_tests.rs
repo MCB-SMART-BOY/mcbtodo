@@ -1346,6 +1346,21 @@ fn short_time_block_form_keeps_active_field_and_escape_visible() {
 }
 
 #[test]
+fn time_block_command_and_both_menus_open_the_same_picker() {
+    let vault = fixture();
+    let day = "2026-11-20".parse().unwrap();
+    let open = |keys| {
+        let mut state = State::new(day);
+        press(&mut state, &vault, keys);
+        assert!(matches!(state.overlay, Overlay::TimeBlock(_)), "{keys:?}");
+        screen(&state, &vault, 80, 14)
+    };
+    let typed = open(":time-block\n");
+    assert_eq!(open(" cb"), typed);
+    assert_eq!(open(" tb"), typed);
+}
+
+#[test]
 fn month_menu_creates_work_unit_time_block_on_the_selected_date() {
     let (dir, mut vault) = writable_project();
     let mut state = State::new("2026-11-19".parse().unwrap());
@@ -1414,6 +1429,96 @@ fn default_time_block_leaves_the_work_unit_unchanged_when_the_daemon_is_absent()
     assert_eq!(std::fs::read(path).unwrap(), original);
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn offline_time_block_picker_does_not_offer_locally_loaded_work_units() {
+    let (dir, vault) = writable_project();
+    let paths = WorkspacePaths::from_home(dir.path().to_owned());
+    paths.initialize().unwrap();
+    let mut state = State::new("2026-11-20".parse().unwrap());
+    state.daemon_views = Some(daemon_views::DaemonViews::new(paths));
+
+    press(&mut state, &vault, " tb");
+
+    assert!(matches!(state.overlay, Overlay::None));
+    assert!(state.message.contains("Cannot load WorkUnits"));
+    assert!(state.message.contains("Start mcbtodo-daemon"));
+    let text = screen(&state, &vault, 100, 20);
+    assert!(text.contains("Cannot load WorkUnits"), "{text}");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn time_block_retains_the_daemon_candidate_and_reviewed_revision_across_reload() -> Result<()> {
+    use std::{os::unix::net::UnixListener, thread};
+
+    use mcbtodo_protocol::{ErrorCode, Request, Response, wire};
+
+    let home = tempfile::tempdir()?;
+    let paths = WorkspacePaths::from_home(home.path().to_owned());
+    paths.initialize()?;
+    let root = paths.vault_root();
+    let mut vault = Vault::load(&root, chrono_tz::Asia::Shanghai)?;
+    let reviewed = copy_project(&root);
+    let unit = "30000000-0000-4000-8000-000000000002".parse()?;
+    assert!(vault.work_unit(unit).is_none());
+    let original_revision = reviewed.revision(unit).unwrap().digest();
+    let path = reviewed.source(unit).unwrap();
+    let rows = mcbtodo_application::project_outline(&reviewed);
+    let listener = UnixListener::bind(paths.socket_path())?;
+    let peer = thread::spawn(move || -> Result<Request> {
+        let (mut stream, _) = listener.accept()?;
+        stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+        assert!(matches!(wire::read(&mut stream)?, Request::Outline { .. }));
+        wire::write_outline(&mut stream, rows)?;
+
+        let (mut stream, _) = listener.accept()?;
+        stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+        let request = wire::read(&mut stream)?;
+        wire::write(
+            &mut stream,
+            &Response::Error {
+                code: ErrorCode::StaleRevision,
+                message: "WorkUnit has changed".into(),
+            },
+        )?;
+        Ok(request)
+    });
+    let mut state = State::new("2026-11-20".parse()?);
+    state.daemon_views = Some(daemon_views::DaemonViews::new(paths.clone()));
+    press(&mut state, &vault, ":time-block\n映射");
+    let picker = screen(&state, &vault, 80, 14);
+    assert!(picker.contains("实现 Sv39 页表映射"), "{picker}");
+    press(&mut state, &vault, "\n13:30\n15:00");
+
+    let edited = format!("{}\nConcurrent edit.\n", std::fs::read_to_string(path)?);
+    std::fs::write(path, &edited)?;
+    assert!(state.refresh_external(&root, &mut vault));
+    assert_ne!(vault.revision(unit).unwrap().digest(), original_revision);
+
+    let block = submit_time_block(&mut state, &vault);
+    assert_eq!(block.unit, unit);
+    let when = block.when;
+    state.create_time_block(&root, &mut vault, &paths, block);
+    assert_eq!(
+        peer.join().unwrap()?,
+        Request::CreateTimeBlock {
+            work_unit_id: unit,
+            work_unit_revision: original_revision,
+            start: when.start(),
+            end: when.end(),
+        }
+    );
+    assert_eq!(std::fs::read_to_string(path)?, edited);
+    let editor = screen(&state, &vault, 80, 14);
+    assert!(editor.contains("WorkUnit changed"), "{editor}");
+    assert!(
+        editor.contains("13:30") && editor.contains("15:00"),
+        "{editor}"
+    );
+    Ok(())
+}
+
 #[test]
 #[cfg(target_os = "linux")]
 fn default_time_block_response_loss_reports_the_interval_without_replaying() {
@@ -1428,7 +1533,7 @@ fn default_time_block_response_loss_reports_the_interval_without_replaying() {
     let mut state = State::new("2026-11-20".parse().unwrap());
     press(&mut state, &vault, " tb映射\n13:30\n15:00");
     let block = submit_time_block(&mut state, &vault);
-    let (unit, when, observed) = (block.unit, block.when, block.revision.digest());
+    let (unit, when, observed) = (block.unit, block.when, block.revision.clone());
     let path = vault.source(unit).unwrap().to_owned();
     let original = std::fs::read(&path).unwrap();
 

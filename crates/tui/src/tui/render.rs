@@ -1269,13 +1269,25 @@ mod tests {
 
     #[test]
     fn monochrome_time_block_keeps_the_end_field_and_feedback_in_four_rows() {
-        use crate::tui::time_block::{Choice, Field, Form};
+        use crate::tui::time_block::{Field, Form};
 
         let day = "2026-11-25".parse().unwrap();
         let mut state = State::new(day);
-        let mut form = Form::new(day);
-        let unit = mcbtodo_domain::Id::from_u128(1);
-        form.unit = Some(unit);
+        let mut form = Form::new(
+            day,
+            chrono_tz::UTC,
+            &[mcbtodo_domain::OutlineItem {
+                id: mcbtodo_domain::Id::from_u128(1),
+                depth: 2,
+                title: "计划 Rust".into(),
+                source_path: String::new(),
+                project_id: None,
+                task_id: None,
+                blocked: false,
+                revision: "observed".into(),
+            }],
+        );
+        form.handle(crossterm::event::KeyCode::Enter, &mut state.message);
         form.start = "13:30".into();
         form.end = "12:30".into();
         form.field = Field::End;
@@ -1285,16 +1297,7 @@ mod tests {
             unreachable!();
         };
         let buffer = render(
-            Content::TimeBlock(TimeBlockScreenModel::from_form(
-                form,
-                vec![Choice {
-                    id: unit,
-                    title: "计划 Rust".into(),
-                    project: "Project".into(),
-                    task: "Task".into(),
-                }],
-                chrono_tz::UTC,
-            )),
+            Content::TimeBlock(TimeBlockScreenModel::from_form(form)),
             &state,
             (28, 4),
             Theme::with_palette(mcbtodo_platform::TuiTheme::Monochrome),

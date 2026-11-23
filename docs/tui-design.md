@@ -212,7 +212,11 @@ previous menu.
   Enter action into `CreationScreenModel`. Each field occupies one row.
   Short terminals keep the focused row visible and narrow terminals retain
   the end of the active input, the cursor, and the primary actions.
-- The deadline and time-block forms project their labels and actions. Short
+- The deadline and time-block forms project their labels and actions. Both
+  time-block menus and `:time-block` open the WorkUnit picker on the current
+  date. On Linux in the default Vault, it uses the Daemon Outline projection.
+  The picker and editor share the rows captured at open, so a background
+  refresh cannot change the revision the user submits. Short
   layouts prioritize the active field, and the time-block picker reserves
   space for the selected WorkUnit. Narrow footers keep Enter and Esc visible.
 

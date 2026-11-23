@@ -334,12 +334,19 @@ reports the UUID if the connection is lost after submission. The Linux
 AArch64 systemd smoke exercises the actual form and verifies the scheduled
 instant in the durable reminder Inbox with desktop notifications disabled.
 
-The Linux default-Vault TUI now sends WorkUnit time blocks to the Daemon.
+The Linux default-Vault TUI loads WorkUnit time-block candidates from the
+Daemon Outline projection and sends the chosen row's revision with the write.
+The form keeps the opening snapshot across background reloads. Both menus
+and `:time-block` open the same picker. Tests cover a candidate absent from the
+client's startup snapshot, a concurrent edit, and a disconnected picker with
+local WorkUnits available.
 The IPC regression checks workspace offsets, reversed intervals, writer-lock
-contention, stale revisions, and replay of a successful request. The Vault
-preserves the existing blocks and Markdown body. If the service is offline,
-the form stays open. If the response is lost, the status shows the WorkUnit
-UUID and the submitted time range for manual verification. The Linux AArch64
+contention, stale revisions, a calendar read from another connection, and
+replay of a successful request. The Vault preserves the existing blocks and
+Markdown body. If opening the picker fails, the TUI reports the connection
+error. If a draft was already open and submission fails before sending, the
+form stays open. If the response is lost, the status shows the WorkUnit UUID
+and the submitted time range for manual verification. The Linux AArch64
 workspace and systemd smoke tests save the block in the TUI and verify the
 persisted interval using the calendar command.
 
@@ -1823,10 +1830,11 @@ perform use-case work independently for some reads and interactions:
   editing. Calendar, Agenda, and Timeline views now share the application
   calendar projection and keep layout-specific ordering and rendering in TUI.
   Picker path matching resolves paths through Vault without placing storage
-  paths in the application DTO. Reminder and time-block selection candidates
-  now come from `project_action_targets` using the same `TargetAction`
-  eligibility rules as final target validation; TUI keeps hierarchy rendering
-  and passes the snapshot's revision to the write command. Dependency-change validation,
+  paths in the application DTO. Reminder targets come from
+  `project_action_targets`. Time-block selection uses the WorkUnit rows from
+  Outline, including their parent labels and revisions. TUI keeps hierarchy
+  rendering and passes the observed revision to the write command.
+  Dependency-change validation,
   readiness impact, and the observed target revision come from the application
   preview; publication still uses the revision-checked application command and
   Vault writer lock.

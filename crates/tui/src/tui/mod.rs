@@ -477,6 +477,22 @@ impl State {
                 self.message.clear();
                 return Action::Proposals(proposal_review::Request::List);
             }
+            Command::TimeBlock => {
+                self.overlay = Overlay::None;
+                self.message.clear();
+                match self.outline_rows(vault) {
+                    Ok(rows) => {
+                        self.overlay = Overlay::TimeBlock(time_block::Form::new(
+                            self.day,
+                            vault.timezone(),
+                            &rows,
+                        ));
+                    }
+                    Err(error) => {
+                        self.message = format!("Cannot load WorkUnits · {error:#} · r reload");
+                    }
+                }
+            }
             Command::View(view) => {
                 self.switch(view, vault);
                 self.message.clear();
@@ -720,10 +736,7 @@ impl State {
                             Overlay::CreateForm(creation::Form::reminder(vault.timezone(), target));
                         return Continue;
                     }
-                    KeyCode::Char('b') => {
-                        self.overlay = Overlay::TimeBlock(time_block::Form::new(self.day));
-                        return Continue;
-                    }
+                    KeyCode::Char('b') => return self.execute(Command::TimeBlock, vault),
                     KeyCode::Esc => {
                         self.overlay = Overlay::Space(Default::default());
                         return Continue;
@@ -756,9 +769,7 @@ impl State {
             Overlay::Time => {
                 let operation = match key.code {
                     KeyCode::Char('b') if self.view.uses_dates() => {
-                        self.message.clear();
-                        self.overlay = Overlay::TimeBlock(time_block::Form::new(self.day));
-                        return Continue;
+                        return self.execute(Command::TimeBlock, vault);
                     }
                     KeyCode::Char('i') => TimerCommand::Status,
                     KeyCode::Char('s') => TimerCommand::Start,
@@ -774,7 +785,7 @@ impl State {
                 return self.execute(Command::Timer(operation), vault);
             }
             Overlay::TimeBlock(form) => {
-                if let Some(action) = form.handle(key.code, vault, &mut self.message) {
+                if let Some(action) = form.handle(key.code, &mut self.message) {
                     return action;
                 }
                 self.message.clear();

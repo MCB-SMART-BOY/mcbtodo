@@ -20,7 +20,7 @@ pub(super) enum ScreenData<'a> {
     Create(&'a ReviewViewport, bool),
     CreateForm(&'a creation::Form),
     Deadline(&'a deadline::Form),
-    TimeBlock(&'a time_block::Form, Vec<time_block::Choice>),
+    TimeBlock(&'a time_block::Form),
     GraphEdit(&'a graph::Edit, &'a ReviewViewport),
     Picker(&'a str, usize, Result<Vec<picker::Match>>),
     InboxProject(&'a [(Id, String)], usize),
@@ -60,7 +60,7 @@ impl<'a> ScreenData<'a> {
             ),
             Overlay::CreateForm(form) => Self::CreateForm(form),
             Overlay::Deadline(form) => Self::Deadline(form),
-            Overlay::TimeBlock(form) => Self::TimeBlock(form, form.choices(vault)),
+            Overlay::TimeBlock(form) => Self::TimeBlock(form),
             Overlay::GraphEdit { edit, viewport } => Self::GraphEdit(edit, viewport),
             Overlay::Picker { query, row } => Self::Picker(
                 query,

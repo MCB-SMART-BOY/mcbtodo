@@ -14,6 +14,7 @@ pub(super) enum Command {
     Proposals,
     View(View),
     Timer(TimerCommand),
+    TimeBlock,
 }
 
 impl Command {
@@ -28,6 +29,7 @@ impl Command {
             ["settings"] => Ok(Self::Settings),
             ["search", query @ ..] if !query.is_empty() => Ok(Self::Search(query.join(" "))),
             ["proposals" | "proposal"] => Ok(Self::Proposals),
+            ["time-block"] => Ok(Self::TimeBlock),
             ["timer", operation] => match *operation {
                 "status" => Ok(Self::Timer(TimerCommand::Status)),
                 "start" => Ok(Self::Timer(TimerCommand::Start)),

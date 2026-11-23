@@ -142,6 +142,8 @@ Vault 快照。快照比较依据源文件路径和 revision。
 截止日期、时间块与文档搜索弹窗由 ScreenModel 投影视图内容和操作提示。
 在 28×5 验证匹配项、当前输入和 Esc 的位置。在 28×4 无色终端验证时间块
 输入焦点、校验反馈和页脚。继续验证原有 revision 与取消路径。
+时间块的两个菜单与 `:time-block` 复用同一表单入口。验证默认工作区从
+Daemon Outline 获取候选，刷新保留已审阅的 revision，断连不切换到本地候选。
 
 ## 7. Phase 5 — Process Plugin Protocol
 

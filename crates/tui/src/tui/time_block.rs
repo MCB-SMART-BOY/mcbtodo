@@ -2,9 +2,7 @@ use anyhow::{Context, Result, anyhow, bail, ensure};
 use chrono::{DateTime, FixedOffset, LocalResult, NaiveDate, NaiveTime, Offset, TimeZone};
 use chrono_tz::Tz;
 use crossterm::event::KeyCode;
-use mcbtodo_application::{TargetAction, project_action_targets, project_outline};
-use mcbtodo_domain::{Id, time::DateTimeSpan};
-use mcbtodo_vault::{Revision, Vault};
+use mcbtodo_domain::{Id, OutlineItem, time::DateTimeSpan};
 
 use super::{Action, move_row};
 
@@ -12,11 +10,12 @@ pub(super) struct Form {
     pub day: NaiveDate,
     pub query: String,
     pub row: usize,
-    pub unit: Option<Id>,
+    choices: Vec<Choice>,
+    selected: Option<usize>,
+    pub timezone: Tz,
     pub start: String,
     pub end: String,
     pub field: Field,
-    revision: Option<Revision>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -26,7 +25,8 @@ pub(super) enum Field {
 }
 
 pub(super) struct Choice {
-    pub id: Id,
+    id: Id,
+    revision: String,
     pub title: String,
     pub task: String,
     pub project: String,
@@ -36,69 +36,68 @@ pub(super) struct Choice {
 pub(super) struct Submission {
     pub unit: Id,
     pub when: DateTimeSpan,
-    pub(super) revision: Revision,
+    pub(super) revision: String,
 }
 
 impl Form {
-    pub fn new(day: NaiveDate) -> Self {
-        Self {
-            day,
-            query: String::new(),
-            row: 0,
-            unit: None,
-            start: String::new(),
-            end: String::new(),
-            field: Field::Start,
-            revision: None,
-        }
-    }
-
-    pub fn choices(&self, vault: &Vault) -> Vec<Choice> {
-        let query = self.query.to_lowercase();
-        let eligible = project_action_targets(vault, TargetAction::CreateTimeBlock)
-            .into_iter()
-            .map(|target| target.id)
-            .collect::<std::collections::BTreeSet<_>>();
-        let (mut project, mut task) = (String::new(), String::new());
+    pub fn new(day: NaiveDate, timezone: Tz, outline: &[OutlineItem]) -> Self {
+        let (mut project, mut task) = ("", "");
         let mut choices = Vec::new();
-        for row in project_outline(vault) {
+        for row in outline {
             match row.depth {
-                0 => project = row.title,
-                1 => task = row.title,
-                2 if eligible.contains(&row.id)
-                    && [row.title.as_str(), task.as_str(), project.as_str()]
-                        .iter()
-                        .any(|title| title.to_lowercase().contains(&query)) =>
-                {
-                    choices.push(Choice {
-                        id: row.id,
-                        title: row.title,
-                        task: task.clone(),
-                        project: project.clone(),
-                    });
-                }
+                0 => project = &row.title,
+                1 => task = &row.title,
+                // Every WorkUnit is eligible for a time block.
+                2 => choices.push(Choice {
+                    id: row.id,
+                    revision: row.revision.clone(),
+                    title: row.title.clone(),
+                    task: task.to_owned(),
+                    project: project.to_owned(),
+                }),
                 _ => {}
             }
         }
-        choices
+        Self {
+            day,
+            timezone,
+            query: String::new(),
+            row: 0,
+            choices,
+            selected: None,
+            start: String::new(),
+            end: String::new(),
+            field: Field::Start,
+        }
+    }
+
+    pub fn selected(&self) -> Option<&Choice> {
+        self.selected.map(|index| &self.choices[index])
+    }
+
+    pub fn matches(&self) -> impl Iterator<Item = (usize, &Choice)> {
+        let query = self.query.to_lowercase();
+        self.choices.iter().enumerate().filter(move |(_, choice)| {
+            [&choice.title, &choice.task, &choice.project]
+                .into_iter()
+                .any(|title| title.to_lowercase().contains(&query))
+        })
     }
 
     // None closes the form and returns to the calendar.
-    pub fn handle(&mut self, code: KeyCode, vault: &Vault, message: &mut String) -> Option<Action> {
-        if self.unit.is_none() {
+    pub fn handle(&mut self, code: KeyCode, message: &mut String) -> Option<Action> {
+        if self.selected.is_none() {
             match code {
                 KeyCode::Esc => return None,
                 KeyCode::Enter => {
-                    if let Some(choice) = self.choices(vault).get(self.row)
-                        && let Some(revision) = vault.revision(choice.id)
-                    {
-                        self.unit = Some(choice.id);
-                        self.revision = Some(revision.clone());
+                    let selected = self.matches().nth(self.row).map(|(index, _)| index);
+                    if selected.is_some() {
+                        self.selected = selected;
                         self.field = Field::Start;
                     }
                 }
                 KeyCode::Up => self.row = self.row.saturating_sub(1),
-                KeyCode::Down => self.row = move_row(self.row, true, self.choices(vault).len()),
+                KeyCode::Down => self.row = move_row(self.row, true, self.matches().count()),
                 KeyCode::Backspace => {
                     self.query.pop();
                     self.row = 0;
@@ -113,17 +112,14 @@ impl Form {
         }
 
         match code {
-            KeyCode::Esc => {
-                self.unit = None;
-                self.revision = None;
-            }
+            KeyCode::Esc => self.selected = None,
             KeyCode::Tab | KeyCode::BackTab => {
                 self.field = match self.field {
                     Field::Start => Field::End,
                     Field::End => Field::Start,
                 };
             }
-            KeyCode::Enter => match self.request(vault) {
+            KeyCode::Enter => match self.request() {
                 Ok(Some(submission)) => return Some(Action::CreateTimeBlock(submission)),
                 Ok(None) => {}
                 Err(error) => {
@@ -153,8 +149,8 @@ impl Form {
         }
     }
 
-    fn request(&mut self, vault: &Vault) -> Result<Option<Submission>> {
-        let timezone = vault.timezone();
+    fn request(&mut self) -> Result<Option<Submission>> {
+        let timezone = self.timezone;
         let start = resolve_time(self.day, &self.start, false, timezone).inspect_err(|_| {
             self.field = Field::Start;
         })?;
@@ -164,16 +160,11 @@ impl Form {
         }
         let end = resolve_time(self.day, &self.end, true, timezone)?;
         let when = DateTimeSpan::new(start, end, timezone)?;
-        let unit = self.unit.context("Select a WorkUnit")?;
-        let revision = self
-            .revision
-            .as_ref()
-            .context("WorkUnit revision unavailable · Esc to cancel, r to reload")?
-            .clone();
+        let choice = self.selected().context("Select a WorkUnit")?;
         Ok(Some(Submission {
-            unit,
+            unit: choice.id,
             when,
-            revision,
+            revision: choice.revision.clone(),
         }))
     }
 }

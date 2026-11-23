@@ -85,7 +85,7 @@ impl ScreenChrome {
                 _ => "EDIT",
             }
             .into(),
-            Overlay::TimeBlock(form) if form.unit.is_none() => "PICKER".into(),
+            Overlay::TimeBlock(form) if form.selected().is_none() => "PICKER".into(),
             Overlay::Picker { .. } | Overlay::InboxProject { .. } => "PICKER".into(),
             Overlay::Command(_) => "COMMAND".into(),
             Overlay::Views(_) => "VIEWS".into(),
@@ -609,8 +609,8 @@ impl<'a> ScreenModel<'a> {
                 Content::CreateForm(CreationScreenModel::from_form(form))
             }
             ScreenData::Deadline(form) => Content::Deadline(DeadlineScreenModel::from_form(form)),
-            ScreenData::TimeBlock(form, choices) => {
-                Content::TimeBlock(TimeBlockScreenModel::from_form(form, choices, timezone))
+            ScreenData::TimeBlock(form) => {
+                Content::TimeBlock(TimeBlockScreenModel::from_form(form))
             }
             ScreenData::GraphEdit(edit, viewport) => {
                 Content::GraphEdit(GraphEditScreenModel::project(edit, viewport))

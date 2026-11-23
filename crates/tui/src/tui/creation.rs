@@ -446,7 +446,7 @@ impl State {
                 paths,
                 Request::CreateTimeBlock {
                     work_unit_id: unit,
-                    work_unit_revision: block.revision.digest(),
+                    work_unit_revision: block.revision,
                     start: when.start(),
                     end: when.end(),
                 },
@@ -459,13 +459,16 @@ impl State {
                 },
             )
             .map(|synced| publication_message("Time block", unit, synced))
-        } else {
+        } else if let Some(revision) =
+            mcbtodo_application::document_revision_in_snapshot(vault, unit)
+                .filter(|revision| revision.digest() == block.revision)
+        {
             let result = VaultCommands::new(root, vault.timezone()).create_time_block(
                 unit,
                 when.start(),
                 when.end(),
                 Availability::Busy,
-                block.revision,
+                revision,
             );
             match result {
                 Err(WriteError::StaleRevision { .. } | WriteError::WorkUnitNotFound { .. }) => {
@@ -473,6 +476,8 @@ impl State {
                 }
                 result => local_publication("Time block", result),
             }
+        } else {
+            Err(WriteFailure::StaleRevision)
         };
         let saved = match saved {
             Ok(message) => message,

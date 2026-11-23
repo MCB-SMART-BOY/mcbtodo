@@ -921,6 +921,7 @@ fn reminder_creation_validates_the_offset_target_and_writer_lock_over_ipc() -> R
 
 #[test]
 fn time_block_creation_checks_offsets_revision_and_writer_lock_over_ipc() -> Result<()> {
+    use mcbtodo_domain::{Occurrence, time::Span};
     use mcbtodo_vault::Vault;
 
     let dir = private_tempdir()?;
@@ -999,6 +1000,27 @@ fn time_block_creation_checks_offsets_revision_and_writer_lock_over_ipc() -> Res
     );
     let saved = fs::read_to_string(path)?;
     assert!(saved.ends_with("Concurrent edit.\n"));
+    let day = "2026-11-20".parse()?;
+    let Response::Calendar { items } = status(
+        &mut server,
+        socket.clone(),
+        Request::Calendar {
+            start: day,
+            through: day,
+            timezone: "UTC".into(),
+        },
+    ) else {
+        anyhow::bail!("a second client could not query the calendar after publication");
+    };
+    assert!(items.iter().any(|item| {
+        item.id == work_unit_id
+            && item.busy
+            && matches!(
+                item.occurrence,
+                Occurrence::Span(Span::DateTimeSpan(span))
+                    if span.start().to_rfc3339() == start && span.end().to_rfc3339() == end
+            )
+    }));
     assert!(matches!(
         status(&mut server, socket, valid),
         Response::Error {
