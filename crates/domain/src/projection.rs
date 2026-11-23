@@ -198,3 +198,24 @@ pub struct WorkUnitGraphNode {
     pub prerequisites: Vec<Id>,
     pub dependents: Vec<Id>,
 }
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DependencyOperation {
+    Add,
+    Remove,
+}
+
+/// A dependency edit and its display context from the same Vault snapshot.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct WorkUnitDependencyPreview {
+    pub target: Id,
+    pub prerequisites: Vec<Id>,
+    pub added: Vec<Id>,
+    pub removed: Vec<Id>,
+    pub newly_blocked: Vec<Id>,
+    pub unblocked: Vec<Id>,
+    /// Digest of the target Markdown revision the edit was based on.
+    pub revision: String,
+    pub titles: std::collections::BTreeMap<Id, String>,
+}

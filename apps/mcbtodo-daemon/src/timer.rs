@@ -82,6 +82,8 @@ impl Timer {
                 | Request::Outline { .. }
                 | Request::Inbox
                 | Request::WorkUnitGraph { .. }
+                | Request::PreviewWorkUnitDependencyChange { .. }
+                | Request::SetWorkUnitDependencies { .. }
                 | Request::TriageInbox { .. }
                 | Request::ListNotifications { .. }
                 | Request::ListReminderNotifications { .. }

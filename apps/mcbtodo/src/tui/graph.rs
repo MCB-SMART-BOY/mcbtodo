@@ -1,11 +1,6 @@
 use std::collections::BTreeMap;
 
-use anyhow::Result;
-use mcbtodo_application::{
-    DependencyOperation, WorkUnitDependencyPreview, preview_work_unit_dependency_change,
-};
-use mcbtodo_domain::{Id, WorkUnitGraphNode};
-use mcbtodo_vault::{Revision, Vault};
+use mcbtodo_domain::{Id, WorkUnitDependencyPreview, WorkUnitGraphNode};
 
 pub(super) struct Node {
     pub(super) id: Id,
@@ -43,27 +38,9 @@ pub(super) fn nodes(items: Vec<WorkUnitGraphNode>) -> Vec<Node> {
         .collect()
 }
 
-pub(super) fn edit(
-    vault: &Vault,
-    target: Id,
-    sources: &std::collections::BTreeSet<Id>,
-    adding: bool,
-) -> Result<Edit> {
-    preview_work_unit_dependency_change(
-        vault,
-        target,
-        sources,
-        if adding {
-            DependencyOperation::Add
-        } else {
-            DependencyOperation::Remove
-        },
-    )
-}
-
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct Submission {
     pub(super) target: Id,
     pub(super) prerequisites: Vec<Id>,
-    pub(super) revision: Revision,
+    pub(super) revision: String,
 }

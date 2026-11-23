@@ -114,12 +114,13 @@ pub(in crate::tui) struct GraphEditScreenModel<'a> {
 }
 
 impl<'a> GraphEditScreenModel<'a> {
-    pub(super) fn project<'title>(
-        edit: &Edit,
-        viewport: &'a ReviewViewport,
-        title: impl Fn(Id) -> Option<&'title str>,
-    ) -> Self {
-        let title = |id| title(id).unwrap_or("<missing WorkUnit>");
+    pub(super) fn project(edit: &Edit, viewport: &'a ReviewViewport) -> Self {
+        let title = |id| {
+            edit.titles
+                .get(&id)
+                .map(String::as_str)
+                .unwrap_or("<missing WorkUnit>")
+        };
         let target = title(edit.target);
         let mut text = String::from("Target: ");
         append_review_line(&mut text, target);

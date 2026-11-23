@@ -1,9 +1,12 @@
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, collections::BTreeSet, rc::Rc};
 
 use anyhow::{Error, Result, bail};
 use chrono_tz::Tz;
 use mcbtodo_application::project_outline;
-use mcbtodo_domain::{CalendarItem, InboxSummary, OutlineItem, time::DateSpan};
+use mcbtodo_domain::{
+    CalendarItem, DependencyOperation, Id, InboxSummary, OutlineItem, WorkUnitDependencyPreview,
+    time::DateSpan,
+};
 use mcbtodo_platform::WorkspacePaths;
 use mcbtodo_protocol::{Request, Response};
 use mcbtodo_vault::Vault;
@@ -98,6 +101,45 @@ impl DaemonViews {
                 _ => bail!("unexpected response to WorkUnit graph request"),
             }
         })
+    }
+
+    pub(super) fn preview_dependency_change(
+        &self,
+        target: Id,
+        sources: &BTreeSet<Id>,
+        operation: DependencyOperation,
+        timezone: Tz,
+    ) -> Result<WorkUnitDependencyPreview> {
+        match crate::daemon_request(
+            &self.paths,
+            Request::PreviewWorkUnitDependencyChange {
+                target,
+                sources: sources.clone(),
+                operation,
+                timezone: timezone.name().into(),
+            },
+        )? {
+            Response::WorkUnitDependencyPreview(edit) => Ok(edit),
+            _ => bail!("unexpected response to dependency preview"),
+        }
+    }
+
+    pub(super) fn set_dependencies(
+        &self,
+        edit: super::graph::Submission,
+    ) -> Result<bool, super::creation::CreationError> {
+        super::creation::submit_daemon_write(
+            &self.paths,
+            Request::SetWorkUnitDependencies {
+                target: edit.target,
+                prerequisites: edit.prerequisites,
+                revision: edit.revision,
+            },
+            |response| match response {
+                Response::WorkUnitDependenciesSet { synced } => Some(synced),
+                _ => None,
+            },
+        )
     }
 
     pub(super) fn invalidate(&mut self) {

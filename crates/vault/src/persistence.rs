@@ -1463,34 +1463,61 @@ impl VaultStore {
         &self,
         request: SetWorkUnitDependencies,
     ) -> Result<PersistedDocument, WriteError> {
-        let (_lock, vault) = self.locked_snapshot()?;
-        let id = request.work_unit_id;
+        self.set_work_unit_dependencies_with(
+            request.work_unit_id,
+            request.depends_on,
+            lock,
+            |revision| revision == &request.expected_revision,
+        )
+    }
+
+    pub fn try_set_work_unit_dependencies(
+        &self,
+        id: Id,
+        depends_on: Vec<Id>,
+        expected_digest: &str,
+    ) -> Result<PersistedDocument, WriteError> {
+        self.set_work_unit_dependencies_with(id, depends_on, try_lock, |revision| {
+            revision.digest() == expected_digest
+        })
+    }
+
+    fn set_work_unit_dependencies_with(
+        &self,
+        id: Id,
+        depends_on: Vec<Id>,
+        acquire_lock: fn(&Path) -> Result<File>,
+        matches_revision: impl FnOnce(&Revision) -> bool,
+    ) -> Result<PersistedDocument, WriteError> {
+        let (_lock, vault) = self.locked_snapshot_with(acquire_lock)?;
         let unit = vault
             .units
             .get(&id)
             .ok_or(WriteError::WorkUnitNotFound { id })?;
-        let revision = request.expected_revision;
-        check_revision(&vault, id, &revision)?;
-        if unit.data.depends_on == request.depends_on {
-            check_on_disk(&unit.path, id, &revision)?;
+        let revision = vault
+            .revision(id)
+            .filter(|revision| matches_revision(revision))
+            .ok_or(WriteError::StaleRevision { id })?;
+        if unit.data.depends_on == depends_on {
+            check_on_disk(&unit.path, id, revision)?;
             return Ok(PersistedDocument {
                 id,
                 path: unit.path.clone(),
-                revision,
+                revision: revision.clone(),
             });
         }
         TaskGraph::build_with_dependencies(
             vault.units.values().map(|document| &document.data),
             id,
-            &request.depends_on,
+            &depends_on,
         )
         .map_err(|error| WriteError::InvalidDocument(error.into()))?;
-        let updated = document::set_dependencies(&revision.0, &request.depends_on)
+        let updated = document::set_dependencies(&revision.0, &depends_on)
             .map_err(WriteError::InvalidDocument)?;
         replace(
             unit.path.clone(),
             id,
-            &revision,
+            revision,
             Revision::from_source(updated),
         )
     }

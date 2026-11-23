@@ -136,13 +136,15 @@ fn exchange(
         Response::Inbox { items, .. } => wire::write_inbox(&mut stream, items),
         Response::WorkUnitGraph { items, .. } => wire::write_work_unit_graph(&mut stream, items),
         // The encoder checks size before writing any bytes.
-        response @ Response::Calendar { .. } => match wire::write(&mut stream, &response) {
+        response @ (Response::Calendar { .. } | Response::WorkUnitDependencyPreview(_)) => match wire::write(&mut stream, &response) {
             Err(ProtocolError::FrameSize(_)) => wire::write(
                 &mut stream,
                 &Response::Error {
                     code: ErrorCode::InvalidRequest,
-                    message: "calendar result exceeds the IPC size limit; try a smaller date range"
-                        .into(),
+                    message: match response {
+                        Response::Calendar { .. } => "calendar result exceeds the IPC size limit; try a smaller date range",
+                        _ => "dependency preview exceeds the IPC size limit",
+                    }.into(),
                 },
             ),
             result => result,

@@ -7,8 +7,8 @@ use std::{fmt, str::FromStr};
 
 pub use graph::{GraphError, TaskGraph};
 pub use projection::{
-    CalendarEntry, CalendarItem, CalendarKind, InboxSummary, Occurrence, OutlineItem,
-    WorkUnitGraphNode,
+    CalendarEntry, CalendarItem, CalendarKind, DependencyOperation, InboxSummary, Occurrence,
+    OutlineItem, WorkUnitDependencyPreview, WorkUnitGraphNode,
 };
 
 use serde::{Deserialize, Serialize};

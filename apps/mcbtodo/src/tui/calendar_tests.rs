@@ -1278,7 +1278,7 @@ fn graph_dependency_edit_previews_then_confirms_or_cancels() {
     };
     assert_eq!(edit.target, translation);
     assert!(edit.prerequisites.is_empty());
-    assert!(edit.revision == *vault.revision(translation).unwrap());
+    assert_eq!(edit.revision, vault.revision(translation).unwrap().digest());
 }
 
 fn writable_project() -> (tempfile::TempDir, Vault) {
@@ -1543,19 +1543,60 @@ fn graph_opens_the_selected_daemon_work_unit_absent_from_local_snapshot() -> Res
                 ]
             }),
         )?;
+        let (mut stream, _) = listener.accept()?;
+        let request: Value = wire::read(&mut stream)?;
+        assert_eq!(request["command"], "preview_work_unit_dependency_change");
+        assert_eq!(request["target"], second.to_string());
+        assert_eq!(request["sources"], json!([first]));
+        assert_eq!(request["operation"], "remove");
+        wire::write(
+            &mut stream,
+            &json!({
+                "result": "work_unit_dependency_preview",
+                "target": second, "prerequisites": [], "added": [], "removed": [first],
+                "newly_blocked": [], "unblocked": [second], "revision": "server revision",
+                "titles": { (first.to_string()): "Reviewed prerequisite",
+                            (second.to_string()): "Reviewed dependent" }
+            }),
+        )?;
+        let (mut stream, _) = listener.accept()?;
+        let request: Value = wire::read(&mut stream)?;
+        assert_eq!(request["command"], "set_work_unit_dependencies");
+        assert_eq!(request["target"], second.to_string());
+        assert_eq!(request["prerequisites"], json!([]));
+        assert_eq!(request["revision"], "server revision");
+        wire::write(
+            &mut stream,
+            &json!({"result": "error", "code": "stale_revision", "message": "WorkUnit changed"}),
+        )?;
         Ok(())
     });
     let mut state = State::new("2026-11-25".parse()?);
     state.view = View::Outline;
-    state.daemon_views = Some(super::daemon_views::DaemonViews::new(paths));
+    state.daemon_views = Some(super::daemon_views::DaemonViews::new(paths.clone()));
     press(&mut state, &vault, "g");
     assert_eq!(state.view.label(), "Graph", "{}", state.message);
     assert_eq!(state.selected_document(&vault), Some(second));
     assert!(screen(&state, &vault, 80, 22).contains("Remote prerequisite"));
     press(&mut state, &vault, "h");
     assert_eq!(state.selected_document(&vault), Some(first));
-    press(&mut state, &vault, "l");
+    press(&mut state, &vault, "xl");
     assert_eq!(state.selected_document(&vault), Some(second));
+    press(&mut state, &vault, "d");
+    assert!(screen(&state, &vault, 80, 22).contains("Reviewed prerequisite → Reviewed dependent"));
+    let Action::SetGraphDependencies(edit) = state.handle(
+        KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+        &vault,
+    ) else {
+        panic!("expected the reviewed dependency edit");
+    };
+    let mut vault = vault;
+    state.set_graph_dependencies(&paths.vault_root(), &mut vault, edit);
+    assert!(
+        state.message.contains("WorkUnit changed"),
+        "{}",
+        state.message
+    );
     peer.join().unwrap()?;
     Ok(())
 }

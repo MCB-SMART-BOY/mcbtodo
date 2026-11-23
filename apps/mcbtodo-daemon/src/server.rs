@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::io;
 use std::path::Path;
 use std::time::Instant;
@@ -6,7 +7,7 @@ use anyhow::{Context, Result};
 use chrono::{Datelike, NaiveDate};
 use chrono_tz::Tz;
 use mcbtodo_application::{ProjectPlan, VaultCommands, VaultQueries};
-use mcbtodo_domain::time::DateSpan;
+use mcbtodo_domain::{DependencyOperation, time::DateSpan};
 use mcbtodo_execution::notification::NotifySend;
 use mcbtodo_platform::WorkspacePaths;
 use mcbtodo_protocol::{ErrorCode, ProjectDates, Request, Response};
@@ -210,6 +211,31 @@ impl Server {
             Request::WorkUnitGraph { timezone } => {
                 query_work_unit_graph(self.runtime.paths(), &timezone)
             }
+            Request::PreviewWorkUnitDependencyChange {
+                target,
+                sources,
+                operation,
+                timezone,
+            } => preview_work_unit_dependency_change(
+                self.runtime.paths(),
+                target,
+                &sources,
+                operation,
+                &timezone,
+            ),
+            Request::SetWorkUnitDependencies {
+                target,
+                prerequisites,
+                revision,
+            } => create_in_vault(
+                self.runtime.paths(),
+                "WorkUnit dependencies",
+                target,
+                |commands| {
+                    commands.try_set_work_unit_dependencies(target, prerequisites, &revision)
+                },
+                |synced| Response::WorkUnitDependenciesSet { synced },
+            ),
             Request::TriageInbox {
                 inbox_id,
                 project_id,
@@ -473,6 +499,41 @@ fn query_work_unit_graph(paths: &WorkspacePaths, timezone: &str) -> Response {
                     .into(),
             }
         }
+    }
+}
+
+fn preview_work_unit_dependency_change(
+    paths: &WorkspacePaths,
+    target: Uuid,
+    sources: &BTreeSet<Uuid>,
+    operation: DependencyOperation,
+    timezone: &str,
+) -> Response {
+    let Ok(timezone) = timezone.parse::<Tz>() else {
+        return Response::Error {
+            code: ErrorCode::InvalidRequest,
+            message: "expected an IANA timezone".into(),
+        };
+    };
+    let vault = match mcbtodo_vault::Vault::load(&paths.vault_root(), timezone) {
+        Ok(vault) => vault,
+        Err(error) => {
+            eprintln!("mcbtodo-daemon: loading Vault for dependency preview: {error:#}");
+            return Response::Error {
+                code: ErrorCode::Internal,
+                message: "could not load the default Vault WorkUnit graph; check the daemon log"
+                    .into(),
+            };
+        }
+    };
+    match mcbtodo_application::preview_work_unit_dependency_change(
+        &vault, target, sources, operation,
+    ) {
+        Ok(edit) => Response::WorkUnitDependencyPreview(edit),
+        Err(error) => Response::Error {
+            code: ErrorCode::InvalidRequest,
+            message: error.to_string(),
+        },
     }
 }
 

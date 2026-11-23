@@ -21,7 +21,10 @@ use mcbtodo_domain::{
     recurrence::{Reminder, ReminderSchedule},
     time::{DateSpan, DateTimeSpan, Deadline, Span, ZonedMoment},
 };
-pub use mcbtodo_domain::{CalendarItem, InboxSummary, OutlineItem};
+pub use mcbtodo_domain::{
+    CalendarItem, DependencyOperation, InboxSummary, OutlineItem, WorkUnitDependencyPreview,
+    WorkUnitGraphNode,
+};
 use mcbtodo_vault::{
     AddWorkUnitGraph, BindWorkflow, CaptureInboxEntry, CaptureTask, CompleteWorkUnit, CreateEvent,
     CreateProject, CreateReminder, CreateTimeBlock, CreateWorkUnit, MaterializeTaskOccurrences,
@@ -493,6 +496,20 @@ impl VaultCommands {
         )
     }
 
+    /// Replaces prerequisites without waiting for a competing Vault writer.
+    pub fn try_set_work_unit_dependencies(
+        &self,
+        work_unit_id: Id,
+        depends_on: Vec<Id>,
+        expected_digest: &str,
+    ) -> Result<PersistedDocument, WriteError> {
+        VaultStore::new(&self.root, self.timezone).try_set_work_unit_dependencies(
+            work_unit_id,
+            depends_on,
+            expected_digest,
+        )
+    }
+
     /// Assigns a captured Inbox entry to an existing Project without losing its content.
     ///
     /// Vault validates the target and observed Inbox revision under its writer lock.
@@ -892,28 +909,9 @@ fn work_unit_summary(vault: &Vault, row: OutlineItem) -> WorkUnitSummary {
     }
 }
 
-pub use mcbtodo_domain::WorkUnitGraphNode;
-
 #[derive(Clone, Debug, Default, Serialize, PartialEq, Eq)]
 pub struct WorkUnitGraph {
     pub nodes: Vec<WorkUnitGraphNode>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DependencyOperation {
-    Add,
-    Remove,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct WorkUnitDependencyPreview {
-    pub target: Id,
-    pub prerequisites: Vec<Id>,
-    pub added: Vec<Id>,
-    pub removed: Vec<Id>,
-    pub newly_blocked: Vec<Id>,
-    pub unblocked: Vec<Id>,
-    pub revision: Revision,
 }
 
 /// Project and WorkUnit metadata projected from one snapshot for focus reports.
@@ -1232,8 +1230,7 @@ pub fn project_work_unit_graph(vault: &Vault) -> WorkUnitGraph {
 
 /// Previews a dependency change against the caller's current validated snapshot.
 ///
-/// The returned revision must be passed unchanged to
-/// `VaultCommands::set_work_unit_dependencies` when the user confirms.
+/// The target revision digest binds the preview to the Markdown being edited.
 pub fn preview_work_unit_dependency_change(
     vault: &Vault,
     target: Id,
@@ -1284,6 +1281,13 @@ pub fn preview_work_unit_dependency_change(
         }
     }
 
+    let titles = std::iter::once(&target)
+        .chain(&added)
+        .chain(&removed)
+        .chain(&newly_blocked)
+        .chain(&unblocked)
+        .filter_map(|&id| vault.work_unit(id).map(|unit| (id, unit.title.clone())))
+        .collect();
     Ok(WorkUnitDependencyPreview {
         target,
         prerequisites,
@@ -1291,17 +1295,15 @@ pub fn preview_work_unit_dependency_change(
         removed,
         newly_blocked,
         unblocked,
-        revision: vault
-            .revision(target)
-            .expect("WorkUnit has revision")
-            .clone(),
+        revision: revision_digest(vault, target),
+        titles,
     })
 }
 
 fn revision_digest(vault: &Vault, id: Id) -> String {
     vault
         .revision(id)
-        .expect("every outline or Inbox document has a revision")
+        .expect("every projected document has a revision")
         .digest()
 }
 
@@ -2875,7 +2877,7 @@ mod tests {
                 .unwrap()
                 .revision(translation)
                 .unwrap()
-                .clone()
+                .digest()
         );
 
         let read_spec = Id::parse_str("30000000-0000-4000-8000-000000000001").unwrap();

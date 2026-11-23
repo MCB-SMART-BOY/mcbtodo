@@ -12,7 +12,10 @@ pub use mcbtodo_ports::focus::TimerState;
 pub use wire::ProtocolError;
 
 use chrono::{DateTime, FixedOffset, NaiveDate, Utc};
-use mcbtodo_domain::{CalendarItem, InboxSummary, OutlineItem, WorkUnitGraphNode};
+use mcbtodo_domain::{
+    CalendarItem, DependencyOperation, InboxSummary, OutlineItem, WorkUnitDependencyPreview,
+    WorkUnitGraphNode,
+};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -48,6 +51,17 @@ pub enum Request {
     /// Project the dependency graph from one validated default Vault snapshot.
     WorkUnitGraph {
         timezone: String,
+    },
+    PreviewWorkUnitDependencyChange {
+        target: Uuid,
+        sources: std::collections::BTreeSet<Uuid>,
+        operation: DependencyOperation,
+        timezone: String,
+    },
+    SetWorkUnitDependencies {
+        target: Uuid,
+        prerequisites: Vec<Uuid>,
+        revision: String,
     },
     /// Assign an observed Inbox entry to a Project and retain its source document.
     TriageInbox {
@@ -137,6 +151,10 @@ pub enum Response {
     WorkUnitGraph {
         items: Vec<WorkUnitGraphNode>,
         more: bool,
+    },
+    WorkUnitDependencyPreview(WorkUnitDependencyPreview),
+    WorkUnitDependenciesSet {
+        synced: bool,
     },
     /// The Inbox assignment is visible. `synced` describes its durability.
     InboxTriaged {

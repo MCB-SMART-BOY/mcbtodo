@@ -625,9 +625,7 @@ impl<'a> ScreenModel<'a> {
                 timezone,
             )),
             Overlay::GraphEdit { edit, viewport } => {
-                Content::GraphEdit(GraphEditScreenModel::project(edit, viewport, |id| {
-                    vault.work_unit(id).map(|unit| unit.title.as_str())
-                }))
+                Content::GraphEdit(GraphEditScreenModel::project(edit, viewport))
             }
             Overlay::Picker { query, row } => {
                 match picker::matches(vault, state.daemon_views.as_ref(), query) {

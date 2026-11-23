@@ -513,6 +513,174 @@ fn graph_clients_receive_all_nodes_and_see_subsequent_vault_edits() -> Result<()
 }
 
 #[test]
+fn graph_dependency_edits_are_previewed_and_committed_by_the_daemon() -> Result<()> {
+    use mcbtodo_domain::Id;
+    use mcbtodo_vault::Vault;
+
+    let dir = private_tempdir()?;
+    let paths = WorkspacePaths::from_home(dir.path().to_owned());
+    paths.initialize()?;
+    let root = paths.vault_root();
+    let project = root.join("projects/dependency-edit");
+    let project_id = Uuid::new_v4();
+    let task_id = Uuid::new_v4();
+    let prerequisite = Id::new_v4();
+    let dependent = Id::new_v4();
+    fs::create_dir_all(project.join("tasks"))?;
+    fs::create_dir_all(project.join("units"))?;
+    fs::write(
+        project.join("project.md"),
+        format!("---\nschema: mcbtodo.project/v1\nid: {project_id}\n---\n# Graph edit\n"),
+    )?;
+    fs::write(
+        project.join("tasks/task.md"),
+        format!(
+            "---\nschema: mcbtodo.task/v1\nid: {task_id}\nproject_id: {project_id}\n---\n# Task\n"
+        ),
+    )?;
+    let prerequisite_path = project.join(format!("units/{prerequisite}.md"));
+    let dependent_path = project.join(format!("units/{dependent}.md"));
+    fs::write(
+        &prerequisite_path,
+        format!(
+            "---\nschema: mcbtodo.work-unit/v1\nid: {prerequisite}\nproject_id: {project_id}\nparent_task_id: {task_id}\nstatus: todo\ndepends_on: []\n---\n# Prerequisite\n"
+        ),
+    )?;
+    fs::write(
+        &dependent_path,
+        format!(
+            "---\nschema: mcbtodo.work-unit/v1\nid: {dependent}\nproject_id: {project_id}\nparent_task_id: {task_id}\nstatus: todo\ndepends_on: [{prerequisite}]\n---\n# Dependent\n"
+        ),
+    )?;
+
+    let socket = paths.socket_path();
+    let timezone = paths.load_config()?.timezone;
+    let mut server = Server::open(paths, crate::DEFAULT_WORKER_SLOTS)?;
+    let preview = |server: &mut Server, target, sources, operation| {
+        status(
+            server,
+            socket.clone(),
+            Request::PreviewWorkUnitDependencyChange {
+                target,
+                sources,
+                operation,
+                timezone: timezone.name().into(),
+            },
+        )
+    };
+    let Response::WorkUnitDependencyPreview(edit) = preview(
+        &mut server,
+        dependent,
+        [prerequisite].into(),
+        mcbtodo_domain::DependencyOperation::Remove,
+    ) else {
+        panic!("expected a dependency preview");
+    };
+    assert_eq!(edit.prerequisites, Vec::<Id>::new());
+    assert_eq!(edit.removed, [prerequisite]);
+    assert_eq!(edit.titles[&dependent], "Dependent");
+    assert_eq!(edit.titles[&prerequisite], "Prerequisite");
+
+    let submit = || Request::SetWorkUnitDependencies {
+        target: dependent,
+        prerequisites: edit.prerequisites.clone(),
+        revision: edit.revision.clone(),
+    };
+    let lock = fs::File::options()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(root.join(".mcbtodo-vault.lock"))?;
+    lock.lock()?;
+    assert!(matches!(
+        status(&mut server, socket.clone(), submit()),
+        Response::Error {
+            code: ErrorCode::Conflict,
+            ..
+        }
+    ));
+    drop(lock);
+
+    fs::write(
+        &dependent_path,
+        fs::read_to_string(&dependent_path)?.replace("# Dependent", "# Edited dependent"),
+    )?;
+    assert!(matches!(
+        status(&mut server, socket.clone(), submit()),
+        Response::Error {
+            code: ErrorCode::StaleRevision,
+            ..
+        }
+    ));
+
+    let Response::WorkUnitDependencyPreview(current) = preview(
+        &mut server,
+        dependent,
+        [prerequisite].into(),
+        mcbtodo_domain::DependencyOperation::Remove,
+    ) else {
+        panic!("expected a current dependency preview");
+    };
+    let before_cycle = Vault::load(&root, timezone)?;
+    let cycle = status(
+        &mut server,
+        socket.clone(),
+        Request::SetWorkUnitDependencies {
+            target: prerequisite,
+            prerequisites: vec![dependent],
+            revision: before_cycle.revision(prerequisite).unwrap().digest(),
+        },
+    );
+    assert!(matches!(
+        cycle,
+        Response::Error {
+            code: ErrorCode::InvalidRequest,
+            ..
+        }
+    ));
+
+    assert_eq!(
+        status(
+            &mut server,
+            socket.clone(),
+            Request::SetWorkUnitDependencies {
+                target: dependent,
+                prerequisites: current.prerequisites,
+                revision: current.revision,
+            },
+        ),
+        Response::WorkUnitDependenciesSet { synced: true }
+    );
+    let Response::WorkUnitGraph { items, more: false } = status(
+        &mut server,
+        socket,
+        Request::WorkUnitGraph {
+            timezone: timezone.name().into(),
+        },
+    ) else {
+        panic!("expected a graph read from the second client request");
+    };
+    assert!(
+        items
+            .iter()
+            .find(|item| item.id == dependent)
+            .unwrap()
+            .prerequisites
+            .is_empty()
+    );
+    assert!(fs::read_to_string(&dependent_path)?.contains("# Edited dependent"));
+    assert!(
+        Vault::load(&root, timezone)?
+            .work_unit(dependent)
+            .unwrap()
+            .data
+            .depends_on
+            .is_empty()
+    );
+    Ok(())
+}
+
+#[test]
 fn planned_project_creation_preserves_calendar_kind_and_checks_the_writer_lock() -> Result<()> {
     use chrono::NaiveDate;
     use mcbtodo_domain::{

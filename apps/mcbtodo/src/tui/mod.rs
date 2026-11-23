@@ -944,7 +944,23 @@ impl State {
                     self.message = "Select source WorkUnits with v/x first".into();
                     return Continue;
                 };
-                match graph::edit(vault, target, sources, key.code == KeyCode::Char('a')) {
+                let operation = if key.code == KeyCode::Char('a') {
+                    mcbtodo_domain::DependencyOperation::Add
+                } else {
+                    mcbtodo_domain::DependencyOperation::Remove
+                };
+                let preview = match &self.daemon_views {
+                    Some(service) => service.preview_dependency_change(
+                        target,
+                        sources,
+                        operation,
+                        vault.timezone(),
+                    ),
+                    None => mcbtodo_application::preview_work_unit_dependency_change(
+                        vault, target, sources, operation,
+                    ),
+                };
+                match preview {
                     Ok(edit) => {
                         self.overlay = Overlay::GraphEdit {
                             edit,
@@ -1230,10 +1246,45 @@ impl State {
     }
 
     fn set_graph_dependencies(&mut self, root: &Path, vault: &mut Vault, edit: graph::Submission) {
+        let target = edit.target;
+        if let Some(service) = &self.daemon_views {
+            self.message = match service.set_dependencies(edit) {
+                Ok(synced) => {
+                    self.graph_selection = None;
+                    self.invalidate_daemon_views();
+                    self.sync_row(vault, Some(FocusIdentity::Document(target)));
+                    if synced {
+                        "Dependencies updated".into()
+                    } else {
+                        "Dependencies updated · directory sync could not be confirmed".into()
+                    }
+                }
+                Err(creation::CreationError::StaleRevision) => {
+                    self.invalidate_daemon_views();
+                    "WorkUnit changed · r to reload, then retry".into()
+                }
+                Err(creation::CreationError::Rejected(error)) => {
+                    format!("Graph edit failed · {error}")
+                }
+                Err(creation::CreationError::Unknown) => {
+                    self.invalidate_daemon_views();
+                    self.sync_row(vault, Some(FocusIdentity::Document(target)));
+                    format!("Graph edit outcome unknown · Check WorkUnit {target} before retrying")
+                }
+            };
+            return;
+        }
+        let Some(revision) = vault
+            .revision(target)
+            .filter(|r| r.digest() == edit.revision)
+        else {
+            self.message = "WorkUnit changed · r to reload, then retry".into();
+            return;
+        };
         match VaultCommands::new(root, vault.timezone()).set_work_unit_dependencies(
-            edit.target,
+            target,
             edit.prerequisites,
-            edit.revision,
+            revision.clone(),
         ) {
             Ok(_) => {
                 self.graph_selection = None;

@@ -349,17 +349,21 @@ and uses a client-side file watcher for refresh.
 ### Shared Graph browsing over local IPC
 
 The Linux default-Vault Graph uses the daemon's ordered WorkUnit projection
-for rendering, selection, and edge navigation. The protocol assembles all
-response frames before publishing the graph. A TUI test opens a WorkUnit
-that is absent from its local snapshot. A real socket test exercises two
-independent clients, a graph larger than one frame, and a subsequent
-Markdown edit.
+for rendering, selection, edge navigation, dependency-edit preview, and
+confirmed writes. The protocol assembles all response frames before
+publishing the graph. The daemon creates preview titles and impact details
+from one Vault snapshot; confirmation checks the target Markdown digest,
+writer lock, and candidate DAG before publishing. TUI tests cover a WorkUnit
+absent from the client snapshot and the remote preview/write requests. Real
+socket tests cover a graph larger than one frame, independent clients,
+subsequent Markdown edits, dependency preview, lock contention, stale target
+revisions, cycle rejection, and reading a successful edit back through the
+service.
 
-The TUI still loads a local snapshot at startup for Graph dependency edit
-preview and confirmation, some forms, and external editing. File watching
-still takes place in the client. Each uncached read scans the Vault in the
-daemon and can wait up to the IPC deadline. GUI, launcher integration and
-service-side change notifications remain planned.
+The TUI still loads a local snapshot at startup for other forms and external
+editing. File watching still takes place in the client. Each uncached read
+scans the Vault in the daemon and can wait up to the IPC deadline. GUI,
+launcher integration and service-side change notifications remain planned.
 
 ## Latest Review
 
