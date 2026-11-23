@@ -231,6 +231,12 @@ active. `cargo xtask smoke-systemd --bin-dir "$HOME/.cargo/bin"` verified timer
 continuity and forced-restart recovery in an isolated workspace using those
 installed binaries.
 
+The single `cargo install --git` command in the systemd guide also installed
+all three packages from GitHub commit `54c6bde` into an isolated Cargo root.
+The sandbox and systemd smoke commands passed with that root's `bin`
+directory. The systemd smoke verified that a second TUI could reopen the
+same timer session and that the service recovered it after a forced restart.
+
 ## Latest Review
 
 On 2026-11-22, the Linux AArch64 release packaging follow-up verified all

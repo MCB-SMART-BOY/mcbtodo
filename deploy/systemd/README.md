@@ -4,18 +4,27 @@
 
 ## 通过 Cargo 安装到当前用户
 
-在仓库根目录运行以下命令。`--root` 将三个程序统一装到 `~/.cargo/bin`，与下面的 systemd 服务路径一致。终端的 `PATH` 需要包含 `~/.cargo/bin`。
+从任意目录运行以下命令。`--root` 将三个程序统一装到 `~/.cargo/bin`，与下方的 systemd 服务路径一致。终端的 `PATH` 需要包含 `~/.cargo/bin`。
 
 ```sh
-cargo install --locked --root "$HOME/.cargo" --path apps/mcbtodo-worker
-cargo install --locked --root "$HOME/.cargo" --path apps/mcbtodo-daemon
-cargo install --locked --root "$HOME/.cargo" --path apps/mcbtodo
+cargo install --locked --root "$HOME/.cargo" \
+  --git https://github.com/MCB-SMART-BOY/mcbtodo.git \
+  mcbtodo mcbtodo-daemon mcbtodo-worker
+```
+
+也可以从本地工作树安装。在仓库根目录分别执行 `cargo install --locked --root "$HOME/.cargo" --path apps/mcbtodo`，并对 `apps/mcbtodo-daemon` 和 `apps/mcbtodo-worker` 执行相同命令。
+
+首次安装时，在仓库根目录用随附的模板创建用户服务。已有用户服务可以用 `systemctl --user edit --full mcbtodo-daemon.service` 修改 `ExecStart`，保留其余设置。该命令也可用来将 `ExecStart` 指向自定义 `--root` 下的 `bin/mcbtodo-daemon`。
+
+```sh
 mkdir -p "$HOME/.config/systemd/user"
 sed 's|^ExecStart=/usr/bin/mcbtodo-daemon$|ExecStart=%h/.cargo/bin/mcbtodo-daemon|' \
   deploy/systemd/mcbtodo-daemon.service > "$HOME/.config/systemd/user/mcbtodo-daemon.service"
 ```
 
-继续执行下方的“启动和使用”。更新本地安装时重新执行三条 `cargo install` 命令，然后执行 `systemctl --user restart mcbtodo-daemon.service`。
+只有安装程序的步骤需要 Cargo。服务配置和启动由 systemd 管理。
+继续执行下方的“启动和使用”。更新时重新执行所选安装命令，然后执行
+`systemctl --user restart mcbtodo-daemon.service`。从本地工作树重装同一版本时，给三条命令加上 `--force`。
 
 ## 从发行包安装到系统目录
 
