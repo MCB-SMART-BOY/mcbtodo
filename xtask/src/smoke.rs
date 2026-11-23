@@ -80,7 +80,10 @@ pub(crate) fn run(root: &Path, bin_dir: &Path, sandbox: bool) -> Result<()> {
     fs::create_dir(&empty_path)?;
     let mut first_run = smoke.command("mcbtodo");
     first_run.env("PATH", &empty_path);
-    Smoke::drive_terminal(first_run, TERMINAL_SIZE, &[("Month", "q")])?;
+    drive_default_tui(
+        first_run,
+        &[("Month", " ti"), ("Start mcbtodo-daemon", "q")],
+    )?;
     verify_first_run(&smoke)?;
     let settings_home = temp.path().join("settings-home");
     fs::create_dir(&settings_home)?;
@@ -2593,6 +2596,11 @@ const TERMINAL_SIZE: TerminalSize = TerminalSize {
     rows: NonZeroU16::new(30).unwrap(),
     columns: NonZeroU16::new(100).unwrap(),
 };
+
+pub(crate) fn drive_default_tui(command: Command, steps: &[(&str, &str)]) -> Result<()> {
+    Smoke::drive_terminal(command, TERMINAL_SIZE, steps)?;
+    Ok(())
+}
 
 impl TerminalSize {
     fn parser(self) -> vt100::Parser {

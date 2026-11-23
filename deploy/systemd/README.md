@@ -28,6 +28,8 @@ systemctl --user enable --now mcbtodo-daemon.service
 mcbtodo timer status --json
 ```
 
+服务启动后，在任意终端运行 `mcbtodo` 打开 TUI。`:timer status` 查询服务中的计时，`q` 关闭 TUI。再次打开可以继续查看该计时会话。服务生命周期由 systemd 用户管理器负责。
+
 如果服务未启动，先查看服务状态和日志。
 
 ```sh
@@ -40,7 +42,7 @@ journalctl --user-unit mcbtodo-daemon.service -b -n 50
 - 若日志提示状态目录缺失，先以服务用户运行 `mcbtodo init`。若提示目录权限错误，检查 `~/.mcbtodo/state` 的属主和权限。该目录应为当前用户所有，权限为 `0700`。
 - 若日志提示已有守护进程持有锁，先停止在终端中手动启动的 `mcbtodo-daemon`，再重启用户服务。
 
-从仓库根目录可运行实际的用户服务冒烟测试。`xtask` 用 Bubblewrap（`bwrap`）挂载临时 home，在 systemd 用户管理器中启动临时服务，验证计时检查点、服务自动重启以及 Markdown 和 JSON 报告。JSON 由 Rust 解析。
+从仓库根目录可运行实际的用户服务冒烟测试。`xtask` 用 Bubblewrap（`bwrap`）挂载临时 home，在 systemd 用户管理器中启动临时服务。测试在两个先后启动的 TUI 进程中读取同一个持续计时的会话，再验证计时检查点、服务自动重启以及 Markdown 和 JSON 报告。JSON 由 Rust 解析。
 
 ```sh
 cargo build --release --locked --workspace --bin mcbtodo --bin mcbtodo-daemon --bin mcbtodo-worker

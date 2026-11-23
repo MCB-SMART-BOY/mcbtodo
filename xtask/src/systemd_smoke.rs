@@ -85,13 +85,18 @@ pub(crate) fn run(root: &Path, bin_dir: &Path) -> Result<()> {
         .as_str()
         .and_then(|stamp| stamp.get(..10))
         .context("timer start response has no start date")?;
+    smoke.read_timer_in_tui(started_id)?;
+    let elapsed_at_exit = smoke.json(&["timer", "status", "--json"])?["session"]["elapsed_seconds"]
+        .as_u64()
+        .context("running timer has no elapsed time after TUI exit")?;
     smoke.wait_for_timer("running past the checkpoint", |status| {
         status["state"] == "running"
             && status["session"]["id"] == started_id
             && status["session"]["elapsed_seconds"]
                 .as_u64()
-                .is_some_and(|elapsed| elapsed >= 6)
+                .is_some_and(|elapsed| elapsed >= 6 && elapsed > elapsed_at_exit)
     })?;
+    smoke.read_timer_in_tui(started_id)?;
 
     checked_output(
         &mut service.systemctl(&["kill", "--signal=KILL", "--kill-whom=all"]),
@@ -133,7 +138,7 @@ pub(crate) fn run(root: &Path, bin_dir: &Path) -> Result<()> {
         "stopping the transient service",
     )?;
     service.diagnostics = false;
-    println!("systemd user service smoke passed (timer checkpoint, restart, and focus report)");
+    println!("systemd user service smoke passed (TUI reopen, timer recovery, and focus report)");
     Ok(())
 }
 
@@ -162,12 +167,21 @@ impl SystemdSmoke<'_> {
         ]
     }
 
+    fn client(&self) -> Command {
+        let mut command = Command::new(&self.bwrap);
+        command
+            .args(self.sandbox_args())
+            .arg(self.directory.join("mcbtodo"));
+        command
+    }
+
+    fn read_timer_in_tui(&self, session_id: &str) -> Result<()> {
+        crate::smoke::drive_default_tui(self.client(), &[("Month", " ti"), (session_id, "q")])
+    }
+
     fn cli(&self, args: &[&str]) -> Result<String> {
         checked_output(
-            Command::new(&self.bwrap)
-                .args(self.sandbox_args())
-                .arg(self.directory.join("mcbtodo"))
-                .args(args),
+            self.client().args(args),
             &format!("running isolated mcbtodo {args:?}"),
         )
     }

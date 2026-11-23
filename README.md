@@ -12,12 +12,19 @@ cargo run
 
 根 `Cargo.toml` 将 `apps/mcbtodo` 设为唯一 `default-member`，所以在仓库根目录直接运行 `cargo run` 会启动 TUI。首次启动会安全创建默认配置、状态目录和空 Vault；现有配置不会被覆盖。`mcbtodo init` 仍可用于提前初始化。Cargo 参数与程序参数用 `--` 分隔，例如 `cargo run -- --help` 或 `cargo run -- init`。要启动另一个 workspace binary，明确选择包：
 
+### 后台服务
+
+`mcbtodo-daemon` 是后台服务。安装发行包后，可按 [systemd 用户服务指南](deploy/systemd/README.md) 在登录时启动服务。服务运行后，在任意终端执行 `mcbtodo` 打开 TUI。按 `q` 退出终端界面后，服务继续保存计时、处理提醒和运行工作流。再次打开 TUI，用 `:timer status` 查看同一计时会话，或打开 Workflow 查看后台运行。
+
+从源码开发时，可以在一个终端启动 Daemon，在另一个终端运行 `cargo run`：
+
 ```sh
+cargo run --locked -- init
 cargo build --locked --workspace --bin mcbtodo --bin mcbtodo-daemon --bin mcbtodo-worker
 cargo run --locked -p mcbtodo-daemon
 ```
 
-`mcbtodo-worker` 是由 Daemon 按工作流节点启动的内部进程，通常不需要手动运行。浏览 TUI 不需要先构建 Daemon 或 Worker；专注计时、提醒、调度和工作流执行才需要构建并另外运行 `mcbtodo-daemon`。
+TUI 和 Daemon 使用同一用户的本地 socket。服务停止时，计时和 Workflow 界面会提示启动 Daemon，日历和 Markdown Vault 编辑仍可独立使用。Daemon 按工作流节点启动 `mcbtodo-worker` 处理脚本和 Agent 请求。
 
 Daemon 默认使用一个 Worker 槽。在 TUI 设置的 Daemon 分组中可以选择
 1 到 4 个槽，重启 Daemon 后生效。启动参数 `--worker-slots` 优先于保存的设置。
@@ -252,7 +259,7 @@ cargo xtask agent prepare --harness codex --workflow review --offline
 项目按 [Apache-2.0](LICENSE) 许可证发布；贡献材料须有清晰来源，并可
 依照该许可证及其适用条款接收和分发。
 
-`cargo xtask smoke-systemd` 通过临时用户服务验证计时恢复，需要可访问的 systemd 用户管理器和 Bubblewrap。`cargo xtask package` 使用 `tar` 将同架构的发行二进制和服务文件打包到 `target/dist/`。
+`cargo xtask smoke-systemd` 通过临时用户服务验证退出并重开 TUI 后计时继续，以及服务崩溃恢复。该测试需要可访问的 systemd 用户管理器和 Bubblewrap。`cargo xtask package` 使用 `tar` 将同架构的发行二进制和服务文件打包到 `target/dist/`。
 
 ## 支持范围与发布状态
 

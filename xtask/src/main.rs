@@ -38,7 +38,7 @@ enum Task {
         #[arg(long)]
         sandbox: bool,
     },
-    /// Verify timer recovery through a transient systemd user service.
+    /// Verify TUI reopen and timer recovery through a transient systemd user service.
     SmokeSystemd {
         /// Directory relative to the workspace root, or an absolute path.
         #[arg(long, default_value = "target/release")]

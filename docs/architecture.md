@@ -1,6 +1,8 @@
 # mcbtodo 架构
 
-mcbtodo 当前面向 Linux AArch64 和 x86_64。Markdown Vault 保存用户的项目和计划。守护进程独立保存已确认的运行状态，终端客户端可随时退出。仓库 CI 在这两种 Linux 架构上构建和测试；其他操作系统尚未列为支持目标。
+mcbtodo 的后台服务运行于 Linux AArch64 和 x86_64。macOS ARM64 和 Windows x64 的前台应用有原生 CI 测试。
+
+`mcbtodo-daemon` 常驻并拥有专注计时、提醒、调度和工作流运行状态。`mcbtodo` 是可独立打开和关闭的终端客户端，通过同用户的 Unix socket 查询和控制后台运行。脚本和 Agent 由 Daemon 按节点派发给临时 `mcbtodo-worker`。日历、任务和部分编辑操作直接读写 Markdown Vault，使用现有 Vault 写锁和 revision 校验，因此服务停止时仍能使用这些功能。
 
 ## Cargo workspace
 

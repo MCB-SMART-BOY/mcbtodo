@@ -206,6 +206,22 @@ The Worker Settings update passed `MCBTODO_REQUIRE_SANDBOX=1 cargo xtask check`
 on Linux AArch64 with 668 tests and no skips. The debug-binary sandbox smoke
 edited the slot count in a pseudoterminal and verified the saved configuration.
 
+## Background service and terminal client (2026-11-23)
+
+`mcbtodo-daemon` owns the timer and workflow runtime. The TUI uses the same
+authenticated workspace socket for timer and workflow requests. A missing
+or refusing socket prompts the user to start the service. Each input action
+sends a single request. Offline calendar and task views continue to read the
+Markdown Vault using the existing snapshot and revision rules.
+
+On Linux AArch64, `cargo xtask smoke-systemd --bin-dir target/debug` started a
+transient user service with a temporary workspace. The timer advanced after
+the first TUI process quit, and a second TUI displayed the same session ID.
+The existing forced-restart scenario recovered that session at its last
+checkpoint and verified the Markdown and JSON focus reports. The sandbox smoke
+also verified the TUI startup and the service hint with an empty `PATH` and
+no daemon. Workspace verification passed 668 tests.
+
 ## Latest Review
 
 On 2026-11-22, the Linux AArch64 release packaging follow-up verified all

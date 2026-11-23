@@ -1,8 +1,8 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use mcbtodo_platform::WorkspacePaths;
 use mcbtodo_protocol::{
-    Request, Response, request,
+    Request, Response,
     workflow::{RunState, RunSummary, WorkflowRequest, WorkflowResponse},
 };
 use uuid::Uuid;
@@ -292,12 +292,8 @@ fn refresh() -> Action {
 }
 
 fn call(paths: &WorkspacePaths, command: &WorkflowRequest) -> Result<WorkflowResponse> {
-    let socket = paths.socket_path();
-    match request(&socket, Request::Workflow(command.clone()))
-        .with_context(|| format!("contacting mcbtodo-daemon at {}", socket.display()))?
-    {
+    match crate::daemon_request(paths, Request::Workflow(command.clone()))? {
         Response::Workflow(response) => Ok(response),
-        Response::Error { code, message } => bail!("{code:?} · {message}"),
         _ => bail!("unexpected response to workflow request"),
     }
 }

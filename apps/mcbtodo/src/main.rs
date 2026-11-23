@@ -29,7 +29,7 @@ use mcbtodo_domain::{
     time::{DateParseError, Deadline, parse_date},
 };
 use mcbtodo_platform::{AppConfig, WorkspacePaths};
-use mcbtodo_protocol::{Request, Response, TimerState, TimerStatus, request};
+use mcbtodo_protocol::{ProtocolError, Request, Response, TimerState, TimerStatus, request};
 use mcbtodo_vault::Vault;
 
 #[derive(Parser)]
@@ -421,9 +421,16 @@ pub(crate) fn timer(paths: &WorkspacePaths, operation: Request) -> Result<TimerS
 
 pub(crate) fn daemon_request(paths: &WorkspacePaths, operation: Request) -> Result<Response> {
     let socket = paths.socket_path();
-    match request(&socket, operation)
-        .with_context(|| format!("contacting mcbtodo-daemon at {}", socket.display()))?
+    let exchange = request(&socket, operation);
+    if let Err(ProtocolError::Io(error)) = &exchange
+        && matches!(
+            error.kind(),
+            io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+        )
     {
+        return exchange.context("Start mcbtodo-daemon and try again");
+    }
+    match exchange.with_context(|| format!("contacting mcbtodo-daemon at {}", socket.display()))? {
         Response::Error { code, message } => bail!("{code:?}: {message}"),
         response => Ok(response),
     }
