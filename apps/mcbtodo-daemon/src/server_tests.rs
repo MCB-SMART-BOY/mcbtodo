@@ -187,6 +187,105 @@ fn all_day_event_creation_validates_dates_and_refuses_duplicate_ids_over_ipc() -
 }
 
 #[test]
+fn planned_project_creation_preserves_calendar_kind_and_checks_the_writer_lock() -> Result<()> {
+    use chrono::NaiveDate;
+    use mcbtodo_domain::{
+        CalendarKind, Occurrence,
+        time::{Deadline, Span},
+    };
+    use mcbtodo_vault::Vault;
+
+    let dir = private_tempdir()?;
+    let paths = WorkspacePaths::from_home(dir.path().to_owned());
+    paths.initialize()?;
+    let root = paths.vault_root();
+    let timezone = paths.load_config()?.timezone;
+    let socket = paths.socket_path();
+    let mut server = Server::open(paths, crate::DEFAULT_WORKER_SLOTS)?;
+    let start = NaiveDate::from_ymd_opt(2026, 11, 30).unwrap();
+    let through = start.succ_opt().unwrap();
+    let active_id = Uuid::new_v4();
+    let deadline_id = Uuid::new_v4();
+    let create = |project_id, dates| Request::CreatePlannedProject {
+        project_id,
+        title: "Research".into(),
+        dates,
+    };
+    assert!(matches!(
+        status(
+            &mut server,
+            socket.clone(),
+            create(
+                active_id,
+                ProjectDates::ActivePeriod {
+                    start: through,
+                    through: start,
+                }
+            )
+        ),
+        Response::Error {
+            code: ErrorCode::InvalidRequest,
+            ..
+        }
+    ));
+    let active = create(active_id, ProjectDates::ActivePeriod { start, through });
+    let lock = fs::File::options()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(root.join(".mcbtodo-vault.lock"))?;
+    lock.lock()?;
+    assert!(matches!(
+        status(&mut server, socket.clone(), active.clone()),
+        Response::Error {
+            code: ErrorCode::Conflict,
+            ..
+        }
+    ));
+    drop(lock);
+    assert!(Vault::load(&root, timezone)?.outline().is_empty());
+    assert_eq!(
+        status(&mut server, socket.clone(), active.clone()),
+        Response::PlannedProjectCreated {
+            project_id: active_id,
+            synced: true
+        }
+    );
+    assert!(matches!(
+        status(&mut server, socket.clone(), active),
+        Response::Error {
+            code: ErrorCode::Conflict,
+            ..
+        }
+    ));
+    assert_eq!(
+        status(
+            &mut server,
+            socket,
+            create(deadline_id, ProjectDates::Deadline { due: through })
+        ),
+        Response::PlannedProjectCreated {
+            project_id: deadline_id,
+            synced: true
+        }
+    );
+    let saved = Vault::load(&root, timezone)?;
+    let entries = saved.calendar();
+    assert_eq!(entries.len(), 2);
+    assert!(entries.iter().any(|item| item.id == active_id
+        && !item.busy
+        && item.kind == CalendarKind::ActivePeriod
+        && matches!(item.occurrence, Occurrence::Span(Span::DateSpan(span))
+            if span.start() == start && span.through() == through)));
+    assert!(entries.iter().any(|item| item.id == deadline_id
+        && !item.busy
+        && item.kind == CalendarKind::Deadline
+        && matches!(item.occurrence, Occurrence::Deadline(Deadline::Date { value })
+            if value == through)));
+    Ok(())
+}
+
+#[test]
 fn daemon_answers_commands_and_recovers_running_timer_over_ipc() -> anyhow::Result<()> {
     let dir = private_tempdir()?;
     let socket = dir.path().join("s");

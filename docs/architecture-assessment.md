@@ -264,8 +264,15 @@ contention, duplicate UUID rejection, and inclusive endpoint persistence.
 TUI regressions cover form retention without a service and UUID reporting
 after a lost response, with no replay or foreground write. The systemd smoke
 created an event through the TUI and read the same busy event on November 30
-and December 1 and verified its absence on December 2. Other Vault mutations
-still use their existing entry points.
+and December 1 and verified its absence on December 2. CI run `45096863697`
+tracks the all-day event change.
+
+The Project and Deadline quick-create forms also use the default Vault's
+Daemon on Linux. The IPC test verifies invalid active-period rejection,
+writer-lock contention, and duplicate UUID rejection. The terminal smoke
+creates both records and reads them back as non-busy calendar entries. A
+deadline still creates a Project with a date-only deadline. External Vaults
+use the same application command in the foreground.
 
 ## Latest Review
 

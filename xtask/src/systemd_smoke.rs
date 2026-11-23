@@ -151,6 +151,43 @@ pub(crate) fn run(root: &Path, bin_dir: &Path) -> Result<()> {
         }
     }
 
+    for (key, title, dates, saved, kind) in [
+        (
+            "p",
+            "Research from systemd smoke",
+            "\r\r",
+            "Project saved",
+            "active_period",
+        ),
+        (
+            "d",
+            "Deadline from systemd smoke",
+            "\r",
+            "Deadline saved",
+            "deadline",
+        ),
+    ] {
+        let mut client = smoke.client();
+        client.args(["tui", "--date", "2026-11-30"]);
+        crate::smoke::drive_default_tui(
+            client,
+            &[
+                ("Month", &format!(" c{key}")),
+                ("Title", &format!("{title}\r{dates}")),
+                (saved, "q"),
+            ],
+        )?;
+        let calendar = smoke.json(&["calendar", "--date", "2026-11-30", "--json"])?;
+        ensure!(
+            calendar
+                .as_array()
+                .is_some_and(|entries| entries.iter().any(|entry| {
+                    entry["title"] == title && entry["kind"] == kind && entry["busy"] == false
+                })),
+            "the saved {kind} is absent from the Vault or has unexpected calendar semantics"
+        );
+    }
+
     checked_output(
         &mut service.systemctl(&["kill", "--signal=KILL", "--kill-whom=all"]),
         "killing the transient service to test restart",
@@ -192,7 +229,7 @@ pub(crate) fn run(root: &Path, bin_dir: &Path) -> Result<()> {
     )?;
     service.diagnostics = false;
     println!(
-        "systemd user service smoke passed (TUI reopen, Task and all-day event creation, timer recovery, and focus report)"
+        "systemd user service smoke passed (TUI reopen, Task, Project, deadline and all-day event creation, timer recovery, and focus report)"
     );
     Ok(())
 }

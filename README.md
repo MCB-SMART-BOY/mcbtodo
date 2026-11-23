@@ -136,7 +136,7 @@ view_workflow = "7"
 
 在 Outline 中选中 Project 后按 `Space c t` 可捕获 Task；创建成功后会切换到 Outline 并聚焦新 Task。Project 在表单打开期间被外部修改时，写入会因 revision 冲突被拒绝，不会覆盖外部内容。
 
-Linux 上，TUI 将默认 Vault 的 Task 捕获和全天事件创建交给 `mcbtodo-daemon` 保存。服务未启动时表单会保留，启动服务后可以提交。若请求发出后连接中断，TUI 会提示核对对应的 UUID，再决定是否重试。显式选择其他 Vault 时，这两种操作由前台直接保存。macOS 和 Windows 也走前台保存路径。
+Linux 上，TUI 将默认 Vault 的 Task 捕获以及 Project、Deadline 和全天事件创建交给 `mcbtodo-daemon` 保存。服务未启动时表单会保留，启动服务后可以提交。若请求发出后连接中断，TUI 会提示核对对应的 UUID，再决定是否重试。显式选择其他 Vault 时，这些操作由前台直接保存。macOS 和 Windows 也走前台保存路径。
 
 将 `examples/vault/` 中的 `projects/` 与 `calendar/` 作为编辑参考。每个项目目录包含 `project.md`、`tasks/*.md` 和 `units/*.md`，独立日历活动在 `calendar/*.md`；未分类事项保存在 `inbox/*.md`。使用 `mcbtodo.project/v1`、`mcbtodo.task/v1`、`mcbtodo.work-unit/v1`、`mcbtodo.calendar-event/v1` 和 `mcbtodo.inbox-entry/v1` 作为 `schema`，为每个对象分配唯一 UUID，正文第一条非空行写 `# 标题`。修改文件名后，基于 UUID 的引用保持有效。`mcbtodo validate` 校验 YAML、时间范围、引用和依赖环。
 
@@ -261,7 +261,7 @@ cargo xtask agent prepare --harness codex --workflow review --offline
 项目按 [Apache-2.0](LICENSE) 许可证发布；贡献材料须有清晰来源，并可
 依照该许可证及其适用条款接收和分发。
 
-`cargo xtask smoke-systemd` 通过临时用户服务验证 TUI 重开后计时继续、Task 和全天事件写入，以及服务崩溃恢复。该测试需要可访问的 systemd 用户管理器和 Bubblewrap。`cargo xtask package` 使用 `tar` 将同架构的发行二进制和服务文件打包到 `target/dist/`。
+`cargo xtask smoke-systemd` 通过临时用户服务验证 TUI 重开后计时继续、Task、Project、Deadline 和全天事件写入，以及服务崩溃恢复。该测试需要可访问的 systemd 用户管理器和 Bubblewrap。`cargo xtask package` 使用 `tar` 将同架构的发行二进制和服务文件打包到 `target/dist/`。
 
 ## 支持范围与发布状态
 

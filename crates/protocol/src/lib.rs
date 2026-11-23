@@ -54,7 +54,25 @@ pub enum Request {
         start: NaiveDate,
         through: NaiveDate,
     },
+    /// Create a Project with an active period or a date-only deadline.
+    CreatePlannedProject {
+        project_id: Uuid,
+        title: String,
+        dates: ProjectDates,
+    },
     Workflow(workflow::WorkflowRequest),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ProjectDates {
+    ActivePeriod {
+        start: NaiveDate,
+        through: NaiveDate,
+    },
+    Deadline {
+        due: NaiveDate,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -72,6 +90,11 @@ pub enum Response {
     /// The event is visible. `synced` is false if its durability is uncertain.
     AllDayEventCreated {
         event_id: Uuid,
+        synced: bool,
+    },
+    /// The Project is visible. `synced` is false if its durability is uncertain.
+    PlannedProjectCreated {
+        project_id: Uuid,
         synced: bool,
     },
     Workflow(workflow::WorkflowResponse),

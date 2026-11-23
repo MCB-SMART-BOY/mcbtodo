@@ -42,6 +42,35 @@ pub struct CalendarEventDraft {
     pub body: String,
 }
 
+/// Dates selected in the Project or Deadline quick-create form.
+#[derive(Clone, Copy, Debug)]
+pub enum ProjectPlan {
+    ActivePeriod(DateSpan),
+    Deadline(NaiveDate),
+}
+
+impl ProjectPlan {
+    fn draft(self, id: Id, title: String) -> Result<CreateProject, WriteError> {
+        let (active_period, deadline) = match self {
+            Self::ActivePeriod(span) => (Some(Span::DateSpan(span)), None),
+            Self::Deadline(value) => (None, Some(Deadline::Date { value })),
+        };
+        validate_markdown(&title, "").map_err(WriteError::InvalidDocument)?;
+        Ok(CreateProject {
+            project: Project {
+                id,
+                status: Default::default(),
+                active_period,
+                deadline,
+                tags: Vec::new(),
+            },
+            slug: None,
+            title,
+            body: String::new(),
+        })
+    }
+}
+
 fn all_day_event(id: Id, span: DateSpan) -> CalendarEvent {
     CalendarEvent {
         id,
@@ -89,6 +118,26 @@ impl VaultCommands {
             title,
             body,
         })
+    }
+
+    /// Publishes the Project used to represent a new activity period or deadline.
+    pub fn create_planned_project(
+        &self,
+        id: Id,
+        plan: ProjectPlan,
+        title: String,
+    ) -> Result<PersistedDocument, WriteError> {
+        VaultStore::new(&self.root, self.timezone).create_project(plan.draft(id, title)?)
+    }
+
+    /// Publishes the same Project without waiting for the writer lock.
+    pub fn try_create_planned_project(
+        &self,
+        id: Id,
+        plan: ProjectPlan,
+        title: String,
+    ) -> Result<PersistedDocument, WriteError> {
+        VaultStore::new(&self.root, self.timezone).try_create_project(plan.draft(id, title)?)
     }
 
     /// Creates a CalendarEvent after applying the shared Markdown policy.

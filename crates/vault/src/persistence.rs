@@ -1453,7 +1453,23 @@ impl VaultStore {
 
     /// Publishes a Project with a new UUID and an unused directory name.
     pub fn create_project(&self, request: CreateProject) -> Result<PersistedDocument, WriteError> {
-        let (lock, vault) = self.locked_snapshot()?;
+        self.create_project_with(request, lock)
+    }
+
+    /// Publishes a Project without waiting for the writer lock.
+    pub fn try_create_project(
+        &self,
+        request: CreateProject,
+    ) -> Result<PersistedDocument, WriteError> {
+        self.create_project_with(request, try_lock)
+    }
+
+    fn create_project_with(
+        &self,
+        request: CreateProject,
+        acquire_lock: fn(&Path) -> Result<File>,
+    ) -> Result<PersistedDocument, WriteError> {
+        let (lock, vault) = self.locked_snapshot_with(acquire_lock)?;
         let id = request.project.id;
         check_new_id(&vault, id)?;
         let slug = request.slug.unwrap_or_else(|| id.to_string());

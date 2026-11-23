@@ -509,24 +509,30 @@ fn month_selection_creates_an_inclusive_all_day_event_across_month_boundary() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn default_all_day_event_keeps_its_draft_without_a_daemon() {
+fn default_calendar_creation_keeps_its_draft_without_a_daemon() {
     let home = tempfile::tempdir().unwrap();
     let paths = WorkspacePaths::from_home(home.path().to_owned());
     paths.initialize().unwrap();
     let root = paths.vault_root();
     let mut vault = Vault::load(&root, ZONE).unwrap();
-    let mut state = State::new(day("2026-11-30"));
-    let Action::CreateCalendar(request) = press(&mut state, &vault, "vl ceCampus event\n\n\n")
-    else {
-        panic!("expected all-day event creation");
-    };
+    for (input, title) in [
+        ("vl ceCampus event\n\n\n", "Campus event"),
+        (" cpResearch project\n\n\n", "Research project"),
+        (" cdSubmit report\n\n", "Submit report"),
+    ] {
+        let mut state = State::new(day("2026-11-30"));
+        let Action::CreateCalendar(request) = press(&mut state, &vault, input) else {
+            panic!("expected calendar creation for {title}");
+        };
+        state.create_calendar(&root, &mut vault, &paths, request);
 
-    state.create_calendar(&root, &mut vault, &paths, request);
-
-    assert!(matches!(state.overlay, Overlay::CreateForm(_)));
-    assert!(state.message.contains("Start mcbtodo-daemon"));
-    assert!(screen(&state, &vault, 80, 24).contains("Campus event"));
-    assert!(Vault::load(&root, ZONE).unwrap().calendar().is_empty());
+        assert!(matches!(state.overlay, Overlay::CreateForm(_)));
+        assert!(state.message.contains("Start mcbtodo-daemon"));
+        assert!(screen(&state, &vault, 80, 24).contains(title));
+    }
+    let saved = Vault::load(&root, ZONE).unwrap();
+    assert!(saved.calendar().is_empty());
+    assert!(saved.outline().is_empty());
 }
 
 #[cfg(target_os = "linux")]

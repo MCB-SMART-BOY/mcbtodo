@@ -217,11 +217,11 @@ occurrence semantics, mode transitions, navigation, approval prompts, and other
 existing key behavior unless the change explicitly updates the contract and its
 help text.
 
-For default-Vault Task capture and all-day event creation on Linux, exercise
-the Daemon path with `cargo xtask smoke-systemd`. Keep the draft open when
-the service is absent. After an ambiguous response, report the submitted UUID
-without replaying the request or falling back to a foreground write. Cover
-foreground behavior with an external Vault fixture.
+For Linux default-Vault Task capture and Project, Deadline, and all-day event
+creation, exercise the Daemon path with `cargo xtask smoke-systemd`. Keep the
+draft open when the service is absent. After an ambiguous response, report the
+submitted UUID without replaying the request or falling back to a foreground
+write. Cover foreground behavior with an external Vault fixture.
 
 ## Verification
 

@@ -3,14 +3,14 @@ use std::path::Path;
 use chrono::{DateTime, NaiveDate};
 use chrono_tz::Tz;
 use crossterm::event::KeyCode;
-use mcbtodo_application::VaultCommands;
+use mcbtodo_application::{ProjectPlan, VaultCommands};
 use mcbtodo_domain::{
-    Id, Project, Task,
+    Id, Task,
     recurrence::ReminderSchedule,
-    time::{DateSpan, Deadline, Span, ZonedMoment},
+    time::{DateSpan, ZonedMoment},
 };
 use mcbtodo_platform::WorkspacePaths;
-use mcbtodo_protocol::{ErrorCode, ProtocolError, Request, Response};
+use mcbtodo_protocol::{ErrorCode, ProjectDates, ProtocolError, Request, Response};
 use mcbtodo_vault::{Revision, Vault, WriteError};
 
 use super::{Action, Overlay, State, View};
@@ -231,79 +231,73 @@ impl State {
         paths: &WorkspacePaths,
         request: Submission,
     ) {
-        let commands = VaultCommands::new(root, vault.timezone());
         let id = Id::new_v4();
         let title = request.title;
-        let body = String::new();
-        let (kind, day, saved) = match request.schedule {
-            Schedule::Project(span) => (
-                Kind::Project,
-                span.start(),
-                local_publication(
-                    "Project",
-                    commands.create_project(
-                        Project {
-                            id,
-                            status: Default::default(),
-                            active_period: Some(Span::DateSpan(span)),
-                            deadline: None,
-                            tags: Vec::new(),
-                        },
-                        None,
-                        title,
-                        body,
-                    ),
-                ),
-            ),
-            Schedule::Event(span) => {
-                let label = Kind::Event.label();
-                let saved = match is_daemon_vault(paths, root) {
-                    Ok(true) => create_via_daemon(
-                        paths,
-                        Request::CreateAllDayEvent {
-                            event_id: id,
-                            title,
-                            start: span.start(),
-                            through: span.through(),
-                        },
-                        |response| match response {
-                            Response::AllDayEventCreated { event_id, synced } if event_id == id => {
-                                Some(synced)
-                            }
-                            _ => None,
-                        },
-                    )
-                    .map(|synced| publication_message(label, id, synced)),
-                    Ok(false) => {
-                        local_publication(label, commands.create_all_day_event(id, span, title))
-                    }
-                    Err(error) => Err(CreationError::Rejected(format!("{error:#}"))),
-                };
-                (Kind::Event, span.start(), saved)
-            }
-            Schedule::Deadline(day) => (
-                Kind::Deadline,
-                day,
-                local_publication(
-                    "Deadline",
-                    commands.create_project(
-                        Project {
-                            id,
-                            status: Default::default(),
-                            active_period: None,
-                            deadline: Some(Deadline::Date { value: day }),
-                            tags: Vec::new(),
-                        },
-                        None,
-                        title,
-                        body,
-                    ),
-                ),
-            ),
+        let (kind, day) = match request.schedule {
+            Schedule::Project(span) => (Kind::Project, span.start()),
+            Schedule::Event(span) => (Kind::Event, span.start()),
+            Schedule::Deadline(day) => (Kind::Deadline, day),
             Schedule::Reminder { .. } => unreachable!("reminders use create_reminder"),
             Schedule::Task { .. } => unreachable!("task submissions use create_task"),
         };
         let label = kind.label();
+        let use_daemon = match is_daemon_vault(paths, root) {
+            Ok(value) => value,
+            Err(error) => {
+                self.message = format!("{label} failed · {error:#}");
+                return;
+            }
+        };
+        let commands = VaultCommands::new(root, vault.timezone());
+        let saved = if use_daemon {
+            let request = match request.schedule {
+                Schedule::Project(span) => Request::CreatePlannedProject {
+                    project_id: id,
+                    title,
+                    dates: ProjectDates::ActivePeriod {
+                        start: span.start(),
+                        through: span.through(),
+                    },
+                },
+                Schedule::Deadline(due) => Request::CreatePlannedProject {
+                    project_id: id,
+                    title,
+                    dates: ProjectDates::Deadline { due },
+                },
+                Schedule::Event(span) => Request::CreateAllDayEvent {
+                    event_id: id,
+                    title,
+                    start: span.start(),
+                    through: span.through(),
+                },
+                _ => unreachable!("expected a calendar submission"),
+            };
+            create_via_daemon(paths, request, |response| match (kind, response) {
+                (Kind::Event, Response::AllDayEventCreated { event_id, synced })
+                    if event_id == id =>
+                {
+                    Some(synced)
+                }
+                (
+                    Kind::Project | Kind::Deadline,
+                    Response::PlannedProjectCreated { project_id, synced },
+                ) if project_id == id => Some(synced),
+                _ => None,
+            })
+            .map(|synced| publication_message(label, id, synced))
+        } else {
+            let saved = match request.schedule {
+                Schedule::Project(span) => {
+                    commands.create_planned_project(id, ProjectPlan::ActivePeriod(span), title)
+                }
+                Schedule::Deadline(due) => {
+                    commands.create_planned_project(id, ProjectPlan::Deadline(due), title)
+                }
+                Schedule::Event(span) => commands.create_all_day_event(id, span, title),
+                _ => unreachable!("expected a calendar submission"),
+            };
+            local_publication(label, saved)
+        };
         let saved = match saved {
             Ok(message) => message,
             Err(CreationError::Unknown) => {

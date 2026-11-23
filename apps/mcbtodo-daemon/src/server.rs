@@ -5,11 +5,11 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 use chrono::Datelike;
 use chrono_tz::Tz;
-use mcbtodo_application::VaultCommands;
+use mcbtodo_application::{ProjectPlan, VaultCommands};
 use mcbtodo_domain::time::DateSpan;
 use mcbtodo_execution::notification::NotifySend;
 use mcbtodo_platform::WorkspacePaths;
-use mcbtodo_protocol::{ErrorCode, Request, Response};
+use mcbtodo_protocol::{ErrorCode, ProjectDates, Request, Response};
 use mcbtodo_storage_sqlite::focus::FocusStore;
 use mcbtodo_storage_sqlite::run_store::RunStore;
 use mcbtodo_vault::{PersistedDocument, WriteError};
@@ -235,6 +235,34 @@ impl Server {
                     event_id,
                     |commands| commands.try_create_all_day_event(event_id, span, title),
                     |synced| Response::AllDayEventCreated { event_id, synced },
+                )
+            }
+            Request::CreatePlannedProject {
+                project_id,
+                title,
+                dates,
+            } => {
+                let (label, plan) = match dates {
+                    ProjectDates::ActivePeriod { start, through } => {
+                        let span = match DateSpan::new(start, through) {
+                            Ok(span) => span,
+                            Err(error) => {
+                                return Response::Error {
+                                    code: ErrorCode::InvalidRequest,
+                                    message: error.to_string(),
+                                };
+                            }
+                        };
+                        ("Project", ProjectPlan::ActivePeriod(span))
+                    }
+                    ProjectDates::Deadline { due } => ("Deadline", ProjectPlan::Deadline(due)),
+                };
+                create_in_vault(
+                    self.runtime.paths(),
+                    label,
+                    project_id,
+                    |commands| commands.try_create_planned_project(project_id, plan, title),
+                    |synced| Response::PlannedProjectCreated { project_id, synced },
                 )
             }
             Request::ListNotifications { before } => {
