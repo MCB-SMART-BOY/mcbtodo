@@ -130,7 +130,7 @@ pub(crate) fn run(root: &Path, bin_dir: &Path) -> Result<()> {
         ("2026-12-01", true),
         ("2026-12-02", false),
     ] {
-        let calendar = smoke.json(&["calendar", "--date", day, "--json"])?;
+        let calendar = smoke.json(&["calendar", "--daemon", "--date", day, "--json"])?;
         let events: Vec<_> = calendar
             .as_array()
             .context("calendar response is not an array")?
@@ -166,7 +166,7 @@ pub(crate) fn run(root: &Path, bin_dir: &Path) -> Result<()> {
             ("13:30–15:00", "q"),
         ],
     )?;
-    let calendar = smoke.json(&["calendar", "--date", "2026-11-20", "--json"])?;
+    let calendar = smoke.json(&["calendar", "--daemon", "--date", "2026-11-20", "--json"])?;
     let start = "2026-11-20T13:30:00Z";
     let end = "2026-11-20T15:00:00Z";
     ensure!(
@@ -239,7 +239,7 @@ pub(crate) fn run(root: &Path, bin_dir: &Path) -> Result<()> {
                 (saved, "q"),
             ],
         )?;
-        let calendar = smoke.json(&["calendar", "--date", "2026-11-30", "--json"])?;
+        let calendar = smoke.json(&["calendar", "--daemon", "--date", "2026-11-30", "--json"])?;
         ensure!(
             calendar
                 .as_array()

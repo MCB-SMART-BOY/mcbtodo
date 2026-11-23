@@ -2,7 +2,9 @@
 
 mcbtodo 的后台服务运行于 Linux AArch64 和 x86_64。macOS ARM64 和 Windows x64 的前台应用有原生 CI 测试。
 
-`mcbtodo-daemon` 常驻并拥有专注计时、提醒、调度和工作流运行状态。`mcbtodo` 是可独立打开和关闭的终端客户端，通过同用户的 Unix socket 查询和控制后台运行。脚本和 Agent 由 Daemon 按节点派发给临时 `mcbtodo-worker`。日历、任务和部分编辑操作直接读写 Markdown Vault，使用现有 Vault 写锁和 revision 校验，因此服务停止时仍能使用这些功能。
+`mcbtodo-daemon` 常驻并拥有专注计时、提醒、调度和工作流运行状态。`mcbtodo` 是可独立打开和关闭的终端客户端，通过同用户的 Unix socket 查询和控制后台运行。脚本和 Agent 由 Daemon 按节点派发给临时 `mcbtodo-worker`。Linux 默认 Vault 的部分创建操作已经由服务保存。`mcbtodo calendar --daemon` 通过同一个 socket 查询日历。TUI 日历、任务大纲和部分编辑操作仍直接访问 Markdown Vault。两条路径共用 Vault 写锁和 revision 校验。
+
+日历响应使用共享的 `CalendarItem` 领域类型，未来 GUI 可以通过 `mcbtodo-protocol` 消费同一投影。Daemon 对每个查询读取一次新的有效 Vault 快照，使已返回成功的写入能被下一次查询看到。查询最多覆盖 366 个日期，超过 64 KiB IPC 帧上限时返回错误。查询索引、分页、变更订阅、GUI 和桌面启动器入口仍待实现。
 
 ## Cargo workspace
 
@@ -14,7 +16,7 @@ mcbtodo 的后台服务运行于 Linux AArch64 和 x86_64。macOS ARM64 和 Wind
 | `mcbtodo-execution` (`crates/execution`) | Linux Agent socket、Bubblewrap 脚本沙箱和 `notify-send` 适配器。执行代码与 Daemon 的状态所有权分离。 |
 | `mcbtodo-ports` (`crates/ports`) | Agent、本地传输、进程控制、脚本隔离、工作流 Attempt 持久化、完成事件读取、桌面通知和 Provider 选择的业务契约。 |
 | `mcbtodo-platform` (`crates/platform`) | 用户路径和配置、Linux Unix socket 客户端及 peer 身份验证。 |
-| `mcbtodo-protocol` (`crates/protocol`) | 本机 Unix socket 的计时和工作流请求与响应，以及 Daemon 与单次 Worker 之间有界、带 attempt 身份的消息契约。 |
+| `mcbtodo-protocol` (`crates/protocol`) | 本机 Unix socket 的计时、日历查询和工作流等请求与响应，以及 Daemon 与单次 Worker 之间有界、带 attempt 身份的消息契约。 |
 | `mcbtodo-storage-sqlite` (`crates/storage-sqlite`) | Daemon 使用工作流运行、调度、通知和专注会话的持久化接口。Vault 使用完成意图、提交、游标读取和快照验证接口。SQLite 连接由适配器持有。 |
 | `mcbtodo-application` (`crates/application`) | 共享 Vault 业务命令、查询投影，以及工作流校验、模拟和 revision 发布用例。依赖 domain、Vault 和 workflow。 |
 | `mcbtodo` (`apps/mcbtodo`) | CLI、Ratatui、MCP、人工提案审批和备份恢复。 |

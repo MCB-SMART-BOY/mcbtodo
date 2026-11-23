@@ -15,9 +15,10 @@ use std::{
 use anyhow::{Result, ensure};
 use chrono::{DateTime, FixedOffset, NaiveDate};
 use chrono_tz::Tz;
+pub use mcbtodo_domain::CalendarItem;
 use mcbtodo_domain::{
-    Availability, CalendarEntry, CalendarEvent, CalendarKind, EvidenceRef, Id, InboxEntry,
-    Occurrence, Project, Task, TaskGraph, TimeBlock, WorkUnit, WorkflowRevisionHash,
+    Availability, CalendarEvent, EvidenceRef, Id, InboxEntry, Project, Task, TaskGraph, TimeBlock,
+    WorkUnit, WorkflowRevisionHash,
     recurrence::{Reminder, ReminderSchedule},
     time::{DateSpan, DateTimeSpan, Deadline, Span, ZonedMoment},
 };
@@ -935,27 +936,12 @@ pub struct FocusReportContext {
     pub work_units: Vec<WorkUnitSummary>,
 }
 
-#[derive(Clone, Debug, Serialize)]
-pub struct CalendarItem {
-    pub id: Id,
-    pub title: String,
-    pub kind: CalendarKind,
-    pub busy: bool,
-    pub occurrence: Occurrence,
-}
-
-impl CalendarItem {
-    pub fn on_day(&self, day: NaiveDate, timezone: Tz) -> bool {
-        self.occurrence.on_day(day, timezone)
-    }
-}
-
 /// Projects the supplied validated snapshot into owned calendar entries.
 pub fn project_calendar(vault: &Vault, window: DateSpan) -> Result<Vec<CalendarItem>> {
     Ok(vault
         .calendar_between(window)?
         .into_iter()
-        .map(owned_calendar_item)
+        .map(CalendarItem::from)
         .collect())
 }
 
@@ -965,7 +951,7 @@ pub fn project_calendar_all(vault: &Vault) -> Vec<CalendarItem> {
     vault
         .calendar()
         .into_iter()
-        .map(owned_calendar_item)
+        .map(CalendarItem::from)
         .collect()
 }
 
@@ -1340,23 +1326,14 @@ fn matching_revision(vault: &Vault, id: Id, digest: &str) -> Result<Revision> {
         .ok_or_else(|| WriteError::StaleRevision { id }.into())
 }
 
-fn owned_calendar_item(entry: CalendarEntry<'_>) -> CalendarItem {
-    CalendarItem {
-        id: entry.id,
-        title: entry.title.to_owned(),
-        kind: entry.kind,
-        busy: entry.busy,
-        occurrence: entry.occurrence,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
     use std::fs;
 
     use mcbtodo_domain::{
-        Availability, CalendarEvent, EvidenceRef, InboxEntry, Task, WorkUnit, WorkUnitStatus,
+        Availability, CalendarEvent, CalendarKind, EvidenceRef, InboxEntry, Occurrence, Task,
+        WorkUnit, WorkUnitStatus,
         recurrence::{CalendarRecurrence, DstPolicy, FoldPolicy, Frequency, GapPolicy},
         time::{DateSpan, Span},
     };

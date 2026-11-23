@@ -47,6 +47,7 @@ mcbtodo init
 systemctl --user daemon-reload
 systemctl --user enable --now mcbtodo-daemon.service
 mcbtodo timer status --json
+mcbtodo calendar --daemon --json
 ```
 
 服务启动后，在任意终端运行 `mcbtodo` 打开 TUI。`:timer status` 查询服务中的计时。在 Outline 选中 Project，按 `Space c t` 通过服务保存 Task。在默认 Vault 的日历视图按 `Space c` 可从菜单创建 Project、全天事件、Deadline 和单次提醒，按 `Space t b` 可为 WorkUnit 安排时间块。这些操作由服务保存。到期提醒可通过 `mcbtodo notifications --reminders` 查询。按 `q` 关闭 TUI，再次打开可以继续查看同一计时会话。服务跟随 systemd 用户管理器，在用户登录时启动。

@@ -3,6 +3,37 @@ use std::io::Cursor;
 use mcbtodo_protocol::{ProtocolError, Request, wire};
 
 #[test]
+fn calendar_occurrences_round_trip_without_changing_the_json_shape() {
+    use mcbtodo_protocol::Response;
+    use serde_json::json;
+
+    let body = json!({
+        "result": "calendar",
+        "items": [
+            {"id": "00000000-0000-0000-0000-000000000001",
+             "title": "跨月活动", "kind": "event", "busy": true,
+             "occurrence": {"kind": "date_span", "start": "2026-11-30", "through": "2026-12-01"}},
+            {"id": "00000000-0000-0000-0000-000000000002",
+             "title": "Repeated hour", "kind": "time_block", "busy": true,
+             "occurrence": {"kind": "date_time_span", "timezone": "America/New_York",
+                            "start": "2026-11-01T01:50:00-04:00", "end": "2026-11-01T01:10:00-05:00"}},
+            {"id": "00000000-0000-0000-0000-000000000003",
+             "title": "截止日期", "kind": "deadline", "busy": false,
+             "occurrence": {"kind": "date", "value": "2026-11-30"}},
+            {"id": "00000000-0000-0000-0000-000000000004",
+             "title": "Timed deadline", "kind": "deadline", "busy": false,
+             "occurrence": {"kind": "date_time", "value": "2026-12-01T00:00:00+08:00",
+                            "timezone": "Asia/Shanghai"}}
+        ]
+    });
+    let decoded: Response = serde_json::from_value(body.clone()).unwrap();
+    let mut frame = Vec::new();
+    wire::write(&mut frame, &decoded).unwrap();
+    let response: Response = wire::read(&mut Cursor::new(frame)).unwrap();
+    assert_eq!(serde_json::to_value(response).unwrap(), body);
+}
+
+#[test]
 fn notification_page_json_stays_compatible_with_existing_clients() -> serde_json::Result<()> {
     use mcbtodo_protocol::Response;
     use serde_json::json;

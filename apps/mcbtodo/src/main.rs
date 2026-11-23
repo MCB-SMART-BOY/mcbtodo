@@ -70,6 +70,9 @@ enum Command {
     Outline,
     /// Show the selected day's calendar projection.
     Calendar {
+        /// Query the Linux daemon's default Vault for this day.
+        #[arg(long)]
+        daemon: bool,
         #[arg(long, value_parser = parse_day)]
         date: Option<NaiveDate>,
         #[arg(long)]
@@ -311,6 +314,7 @@ fn run(cli: Cli) -> Result<()> {
             println!("Vault is valid ({timezone})");
         }
         Command::Calendar {
+            daemon,
             export:
                 Some(CalendarExport::ExportIcal {
                     from,
@@ -319,20 +323,42 @@ fn run(cli: Cli) -> Result<()> {
                 }),
             ..
         } => {
+            ensure!(
+                !daemon,
+                "--daemon is only supported for calendar day queries"
+            );
             let (root, timezone) = location.resolve(&paths)?;
             let window = mcbtodo_domain::time::DateSpan::new(from, through)?;
             let entries = VaultQueries::new(root, timezone).calendar(window)?;
             export_ical(entries, timezone, output.as_deref())?;
         }
         Command::Calendar {
+            daemon,
             date,
             json,
             export: None,
         } => {
+            ensure!(
+                !daemon || location.root_override.is_none(),
+                "--daemon queries the default Vault and cannot be combined with --vault"
+            );
             let (root, timezone) = location.resolve(&paths)?;
-            let queries = VaultQueries::new(root, timezone);
             let date = date.unwrap_or_else(|| Utc::now().with_timezone(&timezone).date_naive());
-            let entries = queries.calendar_day(date)?;
+            let entries = if daemon {
+                match daemon_request(
+                    &paths,
+                    Request::Calendar {
+                        start: date,
+                        through: date,
+                        timezone: timezone.name().into(),
+                    },
+                )? {
+                    Response::Calendar { items } => items,
+                    _ => bail!("unexpected response to calendar request"),
+                }
+            } else {
+                VaultQueries::new(root, timezone).calendar_day(date)?
+            };
             if json {
                 serde_json::to_writer_pretty(io::stdout().lock(), &entries)?;
                 println!();
@@ -344,9 +370,14 @@ fn run(cli: Cli) -> Result<()> {
             }
         }
         Command::Calendar {
+            daemon,
             export: Some(CalendarExport::ImportIcal { input }),
             ..
         } => {
+            ensure!(
+                !daemon,
+                "--daemon is only supported for calendar day queries"
+            );
             let (root, timezone) = location.resolve(&paths)?;
             Vault::load(&root, timezone)?;
             let imported = ical_import::parse_file(&input)?;

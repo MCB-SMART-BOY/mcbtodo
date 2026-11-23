@@ -1,13 +1,13 @@
 use chrono::NaiveDate;
 use chrono_tz::Tz;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     Availability, Id,
     time::{DateSpan, Deadline, Span},
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CalendarKind {
     ActivePeriod,
@@ -29,7 +29,7 @@ impl CalendarKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Occurrence {
     Span(Span),
@@ -52,6 +52,34 @@ pub struct CalendarEntry<'a> {
     pub kind: CalendarKind,
     pub busy: bool,
     pub occurrence: Occurrence,
+}
+
+/// An owned calendar occurrence that can cross the client boundary.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CalendarItem {
+    pub id: Id,
+    pub title: String,
+    pub kind: CalendarKind,
+    pub busy: bool,
+    pub occurrence: Occurrence,
+}
+
+impl CalendarItem {
+    pub fn on_day(&self, day: NaiveDate, timezone: Tz) -> bool {
+        self.occurrence.on_day(day, timezone)
+    }
+}
+
+impl From<CalendarEntry<'_>> for CalendarItem {
+    fn from(entry: CalendarEntry<'_>) -> Self {
+        Self {
+            id: entry.id,
+            title: entry.title.to_owned(),
+            kind: entry.kind,
+            busy: entry.busy,
+            occurrence: entry.occurrence,
+        }
+    }
 }
 
 impl<'a> CalendarEntry<'a> {

@@ -227,6 +227,11 @@ the new occurrence. Cover foreground behavior for supported external-Vault
 forms. Reminder creation remains limited to the default Vault. Verify its
 Inbox entry without requiring desktop notifications.
 
+Read the saved Project dates, all-day event and WorkUnit block back from a
+separate CLI process with `calendar --daemon`. Query both days of the
+cross-month event and the first day after it. This verifies the shared
+calendar query while the TUI views continue to use their local snapshot.
+
 ## Verification
 
 Run focused TUI tests and the complete workspace checks.

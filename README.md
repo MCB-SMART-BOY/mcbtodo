@@ -103,6 +103,8 @@ cargo run --locked -- --vault examples/vault outline
 cargo run --locked -- --vault examples/vault graph
 ```
 
+在 Linux 上，`mcbtodo calendar --daemon --date 2026-11-25 --json` 从运行中的 Daemon 查询默认 Vault，支持 `--timezone`。普通 `calendar` 命令和当前 TUI 日历视图仍从本地 Vault 读取。`--vault` 可用于普通 `calendar` 命令，`--daemon` 需要后台服务。
+
 `calendar export-ical` 输出选定日期窗内的标准 iCalendar：日期区间用排他式 `DTEND`，精确时段统一输出 UTC，截止日输出为 `VTODO/DUE`。活动期、任务发生项、活动、时间块与期限会保留 `X-MCBTODO-KIND` 和 `X-MCBTODO-ID` 来源属性。省略 `--output` 时写入 stdout。`calendar import-ical <PATH>` 只接受可表达为独立日历活动的 `VEVENT`，支持全天日期、UTC 和 IANA 时区；本项目导出的两个 `X-MCBTODO-*` 来源属性可识别但不影响 UID 身份映射，其它未知扩展属性、嵌入式 `VTIMEZONE`、重复属性、重复规则、浮动时刻、DST 歧义/缺口、VTODO 及其他无法映射的属性会拒绝。导入 UID 映射为稳定 UUID，整批先验证，再以一次目录交换发布；任何校验失败都不会导入部分事件。重复导入相同 UID 会因稳定 UUID 已存在而整体失败，不会创建重复事件。
 
 `hjkl` 或方向键移动，`v` 开启日期范围选择，`Enter` 查看议程。`Space u` 打开视图选择，可从月历切换到周历、日历、议程、大纲、任务图、Timeline 或工作流。Timeline 展示焦点日期所在周起始的 14 天计划；`h/l` 移动日期，`j/k` 选择项目，横条区分计划区间、精确时段、任务实例和期限。在 Graph 中用 `v/x` 选择依赖源节点，移动焦点到目标节点后按 `a` 新增边或按 `d` 移除边；预览会显示边方向和受影响的阻塞状态，按 `y` 确认、`Esc` 取消。依赖边方向为前置节点指向依赖它的目标节点。`e` 编辑当前选中项的源文档，按 `$VISUAL`、`$EDITOR`、`hx` 的顺序选择编辑器可执行文件。`r` 重载 Vault。若编辑后校验失败，TUI 保留上一次有效数据并显示错误。

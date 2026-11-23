@@ -291,6 +291,23 @@ UUID and the submitted time range for manual verification. The Linux AArch64
 workspace and systemd smoke tests save the block in the TUI and verify the
 persisted interval using the calendar command.
 
+### Shared calendar query over local IPC
+
+The Linux default Vault has a typed calendar query over the existing local
+socket. The Daemon loads a fresh validated snapshot in the requested display
+timezone and reuses the application projection. The CLI exposes the route
+with `calendar --daemon`. The protocol carries an inclusive date window and
+returns whole occurrences. An oversized result produces an IPC error.
+Protocol and socket regressions cover the four occurrence shapes, immediate
+read after publication, recurring events across local dates, invalid windows,
+an invalid Vault and oversized results. The systemd smoke reads the events,
+Project dates and time blocks saved in the TUI through this route.
+
+TUI calendar rendering, object selection and remaining foreground edits
+still use the local Vault snapshot. Query processing scans the Vault on
+each request. A TUI migration needs a shared refresh path for visible items
+and their selection. The GUI and its launcher entry remain planned.
+
 ## Latest Review
 
 On 2026-11-22, the Linux AArch64 release packaging follow-up verified all

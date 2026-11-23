@@ -12,6 +12,7 @@ pub use mcbtodo_ports::focus::TimerState;
 pub use wire::ProtocolError;
 
 use chrono::{DateTime, FixedOffset, NaiveDate, Utc};
+use mcbtodo_domain::CalendarItem;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -29,6 +30,13 @@ pub enum Request {
     FocusReport {
         date: NaiveDate,
         /// IANA timezone used to determine the local session start date.
+        timezone: String,
+    },
+    /// Project the default Vault over an inclusive window of at most 366 days.
+    Calendar {
+        start: NaiveDate,
+        through: NaiveDate,
+        /// IANA timezone used to determine which local dates an occurrence overlaps.
         timezone: String,
     },
     /// List terminal workflow notifications, starting strictly before the given run ID.
@@ -95,6 +103,9 @@ pub enum ProjectDates {
 pub enum Response {
     Status(TimerStatus),
     FocusReport(focus::DailyFocusReport),
+    Calendar {
+        items: Vec<CalendarItem>,
+    },
     Notifications(notifications::NotificationPage),
     ReminderNotifications(notifications::ReminderNotificationPage),
     /// The Task is visible. `synced` is false if its durability is uncertain.

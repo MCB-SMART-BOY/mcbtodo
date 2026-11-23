@@ -109,6 +109,26 @@ fn calendar_rejects_dates_outside_the_shared_domain_format() {
     }
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn calendar_explicit_daemon_route_does_not_silently_read_the_local_vault() {
+    let home = tempfile::tempdir().unwrap();
+    output(cli_in_home(home.path()).arg("init").output().unwrap());
+    let day = ["calendar", "--date", "2026-11-26", "--json"];
+    assert_eq!(
+        output(cli_in_home(home.path()).args(day).output().unwrap()).trim(),
+        "[]"
+    );
+    let result = cli_in_home(home.path())
+        .args(day)
+        .arg("--daemon")
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(result.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("Start mcbtodo-daemon"));
+}
+
 #[test]
 fn workflow_approve_requires_the_review_argument_before_contacting_daemon() {
     let result = cli()

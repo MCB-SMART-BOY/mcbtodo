@@ -3,9 +3,9 @@ use std::path::Path;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use chrono::Datelike;
+use chrono::{Datelike, NaiveDate};
 use chrono_tz::Tz;
-use mcbtodo_application::{ProjectPlan, VaultCommands};
+use mcbtodo_application::{ProjectPlan, VaultCommands, VaultQueries};
 use mcbtodo_domain::time::DateSpan;
 use mcbtodo_execution::notification::NotifySend;
 use mcbtodo_platform::WorkspacePaths;
@@ -200,6 +200,11 @@ impl Server {
     fn reply(&mut self, request: Request) -> Response {
         match request {
             Request::Workflow(command) => self.runtime.handle(command),
+            Request::Calendar {
+                start,
+                through,
+                timezone,
+            } => query_calendar(self.runtime.paths(), start, through, &timezone),
             Request::CaptureTask {
                 task_id,
                 project_id,
@@ -359,6 +364,40 @@ impl Server {
                     }
                 }
             },
+        }
+    }
+}
+
+fn query_calendar(
+    paths: &WorkspacePaths,
+    start: NaiveDate,
+    through: NaiveDate,
+    timezone: &str,
+) -> Response {
+    let (Ok(window), Ok(timezone)) = (DateSpan::new(start, through), timezone.parse::<Tz>()) else {
+        return Response::Error {
+            code: ErrorCode::InvalidRequest,
+            message: "expected an ordered date range and an IANA timezone".into(),
+        };
+    };
+    if !(1..=9999).contains(&start.year())
+        || !(1..=9999).contains(&through.year())
+        || (through - start).num_days() >= 366
+    {
+        return Response::Error {
+            code: ErrorCode::InvalidRequest,
+            message: "expected at most 366 inclusive dates with years from 0001 to 9999".into(),
+        };
+    }
+    // A fresh validated snapshot includes writes acknowledged by earlier requests.
+    match VaultQueries::new(paths.vault_root(), timezone).calendar(window) {
+        Ok(items) => Response::Calendar { items },
+        Err(error) => {
+            eprintln!("mcbtodo-daemon: loading calendar: {error:#}");
+            Response::Error {
+                code: ErrorCode::Internal,
+                message: "could not load the default Vault calendar; check the daemon log".into(),
+            }
         }
     }
 }

@@ -11,6 +11,7 @@ documentation = "https://docs.rs/mcbtodo-protocol"
 
 [dependencies]
 chrono.workspace = true
+mcbtodo-domain.workspace = true
 mcbtodo-ports.workspace = true
 mcbtodo-workflow.workspace = true
 serde.workspace = true

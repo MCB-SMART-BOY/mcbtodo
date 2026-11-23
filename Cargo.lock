@@ -914,6 +914,7 @@ name = "mcbtodo-protocol"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "mcbtodo-domain",
  "mcbtodo-platform",
  "mcbtodo-ports",
  "mcbtodo-workflow",

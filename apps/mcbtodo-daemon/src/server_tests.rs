@@ -165,6 +165,27 @@ fn all_day_event_creation_validates_dates_and_refuses_duplicate_ids_over_ipc() -
             synced: true,
         }
     );
+    assert_eq!(
+        status(
+            &mut server,
+            socket.clone(),
+            Request::Calendar {
+                start: through,
+                through,
+                timezone: "UTC".into(),
+            }
+        ),
+        Response::Calendar {
+            items: vec![mcbtodo_domain::CalendarItem::from(
+                mcbtodo_domain::CalendarEntry::event(
+                    event_id,
+                    "Campus event",
+                    Span::DateSpan(DateSpan::new(start, through)?),
+                    mcbtodo_domain::Availability::Busy,
+                )
+            )],
+        }
+    );
     assert!(matches!(
         status(&mut server, socket, command(start, through)),
         Response::Error {
@@ -182,6 +203,85 @@ fn all_day_event_creation_validates_dates_and_refuses_duplicate_ids_over_ipc() -
         entries[0].occurrence,
         Occurrence::Span(Span::DateSpan(span))
             if span.start() == start && span.through() == through
+    ));
+    Ok(())
+}
+
+#[test]
+fn calendar_uses_the_requested_zone_and_rejects_unusable_projections() -> Result<()> {
+    let dir = private_tempdir()?;
+    let paths = WorkspacePaths::from_home(dir.path().to_owned());
+    paths.initialize()?;
+    let calendar = paths.vault_root().join("calendar");
+    fs::create_dir(&calendar)?;
+    let template = calendar.join("template.md");
+    let event_id = Uuid::new_v4();
+    let write_event = |title: &str| {
+        fs::write(
+            &template,
+            format!(
+                "---\nschema: mcbtodo.calendar-event/v1\nid: {event_id}\n\
+                 when: {{kind: date_time_span, start: '2026-11-27T01:00:00Z', end: '2026-11-27T02:00:00Z', timezone: UTC}}\n\
+                 recurrence: {{start: 2026-11-27, frequency: daily, interval: 1, dst: {{gap: skip, fold: earlier}}}}\n\
+                 availability: busy\n---\n\n# {title}\n"
+            ),
+        )
+    };
+    let socket = paths.socket_path();
+    let mut server = Server::open(paths, crate::DEFAULT_WORKER_SLOTS)?;
+    write_event("晨间例会")?;
+    let mut query = |start: &str, through: &str, timezone: &str| {
+        status(
+            &mut server,
+            socket.clone(),
+            Request::Calendar {
+                start: start.parse().unwrap(),
+                through: through.parse().unwrap(),
+                timezone: timezone.into(),
+            },
+        )
+    };
+    let response = query("2026-11-26", "2026-11-27", "America/Los_Angeles");
+    let Response::Calendar { items } = response else {
+        panic!("expected two recurring occurrences, got {response:?}");
+    };
+    assert_eq!(items.len(), 2);
+    for (entry, day) in items.iter().zip(["2026-11-26", "2026-11-27"]) {
+        assert_eq!(entry.id, event_id);
+        assert_eq!(entry.title, "晨间例会");
+        assert!(entry.on_day(day.parse()?, chrono_tz::America::Los_Angeles));
+    }
+    assert_eq!(
+        query("2026-11-26", "2026-11-26", "UTC"),
+        Response::Calendar { items: vec![] }
+    );
+    for response in [
+        query("2026-11-27", "2026-11-26", "UTC"),
+        query("2026-11-26", "2026-11-26", "no-such-zone"),
+        query("2026-11-26", "2028-11-26", "UTC"),
+    ] {
+        assert!(matches!(
+            response,
+            Response::Error {
+                code: ErrorCode::InvalidRequest,
+                ..
+            }
+        ));
+    }
+
+    write_event(&"日".repeat(wire::MAX_FRAME_BYTES as usize / 2))?;
+    assert!(matches!(
+        query("2026-11-27", "2026-11-27", "UTC"),
+        Response::Error { code: ErrorCode::InvalidRequest, message }
+            if message.contains("IPC size limit")
+    ));
+    fs::write(template, "broken markdown")?;
+    assert!(matches!(
+        query("2026-11-27", "2026-11-27", "UTC"),
+        Response::Error {
+            code: ErrorCode::Internal,
+            ..
+        }
     ));
     Ok(())
 }
