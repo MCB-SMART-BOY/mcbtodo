@@ -79,10 +79,9 @@ x86_64 and aarch64 archives. The source archive SHA-256 is
 
 - AUR: `mcbtodo 0.1.0-1` published at https://aur.archlinux.org/packages/mcbtodo.
   The source checksum and AArch64 package build were verified.
-- crates.io: 12 of 13 packages are published at `0.1.0`. The root
-  `mcbtodo@0.1.0` upload received HTTP 429 and the exact-version API confirms
-  it is not registered. crates.io permits another attempt after
-  2026-11-23 05:36:19 UTC (13:36:19 Asia/Shanghai); do not retry earlier.
+- crates.io: all 13 workspace packages are published at `0.1.0`. The exact
+  version API returned HTTP 200 for every package, including `mcbtodo` and
+  `mcbtodo-daemon`.
 - NUR and nixpkgs: not submitted. The real build currently fails because
   nixpkgs unstable's Rust compiler is older than the package's declared
   `rust-version`; see [Nix status](nix/README.md#v010-status).
