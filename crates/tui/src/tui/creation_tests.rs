@@ -66,6 +66,81 @@ fn calendar_create_menu_advertises_each_keyboard_action() {
 }
 
 #[test]
+fn calendar_create_commands_use_the_selected_dates() {
+    use mcbtodo_domain::time::DateSpan;
+
+    let vault = tests::fixture();
+    let start = day("2026-11-24");
+    let through = day("2026-11-25");
+    let span = DateSpan::new(start, through).unwrap();
+    for (typed, menu, fields, expected) in [
+        (
+            ":create project\n",
+            " cp",
+            "Plan\t\t\n",
+            Schedule::Project(span),
+        ),
+        (
+            ":create event\n",
+            " ce",
+            "Plan\t\t\n",
+            Schedule::Event(span),
+        ),
+        (
+            ":create deadline\n",
+            " cd",
+            "Plan\t\n",
+            Schedule::Deadline(through),
+        ),
+    ] {
+        for entry in [typed, menu] {
+            let mut state = State::new(through);
+            state.anchor = Some(start);
+            assert_eq!(press(&mut state, &vault, entry), Action::Continue);
+            assert!(matches!(state.overlay, Overlay::CreateForm(_)), "{entry:?}");
+            let Action::CreateCalendar(request) = press(&mut state, &vault, fields) else {
+                panic!("{entry:?} did not submit: {}", state.message);
+            };
+            assert_eq!(request.title, "Plan");
+            assert_eq!(request.schedule, expected);
+        }
+    }
+}
+
+#[test]
+fn task_create_command_binds_the_selected_project_and_revision() {
+    let root = tempfile::tempdir().unwrap();
+    let (vault, project_id) = project_vault(root.path());
+    let expected_revision = vault.local().revision(project_id).unwrap().clone();
+
+    for entry in [":create task\n", " ct"] {
+        let mut state = State::new(day("2026-11-25"));
+        state.switch(View::Outline, &vault);
+        assert_eq!(press(&mut state, &vault, entry), Action::Continue);
+        assert!(matches!(state.overlay, Overlay::CreateForm(_)), "{entry:?}");
+        let Action::CreateTask(request) = press(&mut state, &vault, "Write tests\n") else {
+            panic!("{entry:?} did not submit: {}", state.message);
+        };
+        assert_eq!(request.title, "Write tests");
+        assert_eq!(
+            request.schedule,
+            Schedule::Task {
+                project_id,
+                expected_revision: creation::ProjectRevision::Local(expected_revision.clone()),
+            },
+        );
+    }
+
+    let mut state = State::new(day("2026-11-25"));
+    assert_eq!(
+        press(&mut state, &vault, ":create task\n"),
+        Action::Continue
+    );
+    assert!(matches!(state.overlay, Overlay::None));
+    assert!(state.message.contains("Select a Project in Outline"));
+}
+
+#[test]
 fn short_create_menu_reaches_the_last_action_and_keeps_its_shortcut() {
     let vault = tests::fixture();
     let mut state = State::new(day("2026-11-25"));
@@ -271,7 +346,7 @@ fn timer_and_reminder_use_the_selected_daemon_outline_target() -> Result<()> {
         press(&mut state, &vault, ":timer start\n"),
         Action::Timer(Request::Start { work_unit_id: None })
     );
-    for entry in [" cr", ":reminder\n"] {
+    for entry in [" cr", ":reminder\n", ":create reminder\n"] {
         press(&mut state, &vault, entry);
         let Action::CreateReminder(request) = press(
             &mut state,

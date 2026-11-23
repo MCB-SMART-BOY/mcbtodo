@@ -224,6 +224,10 @@ previous menu.
   Enter action into `CreationScreenModel`. Each field occupies one row.
   Short terminals keep the focused row visible and narrow terminals retain
   the end of the active input, the cursor, and the primary actions.
+  The Create menu and `:create` subcommands open the same forms. Project and
+  all-day event forms default to the inclusive date selection. The deadline
+  form defaults to the focused day. Task capture uses the selected Project
+  and its observed revision.
 - The deadline and time-block forms project their labels and actions. Both
   time-block menus and `:time-block` open the WorkUnit picker on the current
   date. On Linux in the default Vault, it uses the Daemon Outline projection.

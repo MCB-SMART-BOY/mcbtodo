@@ -1435,6 +1435,7 @@ fn time_block_command_and_both_menus_open_the_same_picker() {
         screen(&state, &vault, 80, 14)
     };
     let typed = open(":time-block\n");
+    assert_eq!(open(":create time-block\n"), typed);
     assert_eq!(open(" cb"), typed);
     assert_eq!(open(" tb"), typed);
 }

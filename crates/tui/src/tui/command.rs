@@ -1,6 +1,6 @@
 use chrono::NaiveDate;
 
-use super::View;
+use super::{View, creation::Kind};
 
 /// An intentional terminal action, independent of the key or text that invokes it.
 pub(super) enum Command {
@@ -15,8 +15,8 @@ pub(super) enum Command {
     Proposals,
     View(View),
     Timer(TimerCommand),
+    Create(Kind),
     TimeBlock,
-    Reminder,
 }
 
 impl Command {
@@ -32,8 +32,15 @@ impl Command {
             ["settings"] => Ok(Self::Settings),
             ["search", query @ ..] if !query.is_empty() => Ok(Self::Search(query.join(" "))),
             ["proposals" | "proposal"] => Ok(Self::Proposals),
-            ["time-block"] => Ok(Self::TimeBlock),
-            ["reminder"] => Ok(Self::Reminder),
+            ["time-block"] | ["create", "time-block"] => Ok(Self::TimeBlock),
+            ["reminder"] | ["create", "reminder"] => Ok(Self::Create(Kind::Reminder)),
+            ["create", "project"] => Ok(Self::Create(Kind::Project)),
+            ["create", "task"] => Ok(Self::Create(Kind::Task)),
+            ["create", "event"] => Ok(Self::Create(Kind::Event)),
+            ["create", "deadline"] => Ok(Self::Create(Kind::Deadline)),
+            ["create", ..] => {
+                Err("Usage: create project|task|event|deadline|reminder|time-block".into())
+            }
             ["timer", operation] => match *operation {
                 "status" => Ok(Self::Timer(TimerCommand::Status)),
                 "start" => Ok(Self::Timer(TimerCommand::Start)),

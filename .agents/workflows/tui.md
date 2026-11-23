@@ -18,6 +18,8 @@ When the command prompt and a shortcut or menu expose the same operation,
 dispatch a shared typed command and test both entry points. Resolve the
 active selection into explicit IDs before invoking a business operation.
 Keep the terminal input and the Daemon request independent.
+For `:create` and the Create menu, exercise form submission to verify that
+both inputs carry the same selected dates or Project identity and revision.
 
 Keep domain identity and occurrence identity distinct. A repeated calendar row
 must retain the selected object and occurrence date/time. Shared screen data may

@@ -491,16 +491,32 @@ impl State {
                     }
                 }
             }
-            Command::Reminder => {
-                self.overlay = Overlay::None;
-                match self.selected_time_target(vault, true) {
-                    Ok(target) => {
-                        self.message.clear();
-                        self.overlay =
-                            Overlay::CreateForm(creation::Form::reminder(vault.timezone(), target));
+            Command::Create(kind) => {
+                let form = match kind {
+                    creation::Kind::Task => {
+                        let Some((project_id, revision)) = self.selected_project_revision(vault)
+                        else {
+                            self.message = "Select a Project in Outline to capture a Task".into();
+                            return Action::Continue;
+                        };
+                        creation::Form::task(project_id, revision)
                     }
-                    Err(error) => self.message = format!("Cannot load reminder target · {error:#}"),
-                }
+                    creation::Kind::Reminder => {
+                        self.overlay = Overlay::None;
+                        match self.selected_time_target(vault, true) {
+                            Ok(target) => {
+                                self.message.clear();
+                                creation::Form::reminder(vault.timezone(), target)
+                            }
+                            Err(error) => {
+                                self.message = format!("Cannot load reminder target · {error:#}");
+                                return Action::Continue;
+                            }
+                        }
+                    }
+                    kind => creation::Form::new(kind, self.day, self.selected_range()),
+                };
+                self.overlay = Overlay::CreateForm(form);
             }
             Command::View(view) => {
                 self.switch(view, vault);
@@ -722,19 +738,10 @@ impl State {
             Overlay::Create(viewport) => {
                 let kind = match key.code {
                     KeyCode::Char('p') => creation::Kind::Project,
-                    KeyCode::Char('t') => {
-                        let Some((project_id, revision)) = self.selected_project_revision(vault)
-                        else {
-                            self.message = "Select a Project in Outline to capture a Task".into();
-                            return Continue;
-                        };
-                        self.overlay =
-                            Overlay::CreateForm(creation::Form::task(project_id, revision));
-                        return Continue;
-                    }
+                    KeyCode::Char('t') => creation::Kind::Task,
                     KeyCode::Char('e') => creation::Kind::Event,
                     KeyCode::Char('d') => creation::Kind::Deadline,
-                    KeyCode::Char('r') => return self.execute(Command::Reminder, vault),
+                    KeyCode::Char('r') => creation::Kind::Reminder,
                     KeyCode::Char('b') => return self.execute(Command::TimeBlock, vault),
                     KeyCode::Esc => {
                         self.overlay = Overlay::Space(Default::default());
@@ -745,9 +752,7 @@ impl State {
                         return Continue;
                     }
                 };
-                self.overlay =
-                    Overlay::CreateForm(creation::Form::new(kind, self.day, self.selected_range()));
-                return Continue;
+                return self.execute(Command::Create(kind), vault);
             }
             Overlay::CreateForm(form) => {
                 if let Some(action) = form.handle(key.code, &mut self.message) {

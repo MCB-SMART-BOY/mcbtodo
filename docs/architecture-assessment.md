@@ -355,6 +355,13 @@ and the submitted time range for manual verification. The Linux AArch64
 workspace and systemd smoke tests save the block in the TUI and verify the
 persisted interval using the calendar command.
 
+The `:create` subcommands and the Create menu now share form dispatch. Tests
+submit through both inputs and verify the inclusive Project and event dates,
+the focused deadline date, and the selected Task destination and observed
+Project revision. The existing reminder and time-block aliases exercise the
+same forms. The Linux AArch64 workspace check passed 714 tests, including
+175 TUI tests, and the example Vault validated.
+
 ### Shared calendar query over local IPC
 
 The Linux default Vault has a typed calendar query over the existing local
