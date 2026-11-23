@@ -23,7 +23,7 @@ use ratatui::{DefaultTerminal, Terminal, backend::CrosstermBackend};
 
 use super::{
     Action, State, View, Workspace, initial_view, keymap, proposal_review, render, screen_data,
-    screen_model, settings, theme, watch,
+    screen_model, settings, theme, watch, workflow,
 };
 
 enum TerminalHandoff {
@@ -175,17 +175,16 @@ pub fn run(
                 redraw |= state.refresh_external(root, &mut vault);
             }
             redraw |= state.poll_outline(&mut vault);
-            redraw |=
-                state
-                    .workflow
-                    .poll_read(paths, state.view == View::Workflow, &mut state.message);
+            redraw |= state
+                .workflow
+                .poll(paths, state.view == View::Workflow, &mut state.message);
             if redraw {
                 let model = present(&state, &vault);
                 terminal.draw(|frame| render::draw(frame, &model, theme))?;
                 redraw = false;
             }
             // Check workspace changes and query replies even when no keys are pressed.
-            if (local_watcher.is_some() || connected || state.workflow.has_pending_read())
+            if (local_watcher.is_some() || connected || state.workflow.has_pending_operation())
                 && !event::poll(Duration::from_millis(50))?
             {
                 continue;
@@ -266,6 +265,9 @@ pub fn run(
         drop(screen);
         match handoff {
             TerminalHandoff::Quit => {
+                if let Some(run_id) = state.workflow.pending_decision_id() {
+                    eprintln!("mcbtodo: {}", workflow::unknown_decision(run_id));
+                }
                 if state.home_view == HomeViewPolicy::RestoreLastView
                     && let Err(error) = paths.write_state_file(
                         &paths.last_view_path(),

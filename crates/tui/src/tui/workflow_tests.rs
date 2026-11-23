@@ -132,7 +132,7 @@ fn workflow_refresh_supersedes_an_older_page_without_blocking_input() -> anyhow:
 
     let deadline = Instant::now() + Duration::from_secs(3);
     while state.workflow.is_loading_page() && Instant::now() < deadline {
-        state.workflow.poll_read(&paths, true, &mut state.message);
+        state.workflow.poll(&paths, true, &mut state.message);
         assert!(state.workflow.runs.iter().all(|run| ids.contains(&run.id)));
         thread::sleep(Duration::from_millis(5));
     }
@@ -226,7 +226,7 @@ fn workflow_detail_reads_only_open_the_panel_that_requested_them() -> anyhow::Re
         while Instant::now() < deadline {
             if state
                 .workflow
-                .poll_read(&paths, state.view == View::Workflow, &mut state.message)
+                .poll(&paths, state.view == View::Workflow, &mut state.message)
             {
                 return Ok(());
             }
@@ -285,6 +285,129 @@ fn workflow_detail_reads_only_open_the_panel_that_requested_them() -> anyhow::Re
         }),
     );
     peer.join().unwrap()?;
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn workflow_decision_stays_in_flight_until_a_receipt_or_disconnect() -> anyhow::Result<()> {
+    exercise_pending_decision(true)?;
+    exercise_pending_decision(false)
+}
+
+#[cfg(target_os = "linux")]
+fn exercise_pending_decision(disconnect: bool) -> anyhow::Result<()> {
+    use std::{
+        os::unix::net::UnixListener,
+        sync::mpsc,
+        thread,
+        time::{Duration, Instant},
+    };
+
+    use mcbtodo_protocol::{
+        Request, Response, wire,
+        workflow::{WorkflowRequest, WorkflowResponse},
+    };
+
+    let home = tempfile::tempdir()?;
+    let paths = WorkspacePaths::from_home(home.path().to_owned());
+    paths.initialize()?;
+    let listener = UnixListener::bind(paths.socket_path())?;
+    let vault = fixture();
+    let mut state = State::new("2026-11-25".parse()?);
+    open(&mut state, &vault);
+    let waiting = run(10, RunState::Waiting, 0);
+    state.workflow.install_page(
+        None,
+        WorkflowRunPage {
+            runs: vec![waiting.clone(), run(9, RunState::Pending, 0)],
+            next_before: None,
+        },
+    );
+    open_confirmation(&mut state, &vault, 'a', waiting.clone());
+    let Action::Workflow(decide) = key(&mut state, &vault, KeyCode::Char('y')) else {
+        panic!("expected a confirmed decision");
+    };
+    let (entered, ready) = mpsc::channel();
+    let (release, wait) = mpsc::channel();
+    let run_id = waiting.id;
+    let review = waiting.approval_review();
+    let peer = thread::spawn(move || -> anyhow::Result<()> {
+        let (mut stream, _) = listener.accept()?;
+        stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+        assert_eq!(
+            wire::read::<Request>(&mut stream)?,
+            Request::Workflow(WorkflowRequest::Decide {
+                run_id,
+                node: "review".into(),
+                approved: true,
+                review,
+            }),
+        );
+        entered.send(())?;
+        wait.recv_timeout(Duration::from_secs(2))?;
+        if !disconnect {
+            wire::write(
+                &mut stream,
+                &Response::Workflow(WorkflowResponse::Run(run(10, RunState::Pending, 1))),
+            )?;
+        }
+        drop(stream);
+        listener.set_nonblocking(true)?;
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        Ok(())
+    });
+    state.message = state.workflow.execute(&paths, decide);
+    assert!(
+        state.message.contains("Submitting decision"),
+        "{}",
+        state.message
+    );
+    ready.recv_timeout(Duration::from_secs(2))?;
+    assert_eq!(key(&mut state, &vault, KeyCode::Down), Action::Continue);
+    assert_ne!(state.workflow.selected().unwrap().id, run_id);
+    assert_eq!(key(&mut state, &vault, KeyCode::Up), Action::Continue);
+    assert_eq!(state.workflow.selected().unwrap().id, run_id);
+    assert_eq!(
+        key(&mut state, &vault, KeyCode::Char('a')),
+        Action::Continue
+    );
+    assert_eq!(
+        key(&mut state, &vault, KeyCode::Char('r')),
+        Action::Continue
+    );
+    assert_eq!(
+        state.execute(Command::View(View::Month), &vault),
+        Action::Continue
+    );
+    release.send(())?;
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if state.workflow.poll(&paths, false, &mut state.message) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "decision receipt was never handled"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
+    peer.join().unwrap()?;
+    if disconnect {
+        assert!(
+            state.message.contains("Decision status unknown"),
+            "{}",
+            state.message
+        );
+        assert!(state.message.contains(&run_id.to_string()));
+        assert_eq!(state.workflow.runs[0].state, RunState::Waiting);
+    } else {
+        assert_eq!(state.message, "Approval decision recorded");
+        assert_eq!(state.workflow.runs[0].state, RunState::Pending);
+    }
     Ok(())
 }
 

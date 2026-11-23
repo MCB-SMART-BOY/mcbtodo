@@ -3,7 +3,9 @@
 use std::{os::unix::net::UnixListener, thread, time::Duration};
 
 use anyhow::Result;
-use mcbtodo_client::daemon_client::{decide_workflow, workflow_run, workflow_runs, workflow_step};
+use mcbtodo_client::daemon_client::{
+    WriteFailure, decide_workflow, workflow_run, workflow_runs, workflow_step,
+};
 use mcbtodo_domain::Id;
 use mcbtodo_platform::WorkspacePaths;
 use mcbtodo_protocol::{
@@ -99,13 +101,41 @@ fn workflow_decision_passes_the_review_token_and_checks_the_receipt() -> Result<
         Response::Workflow(WorkflowResponse::Run(waiting_run(Id::from_u128(2)))),
         |paths| {
             let error = decide_workflow(paths, run_id, "review".into(), true, review).unwrap_err();
-            assert_eq!(
-                error.to_string(),
-                format!("unexpected workflow response for run {run_id}")
-            );
+            assert_eq!(error, WriteFailure::Unknown);
             Ok(())
         },
     )
+}
+
+#[test]
+fn workflow_decision_distinguishes_conflict_from_internal_error() -> Result<()> {
+    let run_id = Id::from_u128(1);
+    let message = "Approval review changed";
+    for (code, failure) in [
+        (ErrorCode::Conflict, WriteFailure::Rejected(message.into())),
+        (ErrorCode::Internal, WriteFailure::Unknown),
+    ] {
+        with_daemon(
+            WorkflowRequest::Decide {
+                run_id,
+                node: "review".into(),
+                approved: false,
+                review: None,
+            },
+            Response::Error {
+                code,
+                message: message.into(),
+            },
+            |paths| {
+                assert_eq!(
+                    decide_workflow(paths, run_id, "review".into(), false, None).unwrap_err(),
+                    failure,
+                );
+                Ok(())
+            },
+        )?;
+    }
+    Ok(())
 }
 
 #[test]

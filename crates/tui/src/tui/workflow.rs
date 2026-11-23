@@ -5,7 +5,7 @@ use std::{
 
 use anyhow::{Result, bail};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
-use mcbtodo_client::daemon_client::{self, WorkflowRunPage};
+use mcbtodo_client::daemon_client::{self, WorkflowRunPage, WriteFailure};
 use mcbtodo_platform::WorkspacePaths;
 use mcbtodo_workflow::run::{RunState, RunSummary};
 use uuid::Uuid;
@@ -26,6 +26,12 @@ pub(super) struct State {
     pub(super) loaded: bool,
     pub(super) panel: Panel,
     pending_read: Option<PendingRead>,
+    pending_decision: Option<PendingDecision>,
+}
+
+struct PendingDecision {
+    run_id: Uuid,
+    reply: Receiver<Result<RunSummary, WriteFailure>>,
 }
 
 struct PendingRead {
@@ -173,6 +179,10 @@ impl State {
     }
 
     pub(super) fn run_command(&mut self, command: WorkflowCommand, message: &mut String) -> Action {
+        if let Some(pending) = &self.pending_decision {
+            *message = submitting_decision(pending.run_id);
+            return Action::Continue;
+        }
         match command {
             WorkflowCommand::Step(_) if self.is_loading_step() => Action::Continue,
             WorkflowCommand::Step(direction) => {
@@ -347,8 +357,12 @@ impl State {
         })
     }
 
-    pub(super) fn has_pending_read(&self) -> bool {
-        self.pending_read.is_some()
+    pub(super) fn has_pending_operation(&self) -> bool {
+        self.pending_read.is_some() || self.pending_decision.is_some()
+    }
+
+    pub(super) fn pending_decision_id(&self) -> Option<Uuid> {
+        self.pending_decision.as_ref().map(|pending| pending.run_id)
     }
 
     fn request_read(&mut self, paths: &WorkspacePaths, request: ReadRequest) -> Result<()> {
@@ -380,12 +394,34 @@ impl State {
         Ok(())
     }
 
-    pub(super) fn poll_read(
+    pub(super) fn poll(
         &mut self,
         paths: &WorkspacePaths,
         visible: bool,
         message: &mut String,
     ) -> bool {
+        let Some(pending) = &self.pending_decision else {
+            return self.poll_read(paths, visible, message);
+        };
+        let result = match pending.reply.try_recv() {
+            Ok(result) => result,
+            Err(TryRecvError::Empty) => return false,
+            Err(TryRecvError::Disconnected) => Err(WriteFailure::Unknown),
+        };
+        let run_id = pending.run_id;
+        self.pending_decision = None;
+        *message = match result {
+            Ok(run) => {
+                self.record_decision(run);
+                "Approval decision recorded".into()
+            }
+            Err(WriteFailure::Unknown) => unknown_decision(run_id),
+            Err(error) => format!("Decision for {run_id} · {error}"),
+        };
+        true
+    }
+
+    fn poll_read(&mut self, paths: &WorkspacePaths, visible: bool, message: &mut String) -> bool {
         let Some(pending) = &self.pending_read else {
             return false;
         };
@@ -423,6 +459,9 @@ impl State {
     }
 
     pub(super) fn execute(&mut self, paths: &WorkspacePaths, command: Operation) -> String {
+        if let Some(pending) = &self.pending_decision {
+            return submitting_decision(pending.run_id);
+        }
         match command {
             Operation::Read(request) => match self.request_read(paths, request) {
                 Ok(()) => String::new(),
@@ -436,13 +475,24 @@ impl State {
                 node,
                 approved,
                 review,
-            } => match daemon_client::decide_workflow(paths, run_id, node, approved, review) {
-                Ok(run) => {
-                    self.record_decision(run);
-                    "Approval decision recorded · r refresh".into()
+            } => {
+                let (sender, reply) = mpsc::channel();
+                let paths = paths.clone();
+                let start = thread::Builder::new()
+                    .name("mcbtodo-workflow-decision".into())
+                    .spawn(move || {
+                        let result =
+                            daemon_client::decide_workflow(&paths, run_id, node, approved, review);
+                        let _ = sender.send(result);
+                    });
+                match start {
+                    Ok(_) => {
+                        self.pending_decision = Some(PendingDecision { run_id, reply });
+                        submitting_decision(run_id)
+                    }
+                    Err(error) => format!("Could not submit decision for {run_id} · {error}"),
                 }
-                Err(error) => format!("Decision · {error:#} · r refresh"),
-            },
+            }
         }
     }
 
@@ -511,4 +561,12 @@ impl State {
 
 fn refresh() -> Action {
     ReadRequest::List { before: None }.action()
+}
+
+fn submitting_decision(run_id: Uuid) -> String {
+    format!("Submitting decision for {run_id}…")
+}
+
+pub(super) fn unknown_decision(run_id: Uuid) -> String {
+    format!("Decision status unknown for {run_id} · inspect before retrying")
 }

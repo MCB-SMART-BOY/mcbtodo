@@ -88,17 +88,20 @@ pub fn decide_workflow(
     node: String,
     approved: bool,
     review: Option<String>,
-) -> Result<RunSummary> {
-    let response = workflow(
+) -> Result<RunSummary, WriteFailure> {
+    submit_write(
         paths,
-        WorkflowRequest::Decide {
+        Request::Workflow(WorkflowRequest::Decide {
             run_id,
             node,
             approved,
             review,
+        }),
+        |response| match response {
+            Response::Workflow(response) => checked_workflow_run(run_id, response).ok(),
+            _ => None,
         },
-    )?;
-    checked_workflow_run(run_id, response)
+    )
 }
 
 fn checked_workflow_run(run_id: Id, response: WorkflowResponse) -> Result<RunSummary> {
@@ -419,12 +422,25 @@ pub fn exchange(paths: &WorkspacePaths, operation: Request) -> Result<Response> 
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
 pub enum WriteFailure {
     StaleRevision,
     Rejected(String),
     /// The daemon may have acted, but no recognized confirmation arrived.
     Unknown,
 }
+
+impl std::fmt::Display for WriteFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::StaleRevision => formatter.write_str("Revision changed"),
+            Self::Rejected(message) => formatter.write_str(message),
+            Self::Unknown => formatter.write_str("Write status unknown. Inspect before retrying."),
+        }
+    }
+}
+
+impl std::error::Error for WriteFailure {}
 
 pub fn owns_vault(paths: &WorkspacePaths, root: &Path) -> Result<bool> {
     if cfg!(target_os = "linux") {
@@ -434,16 +450,20 @@ pub fn owns_vault(paths: &WorkspacePaths, root: &Path) -> Result<bool> {
     }
 }
 
-fn submit_write(
+fn submit_write<T>(
     paths: &WorkspacePaths,
     operation: Request,
-    confirmation: impl FnOnce(Response) -> Option<bool>,
-) -> Result<bool, WriteFailure> {
+    confirmation: impl FnOnce(Response) -> Option<T>,
+) -> Result<T, WriteFailure> {
     match request(paths.socket_path(), operation) {
         Ok(Response::Error {
             code: ErrorCode::StaleRevision,
             ..
         }) => Err(WriteFailure::StaleRevision),
+        Ok(Response::Error {
+            code: ErrorCode::Internal,
+            ..
+        }) => Err(WriteFailure::Unknown),
         Ok(Response::Error { message, .. }) => Err(WriteFailure::Rejected(message)),
         Ok(response) => confirmation(response).ok_or(WriteFailure::Unknown),
         Err(ProtocolError::Io(error))
@@ -455,6 +475,9 @@ fn submit_write(
             Err(WriteFailure::Rejected(
                 "Start mcbtodo-daemon and try again".into(),
             ))
+        }
+        Err(ProtocolError::Io(error)) if error.kind() == io::ErrorKind::Unsupported => {
+            Err(WriteFailure::Rejected(error.to_string()))
         }
         Err(_) => Err(WriteFailure::Unknown),
     }

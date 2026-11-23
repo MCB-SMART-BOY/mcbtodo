@@ -2084,6 +2084,13 @@ Workflow pages, step reads, and approval previews now share one background
 reader slot. The terminal consumes typed replies during its event loop. A
 delayed Unix socket test covers changing selection, pressing Escape, leaving
 and reopening Workflow, and confirming with the token from the loaded run.
-Confirmed decision submission still runs on the terminal thread.
 The Linux AArch64 workspace check passed 736 tests. Example Vault validation,
 Agent registry validation, and the sandbox smoke passed.
+
+Confirmed decisions now submit in the background. A delayed receipt test
+verifies that navigation and view changes remain responsive, that only one
+decision is submitted, and that a matching receipt updates the run. A lost
+receipt reports the run UUID and advises inspection before retrying. The
+shared client distinguishes a conflict response from an ambiguous internal
+error. The Linux AArch64 workspace check passed 738 tests. Example Vault
+validation, Agent registry validation, and the sandbox smoke passed.

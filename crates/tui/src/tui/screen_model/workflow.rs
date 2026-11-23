@@ -179,13 +179,14 @@ impl<'a> WorkflowScreenModel<'a> {
                 details.push(format!("Revision  {}", super::display_line(&run.revision)));
                 let loading_page = state.is_loading_page();
                 let inspecting = matches!(state.panel, Panel::InspectDecision { .. });
+                let submitting = state.pending_decision_id().is_some();
                 let older = state.next_before.is_some();
                 let (hint, compact_hint) = if loading_step || inspecting {
                     (
                         format!("Esc cancel  {vertical} runs  {help} help"),
                         format!("Esc cancel  {vertical}"),
                     )
-                } else if loading_page {
+                } else if loading_page || submitting {
                     let hint = format!("{vertical} runs  {help} help");
                     (hint.clone(), hint)
                 } else {
@@ -220,7 +221,9 @@ impl<'a> WorkflowScreenModel<'a> {
                 };
                 (
                     WorkflowPanel::Runs {
-                        title: if loading_step {
+                        title: if submitting {
+                            " Submitting decision… "
+                        } else if loading_step {
                             " Loading step… "
                         } else if inspecting {
                             " Loading review… "

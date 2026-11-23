@@ -92,7 +92,9 @@ The terminal keeps the run list or current trace visible while reading.
 Esc dismisses a pending detail read. Moving to another run or leaving
 Workflow also discards the pending detail, even if you return before the
 reply arrives. Approval still requires the confirmation key after the review
-has loaded.
+has loaded. Once confirmed, the decision is submitted in the background.
+You can navigate or close the terminal while it is pending. If the result
+is uncertain, inspect the displayed run UUID before retrying.
 
 `TimelineScreenModel` projects the two-week date labels, occurrence markers,
 selected row and compact list labels. The renderer switches to the scrollable

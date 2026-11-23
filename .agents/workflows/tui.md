@@ -151,6 +151,11 @@ most one first-page refresh behind the in-flight read. Verify that the
 confirmation key submits only after the review opens, with the token derived
 from the displayed run.
 
+Hold a confirmed decision reply while navigating and trying another Workflow
+action. Verify that the session sends one decision, accepts replies after
+leaving the view, and reports the run UUID when a connection drops before
+confirmation. Check that a matching receipt updates the cached run.
+
 Project the Graph list and dependency edit from the installed Vault snapshot.
 Refresh the cached nodes when the validated snapshot changes and format only
 visible rows. At 96×5, give the Graph list the full width and check that the
