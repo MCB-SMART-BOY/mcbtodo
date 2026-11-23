@@ -282,6 +282,16 @@ impl VaultCommands {
         })
     }
 
+    /// Sets or clears a deadline without waiting for a competing writer.
+    pub fn try_set_deadline(
+        &self,
+        id: Id,
+        deadline: Option<Deadline>,
+        expected_digest: &str,
+    ) -> Result<PersistedDocument, WriteError> {
+        VaultStore::new(&self.root, self.timezone).try_set_deadline(id, deadline, expected_digest)
+    }
+
     /// Captures a Task under its Project using the caller's observed revision.
     pub fn capture_task(
         &self,
@@ -1035,6 +1045,10 @@ impl VaultQueries {
     /// Vault rechecks it under the writer lock before publishing the Task.
     pub fn project_revision(&self, project_id: Id) -> Result<Option<Revision>> {
         Ok(project_revision_in_snapshot(&self.snapshot()?, project_id))
+    }
+
+    pub fn deadline_edit_context(&self, id: Id) -> Result<Option<DeadlineEditContext>> {
+        Ok(deadline_edit_context(&self.snapshot()?, id))
     }
 
     pub fn list_tasks(&self, project_filter: Option<Id>) -> Result<Vec<TaskSummary>> {

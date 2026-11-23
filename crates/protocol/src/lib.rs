@@ -14,7 +14,7 @@ pub use wire::ProtocolError;
 use chrono::{DateTime, FixedOffset, NaiveDate, Utc};
 use mcbtodo_domain::{
     CalendarItem, DependencyOperation, InboxSummary, OutlineItem, WorkUnitDependencyPreview,
-    WorkUnitGraphNode,
+    WorkUnitGraphNode, time::Deadline,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -45,6 +45,16 @@ pub enum Request {
     /// Project the default Vault hierarchy from one validated snapshot.
     Outline {
         timezone: String,
+    },
+    /// Read the editable deadline and revision from the same default Vault snapshot.
+    DeadlineContext {
+        id: Uuid,
+    },
+    /// Set or clear a deadline using the digest observed by the client.
+    SetDeadline {
+        id: Uuid,
+        revision: String,
+        deadline: Option<Deadline>,
     },
     /// List captured Inbox entries from one validated default Vault snapshot.
     Inbox,
@@ -141,6 +151,13 @@ pub enum Response {
     Outline {
         items: Vec<OutlineItem>,
         more: bool,
+    },
+    DeadlineContext {
+        revision: String,
+        deadline: Option<Deadline>,
+    },
+    DeadlineSet {
+        synced: bool,
     },
     /// Ordered frames on one Inbox connection, assembled by the typed client.
     Inbox {

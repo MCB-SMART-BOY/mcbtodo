@@ -80,6 +80,8 @@ impl Timer {
                 | Request::FocusReport { .. }
                 | Request::Calendar { .. }
                 | Request::Outline { .. }
+                | Request::DeadlineContext { .. }
+                | Request::SetDeadline { .. }
                 | Request::Inbox
                 | Request::WorkUnitGraph { .. }
                 | Request::PreviewWorkUnitDependencyChange { .. }

@@ -1,5 +1,306 @@
 use super::{calendar_tests::screen, creation_tests::press, *};
 
+use mcbtodo_domain::time::Deadline;
+
+#[cfg(target_os = "linux")]
+use std::{os::unix::net::UnixListener, thread};
+
+#[cfg(target_os = "linux")]
+use mcbtodo_protocol::{ErrorCode, Response, wire};
+
+#[cfg(target_os = "linux")]
+fn listen(paths: &WorkspacePaths) -> Result<UnixListener> {
+    use std::{fs, os::unix::fs::PermissionsExt};
+
+    paths.initialize()?;
+    let socket = paths.socket_path();
+    fs::create_dir_all(socket.parent().unwrap())?;
+    let listener = UnixListener::bind(&socket)?;
+    fs::set_permissions(socket, fs::Permissions::from_mode(0o600))?;
+    Ok(listener)
+}
+
+#[cfg(target_os = "linux")]
+fn outline(id: Id, title: &str) -> Response {
+    Response::Outline {
+        items: vec![OutlineItem {
+            id,
+            title: title.into(),
+            depth: 0,
+            project_id: Some(id),
+            task_id: None,
+            source_path: "projects/test/project.md".into(),
+            revision: "outline revision".into(),
+            blocked: false,
+        }],
+        more: false,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn serve(
+    listener: UnixListener,
+    exchanges: Vec<(Request, Option<Response>)>,
+) -> thread::JoinHandle<Result<()>> {
+    thread::spawn(move || {
+        for (request, response) in exchanges {
+            let (mut stream, _) = listener.accept()?;
+            stream.set_read_timeout(Some(Duration::from_secs(3)))?;
+            assert_eq!(wire::read::<Request>(&mut stream)?, request);
+            if let Some(response) = response {
+                wire::write(&mut stream, &response)?;
+            }
+        }
+        Ok(())
+    })
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn deadline_editor_uses_daemon_context_for_a_document_absent_locally() -> Result<()> {
+    let home = tempfile::tempdir()?;
+    let paths = WorkspacePaths::from_home(home.path().to_owned());
+    let listener = listen(&paths)?;
+    let id = Id::new_v4();
+    let outline_request = Request::Outline {
+        timezone: "UTC".into(),
+    };
+    let peer = serve(
+        listener,
+        vec![
+            (outline_request.clone(), Some(outline(id, "Remote project"))),
+            (
+                Request::DeadlineContext { id },
+                Some(Response::DeadlineContext {
+                    revision: "deadline revision".into(),
+                    deadline: Some(Deadline::Date {
+                        value: "2026-12-10".parse()?,
+                    }),
+                }),
+            ),
+            (
+                Request::SetDeadline {
+                    id,
+                    revision: "deadline revision".into(),
+                    deadline: None,
+                },
+                Some(Response::Error {
+                    code: ErrorCode::StaleRevision,
+                    message: "Document changed".into(),
+                }),
+            ),
+            (
+                Request::DeadlineContext { id },
+                Some(Response::DeadlineContext {
+                    revision: "fresh revision".into(),
+                    deadline: Some(Deadline::Date {
+                        value: "2026-12-11".parse()?,
+                    }),
+                }),
+            ),
+            (
+                Request::SetDeadline {
+                    id,
+                    revision: "fresh revision".into(),
+                    deadline: None,
+                },
+                Some(Response::DeadlineSet { synced: true }),
+            ),
+            (outline_request, Some(outline(id, "Refreshed project"))),
+        ],
+    );
+    let root = paths.vault_root();
+    let mut vault = Vault::load(&root, chrono_tz::UTC)?;
+    assert!(vault.deadline(id).is_none());
+    let mut state = State::new("2026-11-25".parse()?);
+    state.view = View::Outline;
+    state.daemon_views = Some(daemon_views::DaemonViews::new(paths.clone()));
+    press(&mut state, &vault, " d");
+    assert!(
+        matches!(&state.overlay, Overlay::Deadline(form) if form.value == "2026-12-10"),
+        "{}",
+        state.message
+    );
+    let Action::SetDeadline(submission) = press(&mut state, &vault, "\u{7f}\n") else {
+        panic!("expected deadline clear action");
+    };
+    state.set_deadline(&root, &mut vault, submission);
+    assert!(state.message.contains("press r"), "{}", state.message);
+    assert_eq!(press(&mut state, &vault, "\n"), Action::Continue);
+    press(&mut state, &vault, "r");
+    assert!(
+        matches!(&state.overlay, Overlay::Deadline(form) if form.cleared && form.value.is_empty()),
+        "{}",
+        state.message
+    );
+    let Action::SetDeadline(submission) = press(&mut state, &vault, "\n") else {
+        panic!("expected deadline clear action after refresh");
+    };
+    state.set_deadline(&root, &mut vault, submission);
+    assert!(matches!(state.overlay, Overlay::None));
+    assert_eq!(state.message, "Deadline saved");
+    assert_eq!(state.outline_rows(&vault)?[0].title, "Refreshed project");
+    peer.join().unwrap()?;
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn daemon_deadline_keeps_timestamp_and_invalidates_views_after_an_uncertain_write() -> Result<()> {
+    use mcbtodo_domain::time::ZonedMoment;
+
+    let home = tempfile::tempdir()?;
+    let paths = WorkspacePaths::from_home(home.path().to_owned());
+    let listener = listen(&paths)?;
+    let id = Id::new_v4();
+    let timestamp = Deadline::DateTime(ZonedMoment::new(
+        "2026-12-10T23:30:00-08:00".parse()?,
+        chrono_tz::America::Los_Angeles,
+    )?);
+    let outline_request = Request::Outline {
+        timezone: "UTC".into(),
+    };
+    let peer = serve(
+        listener,
+        vec![
+            (outline_request.clone(), Some(outline(id, "Remote project"))),
+            (
+                Request::DeadlineContext { id },
+                Some(Response::DeadlineContext {
+                    revision: "deadline revision".into(),
+                    deadline: Some(timestamp),
+                }),
+            ),
+            (
+                Request::SetDeadline {
+                    id,
+                    revision: "deadline revision".into(),
+                    deadline: Some(timestamp),
+                },
+                None,
+            ),
+            (outline_request, Some(outline(id, "Updated project"))),
+        ],
+    );
+    let root = paths.vault_root();
+    let mut vault = Vault::load(&root, chrono_tz::UTC)?;
+    let mut state = State::new("2026-11-25".parse()?);
+    state.view = View::Outline;
+    state.daemon_views = Some(daemon_views::DaemonViews::new(paths));
+    press(&mut state, &vault, " d");
+    assert!(matches!(&state.overlay, Overlay::Deadline(form) if form.value == "2026-12-11"));
+    let Action::SetDeadline(submission) = press(&mut state, &vault, "\n") else {
+        panic!("expected deadline submission");
+    };
+    state.set_deadline(&root, &mut vault, submission);
+    assert!(matches!(state.overlay, Overlay::None));
+    assert!(
+        state.message.contains("outcome unknown"),
+        "{}",
+        state.message
+    );
+    assert_eq!(state.outline_rows(&vault)?[0].title, "Updated project");
+    peer.join().unwrap()?;
+    Ok(())
+}
+
+fn write_project(root: &Path, id: Id) -> Result<std::path::PathBuf> {
+    let document = root.join("projects/test/project.md");
+    std::fs::create_dir_all(document.parent().unwrap())?;
+    std::fs::write(
+        &document,
+        format!("---\nschema: mcbtodo.project/v1\nid: {id}\n---\n# Test\n"),
+    )?;
+    Ok(document)
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn default_deadline_editor_never_falls_back_to_a_local_document() -> Result<()> {
+    let home = tempfile::tempdir()?;
+    let paths = WorkspacePaths::from_home(home.path().to_owned());
+    let listener = listen(&paths)?;
+    let root = paths.vault_root();
+    let id = Id::new_v4();
+    let document = write_project(&root, id)?;
+    let before = std::fs::read(&document)?;
+    let mut vault = Vault::load(&root, chrono_tz::UTC)?;
+    let peer = serve(
+        listener,
+        vec![
+            (
+                Request::Outline {
+                    timezone: "UTC".into(),
+                },
+                Some(outline(id, "Test")),
+            ),
+            (
+                Request::DeadlineContext { id },
+                Some(Response::DeadlineContext {
+                    revision: vault.revision(id).unwrap().digest(),
+                    deadline: None,
+                }),
+            ),
+        ],
+    );
+    let mut state = State::new("2026-11-25".parse()?);
+    assert!(creation::is_daemon_vault(&paths, &root)?);
+    state.daemon_views = Some(daemon_views::DaemonViews::new(paths));
+    state.view = View::Outline;
+    press(&mut state, &vault, " d");
+    peer.join().unwrap()?;
+
+    let Action::SetDeadline(submission) = press(&mut state, &vault, "2026-12-10\n") else {
+        panic!("expected deadline submission");
+    };
+    state.set_deadline(&root, &mut vault, submission);
+    assert!(matches!(state.overlay, Overlay::Deadline(_)));
+    assert!(
+        state.message.contains("Start mcbtodo-daemon"),
+        "{}",
+        state.message
+    );
+    assert_eq!(std::fs::read(document)?, before);
+
+    press(&mut state, &vault, "\x1b d");
+    assert!(matches!(state.overlay, Overlay::Space(_)));
+    assert!(
+        state.message.contains("Start mcbtodo-daemon"),
+        "{}",
+        state.message
+    );
+    Ok(())
+}
+
+#[test]
+fn external_deadline_editor_persists_locally() -> Result<()> {
+    let home = tempfile::tempdir()?;
+    let paths = WorkspacePaths::from_home(home.path().to_owned());
+    paths.initialize()?;
+    let external = tempfile::tempdir()?;
+    let root = external.path();
+    let id = Id::new_v4();
+    write_project(root, id)?;
+    assert!(!creation::is_daemon_vault(&paths, root)?);
+    let mut vault = Vault::load(root, chrono_tz::UTC)?;
+    let mut state = State::new("2026-11-25".parse()?);
+    state.view = View::Outline;
+
+    let Action::SetDeadline(submission) = press(&mut state, &vault, " d2026-12-10\n") else {
+        panic!("expected deadline submission");
+    };
+    state.set_deadline(root, &mut vault, submission);
+    assert!(matches!(state.overlay, Overlay::None));
+    assert_eq!(state.message, "Deadline saved");
+    assert_eq!(
+        Vault::load(root, chrono_tz::UTC)?.deadline(id),
+        Some(Some(Deadline::Date {
+            value: "2026-12-10".parse()?
+        }))
+    );
+    Ok(())
+}
+
 #[test]
 fn selected_outline_document_can_clear_its_deadline() {
     let vault = tests::fixture();
@@ -61,7 +362,7 @@ fn selected_outline_document_can_set_a_new_date_deadline() {
     assert_eq!(submission.id, id);
     assert_eq!(
         submission.deadline,
-        Some(mcbtodo_domain::time::Deadline::Date {
+        Some(Deadline::Date {
             value: "2026-12-10".parse().unwrap()
         })
     );
@@ -90,7 +391,7 @@ fn selected_outline_document_without_a_deadline_can_add_one() {
     assert_eq!(submission.id, id);
     assert_eq!(
         submission.deadline,
-        Some(mcbtodo_domain::time::Deadline::Date {
+        Some(Deadline::Date {
             value: "2026-12-10".parse().unwrap()
         })
     );

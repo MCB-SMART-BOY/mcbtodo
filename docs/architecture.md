@@ -81,7 +81,7 @@ CLI 的 Vault 写命令从已加载快照取得乐观并发控制 token 时使�
 | 入口 | Vault 访问路径 |
 | --- | --- |
 | CLI | `validate`、`outline`、`graph`、`vault` 和默认的 `calendar` 使用本地 Vault。`calendar --daemon` 只查询默认 Vault 的单日投影，并拒绝与 `--vault` 或 iCalendar 导入导出组合。计时、通知和工作流运行命令使用 IPC，工作流校验、模拟和发布通过本地应用用例。 |
-| Linux TUI，默认 Vault | Month、Week、Day、Agenda、Timeline、大纲、全局搜索、Inbox 列表及分流、Graph 浏览及依赖预览和确认走 IPC。Task 捕获、Project、Deadline 快速创建、全天事件、单次提醒和 WorkUnit 时间块也走 IPC。启动时仍校验本地快照，部分表单的对象选择与其他编辑（如修改现有截止日期）继续使用本地 Vault。 |
+| Linux TUI，默认 Vault | Month、Week、Day、Agenda、Timeline、大纲、全局搜索、Inbox 列表及分流、Graph 浏览及依赖预览和确认走 IPC。Task 捕获、Project、Deadline 快速创建、全天事件、单次提醒、WorkUnit 时间块和现有截止日期编辑也走 IPC。启动校验、文件监听和部分表单仍使用本地快照。 |
 | Linux TUI，外部 Vault，以及非 Linux TUI | 使用本地 Vault 投影和可用的前台编辑功能。外部 Vault 没有独立后台服务。 |
 | MCP | stdio 服务通过共享用例读取选定 Vault。在支持私有队列的平台，业务写入提案需人工批准。批准工作流快照只发布内容寻址 revision，执行授权与入队各有独立入口。 |
 
@@ -100,7 +100,8 @@ Vault 路由与同用户 socket 客户端见 [CLI 入口](../apps/mcbtodo/src/ma
 
 本地写入和 IPC 写入共用 `VaultCommands` 与 Vault 的写锁及 revision 校验。
 例如 Task 捕获使用大纲行里的 Project revision，Graph 确认与时间块写入
-使用所观察的 WorkUnit revision。Daemon 写入尝试遇到锁争用时报告冲突。
+使用所观察的 WorkUnit revision。截止日期表单由服务一次读取原值和 revision，
+写入时重验 revision。Daemon 写入尝试遇到锁争用时报告冲突。
 单次提醒和时间块以 Daemon 配置时区检查偏移。提交结果不明时，TUI 提示
 核对 UUID 或时间范围。Inbox 分流的两文件发布和中断恢复见
 [存储与同步](storage-and-sync.md#transactions-and-compatibility)。

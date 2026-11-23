@@ -1438,8 +1438,30 @@ impl VaultStore {
     /// Sets or clears a Project, Task or WorkUnit deadline without rewriting
     /// unrelated front matter or Markdown content.
     pub fn set_deadline(&self, request: SetDeadline) -> Result<PersistedDocument, WriteError> {
-        let (_lock, vault) = self.locked_snapshot()?;
-        let id = request.id;
+        self.set_deadline_with(request.id, request.deadline, lock, |revision| {
+            revision == &request.expected_revision
+        })
+    }
+
+    pub fn try_set_deadline(
+        &self,
+        id: Id,
+        deadline: Option<Deadline>,
+        expected_digest: &str,
+    ) -> Result<PersistedDocument, WriteError> {
+        self.set_deadline_with(id, deadline, try_lock, |revision| {
+            revision.digest() == expected_digest
+        })
+    }
+
+    fn set_deadline_with(
+        &self,
+        id: Id,
+        deadline: Option<Deadline>,
+        acquire_lock: fn(&Path) -> Result<File>,
+        matches_revision: impl FnOnce(&Revision) -> bool,
+    ) -> Result<PersistedDocument, WriteError> {
+        let (_lock, vault) = self.locked_snapshot_with(acquire_lock)?;
         let path = vault
             .projects
             .get(&id)
@@ -1447,15 +1469,21 @@ impl VaultStore {
             .or_else(|| vault.tasks.get(&id).map(|doc| doc.path.clone()))
             .or_else(|| vault.units.get(&id).map(|doc| doc.path.clone()))
             .ok_or(WriteError::DeadlineTargetNotFound { id })?;
-        let revision = request.expected_revision;
-        check_revision(&vault, id, &revision)?;
-        if vault.deadline(id) == Some(request.deadline) {
-            check_on_disk(&path, id, &revision)?;
-            return Ok(PersistedDocument { id, path, revision });
+        let revision = vault
+            .revision(id)
+            .filter(|revision| matches_revision(revision))
+            .ok_or(WriteError::StaleRevision { id })?;
+        if vault.deadline(id) == Some(deadline) {
+            check_on_disk(&path, id, revision)?;
+            return Ok(PersistedDocument {
+                id,
+                path,
+                revision: revision.clone(),
+            });
         }
-        let updated = document::set_deadline(&revision.0, request.deadline)
-            .map_err(WriteError::InvalidDocument)?;
-        replace(path, id, &revision, Revision::from_source(updated))
+        let updated =
+            document::set_deadline(&revision.0, deadline).map_err(WriteError::InvalidDocument)?;
+        replace(path, id, revision, Revision::from_source(updated))
     }
 
     /// Replaces one WorkUnit's prerequisites after validating the complete candidate DAG.

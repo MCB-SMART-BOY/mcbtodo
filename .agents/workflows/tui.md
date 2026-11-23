@@ -174,6 +174,13 @@ editor retains the current time and cursor. In a 28×4 monochrome terminal,
 verify focus, validation feedback, and the dismissal action together.
 Preserve the existing revision capture and Esc transitions.
 
+For deadline editing on Linux, verify the default Vault reads the original
+deadline and revision from the Daemon and submits through the same service.
+Keep the draft on stale rejection and require `r` before resubmitting. Check
+that an unchanged displayed date preserves its timestamp and that connection
+loss after submission prompts verification. Verify local editing on an
+explicit external Vault separately.
+
 The Outline model projects hierarchy, focus and blocked state. Show the
 blocked marker before the WorkUnit title and label it in the border legend.
 Verify the marker, focused source, and Chinese cell alignment in a 23×5

@@ -203,6 +203,8 @@ mcbtodo --vault /path/to/destination vault import-completion-events < completion
 
 用 `mcbtodo vault set-deadline --id UUID --date YYYY-MM-DD` 设置 Project、Task 或 WorkUnit 的日期截止日；用 `mcbtodo vault clear-deadline --id UUID` 清除。写入会基于当前读取到的文档 revision 检查冲突。
 
+TUI 选中 Project、Task 或 WorkUnit 后按 `Space d` 编辑截止日期，按 `Delete` 清除，按 `Enter` 保存。在 Linux 默认 Vault 中，表单经后台服务读取和保存。若文档已更新，按 `r` 刷新 revision，核对表单后再保存。通过 `--vault` 选择外部 Vault 时，表单直接编辑该 Vault。
+
 用 `mcbtodo vault create-reminder --title "Review" --schedule '{"kind":"once","at":{"value":"2026-11-21T09:00:00+08:00","timezone":"Asia/Shanghai"}}'` 创建一次性提醒。周期提醒使用 `{"kind":"recurring","rule":{"start":"2026-11-21","time":"09:00:00","timezone":"Asia/Shanghai","frequency":"weekly","interval":1,"dst":{"gap":"skip","fold":"earlier"}}}`；`--target UUID` 可关联现有 Task 或 WorkUnit。提醒定义保存在 Vault 的 `reminders/<uuid>.md`，目标关闭后会停止投递。
 
 ## 工作流

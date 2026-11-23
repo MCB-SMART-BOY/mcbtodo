@@ -5,7 +5,7 @@ use chrono_tz::Tz;
 use mcbtodo_application::project_outline;
 use mcbtodo_domain::{
     CalendarItem, DependencyOperation, Id, InboxSummary, OutlineItem, WorkUnitDependencyPreview,
-    time::DateSpan,
+    time::{DateSpan, Deadline},
 };
 use mcbtodo_platform::WorkspacePaths;
 use mcbtodo_protocol::{Request, Response};
@@ -78,6 +78,33 @@ impl DaemonViews {
                 _ => bail!("unexpected response to outline request"),
             }
         })
+    }
+
+    pub(super) fn deadline_context(&self, id: Id) -> Result<(String, Option<Deadline>)> {
+        match crate::daemon_request(&self.paths, Request::DeadlineContext { id })? {
+            Response::DeadlineContext { revision, deadline } => Ok((revision, deadline)),
+            _ => bail!("unexpected response to deadline context request"),
+        }
+    }
+
+    pub(super) fn set_deadline(
+        &self,
+        id: Id,
+        revision: String,
+        deadline: Option<Deadline>,
+    ) -> Result<bool, super::creation::CreationError> {
+        super::creation::submit_daemon_write(
+            &self.paths,
+            Request::SetDeadline {
+                id,
+                revision,
+                deadline,
+            },
+            |response| match response {
+                Response::DeadlineSet { synced } => Some(synced),
+                _ => None,
+            },
+        )
     }
 
     pub(super) fn inbox(&self) -> Result<Rc<[InboxSummary]>> {

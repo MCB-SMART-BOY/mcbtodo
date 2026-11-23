@@ -22,6 +22,69 @@ fn status(server: &mut Server, path: PathBuf, command: Request) -> Response {
 }
 
 #[test]
+fn deadline_edit_checks_observed_revision_and_writer_lock_over_ipc() -> Result<()> {
+    let dir = private_tempdir()?;
+    let paths = WorkspacePaths::from_home(dir.path().to_owned());
+    paths.initialize()?;
+    let root = paths.vault_root();
+    let id = Uuid::from_u128(1);
+    let document = root.join("projects/test/project.md");
+    fs::create_dir_all(document.parent().unwrap())?;
+    let original = format!("---\nschema: mcbtodo.project/v1\nid: {id}\n---\n# Test\n");
+    fs::write(&document, &original)?;
+    let socket = paths.socket_path();
+    let mut server = Server::open(paths, crate::DEFAULT_WORKER_SLOTS)?;
+    let mut send = |json| -> Result<serde_json::Value> {
+        Ok(serde_json::to_value(status(
+            &mut server,
+            socket.clone(),
+            serde_json::from_value(json)?,
+        ))?)
+    };
+    let context = serde_json::json!({"command": "deadline_context", "id": id});
+    let observed = send(context.clone())?;
+    assert_eq!(observed["result"], "deadline_context");
+    assert!(observed["deadline"].is_null());
+    let date = serde_json::json!({"kind": "date", "value": "2026-12-10"});
+    let update = |observed: &serde_json::Value, deadline| {
+        serde_json::json!({
+            "command": "set_deadline", "id": id, "revision": observed["revision"], "deadline": deadline
+        })
+    };
+    let lock = fs::File::options()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(root.join(".mcbtodo-vault.lock"))?;
+    lock.lock()?;
+    assert_eq!(send(update(&observed, date.clone()))?["code"], "conflict");
+    drop(lock);
+    let edited = original.replace("# Test", "# Edited elsewhere");
+    fs::write(&document, &edited)?;
+    assert_eq!(
+        send(update(&observed, date.clone()))?["code"],
+        "stale_revision"
+    );
+    assert_eq!(fs::read_to_string(&document)?, edited);
+
+    let refreshed = send(context.clone())?;
+    assert_eq!(
+        send(update(&refreshed, date.clone()))?,
+        serde_json::json!({"result": "deadline_set", "synced": true})
+    );
+    let saved = send(context.clone())?;
+    assert_eq!(saved["deadline"], date);
+    assert_ne!(saved["revision"], refreshed["revision"]);
+    assert_eq!(
+        send(update(&saved, serde_json::Value::Null))?["result"],
+        "deadline_set"
+    );
+    assert!(send(context)?["deadline"].is_null());
+    assert!(fs::read_to_string(&document)?.contains("# Edited elsewhere"));
+    Ok(())
+}
+
+#[test]
 fn inbox_triage_is_shared_and_checks_the_observed_revision_and_lock() -> Result<()> {
     let dir = private_tempdir()?;
     let paths = WorkspacePaths::from_home(dir.path().to_owned());

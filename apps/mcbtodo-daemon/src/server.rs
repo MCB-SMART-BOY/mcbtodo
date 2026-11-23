@@ -207,6 +207,18 @@ impl Server {
                 timezone,
             } => query_calendar(self.runtime.paths(), start, through, &timezone),
             Request::Outline { timezone } => query_outline(self.runtime.paths(), &timezone),
+            Request::DeadlineContext { id } => query_deadline(self.runtime.paths(), id),
+            Request::SetDeadline {
+                id,
+                revision,
+                deadline,
+            } => create_in_vault(
+                self.runtime.paths(),
+                "Deadline",
+                id,
+                |commands| commands.try_set_deadline(id, deadline, &revision),
+                |synced| Response::DeadlineSet { synced },
+            ),
             Request::Inbox => query_inbox(self.runtime.paths()),
             Request::WorkUnitGraph { timezone } => {
                 query_work_unit_graph(self.runtime.paths(), &timezone)
@@ -463,6 +475,28 @@ fn query_outline(paths: &WorkspacePaths, timezone: &str) -> Response {
     }
 }
 
+fn query_deadline(paths: &WorkspacePaths, id: Uuid) -> Response {
+    match paths.load_config().and_then(|config| {
+        VaultQueries::new(paths.vault_root(), config.timezone).deadline_edit_context(id)
+    }) {
+        Ok(Some(context)) => Response::DeadlineContext {
+            revision: context.revision.digest(),
+            deadline: context.deadline,
+        },
+        Ok(None) => Response::Error {
+            code: ErrorCode::NotFound,
+            message: "Selection does not support deadlines".into(),
+        },
+        Err(error) => {
+            eprintln!("mcbtodo-daemon: loading deadline: {error:#}");
+            Response::Error {
+                code: ErrorCode::Internal,
+                message: "could not load the default Vault deadline; check the daemon log".into(),
+            }
+        }
+    }
+}
+
 fn query_inbox(paths: &WorkspacePaths) -> Response {
     match paths
         .load_config()
@@ -579,6 +613,7 @@ fn create_in_vault(
     };
     let (code, message) = match &error {
         WriteError::StaleRevision { .. }
+        | WriteError::DeadlineTargetNotFound { .. }
         | WriteError::ProjectNotFound { .. }
         | WriteError::InboxEntryNotFound { .. }
         | WriteError::WorkUnitNotFound { .. } => (ErrorCode::StaleRevision, error.to_string()),

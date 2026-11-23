@@ -36,8 +36,8 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use mcbtodo_application::{
-    CalendarItem, InboxSummary, OutlineItem, TargetAction, VaultCommands, deadline_edit_context,
-    project_action_targets, project_calendar, project_inbox, project_revision_in_snapshot,
+    CalendarItem, InboxSummary, OutlineItem, TargetAction, VaultCommands, project_action_targets,
+    project_calendar, project_inbox, project_revision_in_snapshot,
 };
 use mcbtodo_domain::{CalendarKind, Id, Occurrence, time::Span};
 use mcbtodo_platform::{AppConfig, AppConfigSnapshot, HomeViewPolicy, TuiTheme, WorkspacePaths};
@@ -673,17 +673,13 @@ impl State {
                             self.message = "Select a Project, Task or WorkUnit first".into();
                             return Continue;
                         };
-                        let Some(context) = deadline_edit_context(vault, id) else {
-                            self.message = "Selection does not support deadlines".into();
-                            return Continue;
-                        };
-                        self.overlay = Overlay::Deadline(deadline::Form::new(
-                            id,
-                            context.revision,
-                            context.deadline,
-                            vault.timezone(),
-                        ));
-                        self.message.clear();
+                        match deadline::Form::open(id, vault, self.daemon_views.as_ref()) {
+                            Ok(form) => {
+                                self.overlay = Overlay::Deadline(form);
+                                self.message.clear();
+                            }
+                            Err(error) => self.message = format!("{error:#}"),
+                        }
                         return Continue;
                     }
                     KeyCode::Char('a') => {
@@ -781,7 +777,12 @@ impl State {
                 return Continue;
             }
             Overlay::Deadline(form) => {
-                if let Some(action) = form.handle(key.code, vault, &mut self.message) {
+                if let Some(action) = form.handle(
+                    key.code,
+                    vault,
+                    self.daemon_views.as_ref(),
+                    &mut self.message,
+                ) {
                     return action;
                 }
                 self.message.clear();
@@ -1301,11 +1302,51 @@ impl State {
     }
 
     fn set_deadline(&mut self, root: &Path, vault: &mut Vault, request: deadline::Submission) {
-        match VaultCommands::new(root, vault.timezone()).set_deadline(
-            request.id,
-            request.deadline,
-            request.revision,
-        ) {
+        let deadline::Submission {
+            id,
+            deadline,
+            revision,
+        } = request;
+        let revision = match (&self.daemon_views, revision) {
+            (None, deadline::EditRevision::Local(revision)) => revision,
+            (Some(service), deadline::EditRevision::Daemon(revision)) => {
+                use creation::CreationError;
+
+                self.message = match service.set_deadline(id, revision, deadline) {
+                    Ok(synced) => {
+                        self.overlay = Overlay::None;
+                        self.invalidate_daemon_views();
+                        if synced {
+                            "Deadline saved".into()
+                        } else {
+                            "Deadline published · directory sync could not be confirmed".into()
+                        }
+                    }
+                    Err(CreationError::StaleRevision) => {
+                        if let Overlay::Deadline(form) = &mut self.overlay {
+                            form.needs_refresh = true;
+                        }
+                        deadline::DAEMON_STALE.into()
+                    }
+                    Err(CreationError::Rejected(error)) => {
+                        format!("Deadline update failed · {error}")
+                    }
+                    Err(CreationError::Unknown) => {
+                        self.overlay = Overlay::None;
+                        self.invalidate_daemon_views();
+                        format!(
+                            "Deadline update outcome unknown · Check document {id} before retrying"
+                        )
+                    }
+                };
+                return;
+            }
+            _ => {
+                self.message = "Deadline form belongs to a different Vault source".into();
+                return;
+            }
+        };
+        match VaultCommands::new(root, vault.timezone()).set_deadline(id, deadline, revision) {
             Ok(_) => {
                 self.overlay = Overlay::None;
                 self.reload(root, vault);
@@ -1314,6 +1355,9 @@ impl State {
                 }
             }
             Err(WriteError::StaleRevision { .. }) => {
+                if let Overlay::Deadline(form) = &mut self.overlay {
+                    form.needs_refresh = true;
+                }
                 self.message =
                     "Document changed · reload the Vault, then press r to refresh the revision"
                         .into();
