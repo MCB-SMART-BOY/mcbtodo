@@ -323,8 +323,13 @@ revision. The socket regression exercises a multi-frame hierarchy and typed
 client assembly. The TUI regression covers stale revision rejection with the
 form still open. The systemd smoke reads the captured Task from a second TUI.
 
+Global search filters the same Outline rows by title or source path and opens
+the selected UUID in Outline. A regression verifies that a document absent
+from the client snapshot is searchable and selectable. An unavailable daemon
+produces a dismissible error panel.
+
 The TUI still loads a local snapshot at startup and uses it for Graph, Inbox,
-object pickers and remaining foreground edits. File watching still takes place
+some form pickers and remaining foreground edits. File watching still takes place
 in the client. Each new calendar or Outline query scans the Vault in the daemon
 and can wait up to the existing IPC deadline. GUI, launcher integration and
 service-side change notifications remain planned.

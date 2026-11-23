@@ -422,10 +422,7 @@ impl State {
     }
 
     fn outline_rows(&self, vault: &Vault) -> Result<Rc<[OutlineItem]>> {
-        match &self.daemon_views {
-            Some(service) => service.outline(vault.timezone()),
-            None => Ok(project_outline(vault).into()),
-        }
+        daemon_views::outline_rows(vault, self.daemon_views.as_ref())
     }
 
     fn day_entries(&self, vault: &Vault) -> Result<Vec<CalendarItem>> {
@@ -573,7 +570,11 @@ impl State {
                 match key.code {
                     KeyCode::Esc => self.overlay = Overlay::None,
                     KeyCode::Enter => {
-                        let selected = picker::matches(vault, query).get(*row).map(|item| item.id);
+                        let Ok(matches) = picker::matches(vault, self.daemon_views.as_ref(), query)
+                        else {
+                            return Continue;
+                        };
+                        let selected = matches.get(*row).map(|item| item.id);
                         self.overlay = Overlay::None;
                         if let Some(id) = selected {
                             self.switch(View::Outline, vault);
@@ -588,8 +589,11 @@ impl State {
                         *row = row.saturating_sub(1);
                     }
                     KeyCode::Down | KeyCode::Char('j') => {
-                        let count = picker::matches(vault, query).len();
-                        *row = move_row(*row, true, count);
+                        if let Ok(matches) =
+                            picker::matches(vault, self.daemon_views.as_ref(), query)
+                        {
+                            *row = move_row(*row, true, matches.len());
+                        }
                     }
                     KeyCode::Backspace => {
                         query.pop();

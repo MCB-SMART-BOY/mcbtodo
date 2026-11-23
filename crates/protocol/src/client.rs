@@ -110,6 +110,7 @@ mod tests {
                 id: uuid::Uuid::nil(),
                 depth: 0,
                 title: "Project".into(),
+                source_path: "projects/project/project.md".into(),
                 project_id: Some(uuid::Uuid::nil()),
                 task_id: None,
                 blocked: false,

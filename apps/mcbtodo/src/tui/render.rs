@@ -873,6 +873,7 @@ mod tests {
             id: Uuid::new_v4(),
             depth,
             title: title.into(),
+            source_path: String::new(),
             project_id: None,
             task_id: None,
             blocked,

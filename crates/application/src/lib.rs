@@ -864,6 +864,7 @@ pub fn project_outline(vault: &Vault) -> Vec<OutlineItem> {
                 id: row.id,
                 depth: row.depth,
                 title: row.title.to_owned(),
+                source_path: row.path.to_string_lossy().into_owned(),
                 project_id,
                 task_id,
                 blocked: row.blocked,

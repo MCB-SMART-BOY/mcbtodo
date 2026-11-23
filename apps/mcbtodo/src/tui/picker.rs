@@ -1,6 +1,8 @@
-use mcbtodo_application::project_outline;
+use anyhow::Result;
 use mcbtodo_domain::Id;
 use mcbtodo_vault::Vault;
+
+use super::daemon_views::{DaemonViews, outline_rows};
 
 pub(super) struct Match {
     pub(super) id: Id,
@@ -8,24 +10,26 @@ pub(super) struct Match {
     pub(super) depth: usize,
 }
 
-pub(super) fn matches(vault: &Vault, query: &str) -> Vec<Match> {
+pub(super) fn matches(
+    vault: &Vault,
+    service: Option<&DaemonViews>,
+    query: &str,
+) -> Result<Vec<Match>> {
     let query_lower = query.to_lowercase();
-    let mut matches: Vec<_> = project_outline(vault)
-        .into_iter()
+    let mut matches: Vec<_> = outline_rows(vault, service)?
+        .iter()
         .filter_map(|row| {
             let score = score(query, &row.title).or_else(|| {
-                vault
-                    .source(row.id)
-                    .is_some_and(|path| {
-                        path.to_string_lossy().to_lowercase().contains(&query_lower)
-                    })
+                row.source_path
+                    .to_lowercase()
+                    .contains(&query_lower)
                     .then_some(usize::MAX / 2)
             })?;
             Some((
                 score,
                 Match {
                     id: row.id,
-                    title: row.title,
+                    title: row.title.clone(),
                     depth: row.depth,
                 },
             ))
@@ -37,7 +41,7 @@ pub(super) fn matches(vault: &Vault, query: &str) -> Vec<Match> {
             .then_with(|| left.title.cmp(&right.title))
             .then_with(|| left.id.cmp(&right.id))
     });
-    matches.into_iter().map(|(_, row)| row).collect()
+    Ok(matches.into_iter().map(|(_, row)| row).collect())
 }
 
 fn score(query: &str, text: &str) -> Option<usize> {

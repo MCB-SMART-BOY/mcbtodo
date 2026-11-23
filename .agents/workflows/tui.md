@@ -240,6 +240,9 @@ Open a second TUI after capturing a Task and confirm the saved title appears
 in Outline. Use the same Outline response for drawing, selection and the
 Project revision in the Task form. Keep the draft open on a stale revision.
 Verify that a truncated multi-frame response does not publish partial rows.
+Check that global search can find a document by title and source path from the
+same response and focus it in Outline even when the local snapshot lacks it.
+Check the startup hint and Esc dismissal when the service is offline.
 
 ## Verification
 

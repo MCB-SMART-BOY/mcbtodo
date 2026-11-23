@@ -170,6 +170,8 @@ pub struct OutlineItem {
     pub id: Id,
     pub depth: usize,
     pub title: String,
+    /// Displayable path used for search. The UUID remains the document identity.
+    pub source_path: String,
     pub project_id: Option<Id>,
     pub task_id: Option<Id>,
     pub blocked: bool,

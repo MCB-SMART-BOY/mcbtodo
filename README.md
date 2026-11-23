@@ -136,7 +136,7 @@ view_workflow = "7"
 
 每个动作接受单个可打印字符，大小写分别绑定。视图键的作用域为 `Space u` 菜单。原默认键在未分配给其他动作时仍可作为快捷键。`Ctrl+C` 始终退出，设置导航和保存键是固定键。`x`、`a`、`d` 保留给 Graph 操作，`v` 保留给选择。手工配置中的绑定冲突、未知动作或无效值会在启动时报告。
 
-按 `/` 可模糊搜索 Project、Task 和 WorkUnit；输入名称片段后按上下键选择，Enter 会切换到 Outline 并聚焦该对象，Esc 取消且保留原焦点。
+按 `/` 可按名称或源文件路径搜索 Project、Task 和 WorkUnit。用上下键选择，Enter 切换到 Outline 并聚焦该对象，Esc 取消并保留原焦点。Linux 默认 Vault 的搜索与 Outline 共用同一份服务响应。
 
 按 `:` 打开命令模式：`:view month|week|day|agenda|outline|graph|timeline|workflow` 切换视图，`:search <文字>` 打开对象搜索，`:timer status|start|pause|stop` 操作计时器，`:proposals` 打开提案审阅；`:today`、`:date YYYY-MM-DD`、`:reload`、`:help` 和 `:quit` 提供日期、重载、帮助与退出操作。直接输入视图名称也可切换视图。
 

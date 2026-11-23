@@ -320,6 +320,7 @@ fn task_capture_uses_the_revision_displayed_by_the_daemon_outline() -> Result<()
         id: project_id,
         depth: 0,
         title: "Edited in another client".into(),
+        source_path: "projects/project/project.md".into(),
         project_id: Some(project_id),
         task_id: None,
         blocked: false,

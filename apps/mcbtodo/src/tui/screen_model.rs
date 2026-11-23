@@ -556,6 +556,9 @@ impl<'a> ScreenModel<'a> {
             },
             ScreenFooter::Time { can_add_block } => ScreenFooter::timer_hint(width, *can_add_block),
             ScreenFooter::Command(input) => input,
+            ScreenFooter::Panel if matches!(self.content, Content::ViewError { .. }) => {
+                "Esc cancel"
+            }
             ScreenFooter::Panel => unreachable!("main view requires its footer projection"),
         }
     }
@@ -574,19 +577,14 @@ impl<'a> ScreenModel<'a> {
             }
             Overlay::None | Overlay::Time | Overlay::Command(_) => Self::project_view(state, vault)
                 .unwrap_or_else(|error| {
-                    let mut message = display_line(&error.root_cause().to_string());
-                    if error.source().is_some() {
-                        message.push('\n');
-                        message.push_str(&display_line(&error.to_string()));
-                    }
-                    Content::ViewError {
-                        title: if state.view == View::Outline {
+                    Self::view_error(
+                        if state.view == View::Outline {
                             " Outline error "
                         } else {
                             " Calendar error "
                         },
-                        message,
-                    }
+                        error,
+                    )
                 }),
             Overlay::Space(viewport) => Content::Menu {
                 title: " Actions ",
@@ -631,11 +629,14 @@ impl<'a> ScreenModel<'a> {
                     vault.work_unit(id).map(|unit| unit.title.as_str())
                 }))
             }
-            Overlay::Picker { query, row } => Content::Picker(PickerScreenModel::documents(
-                query,
-                *row,
-                picker::matches(vault, query),
-            )),
+            Overlay::Picker { query, row } => {
+                match picker::matches(vault, state.daemon_views.as_ref(), query) {
+                    Ok(matches) => {
+                        Content::Picker(PickerScreenModel::documents(query, *row, matches))
+                    }
+                    Err(error) => Self::view_error(" Picker error ", error),
+                }
+            }
             Overlay::InboxProject { row, .. } => Content::InboxProject(ProjectPickerScreenModel {
                 projects: project_rows(vault)
                     .into_iter()
@@ -656,6 +657,15 @@ impl<'a> ScreenModel<'a> {
             content,
             chrome: ScreenChrome::project(state, timezone),
         }
+    }
+
+    fn view_error(title: &'static str, error: anyhow::Error) -> Content<'a> {
+        let mut message = display_line(&error.root_cause().to_string());
+        if error.source().is_some() {
+            message.push('\n');
+            message.push_str(&display_line(&error.to_string()));
+        }
+        Content::ViewError { title, message }
     }
 
     pub(super) fn repair_settings(draft: &'a settings::Preferences, feedback: &str) -> Self {
