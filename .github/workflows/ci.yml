@@ -41,6 +41,8 @@ jobs:
         run: bash .github/scripts/install-nushell.sh "$ARCH"
 
       - name: Check the workspace
+        env:
+          MCBTODO_REQUIRE_SANDBOX: '1'
         run: cargo xtask check
 
       - name: Validate the example Vault

@@ -92,6 +92,10 @@ cargo xtask smoke-systemd --bin-dir target/debug
 ```
 
 Run the systemd smoke only in a Linux user session with a reachable user manager.
+The hosted Linux setup probes Bubblewrap's required namespace flags as the
+runner user before compilation. Linux CI and release validation set
+`MCBTODO_REQUIRE_SANDBOX=1` for the workspace suite. Archive smoke then
+exercises the installed Worker from the extracted package.
 For macOS and Windows, use the CI jobs or native hosts and record which checks
 were actually executed. Missing prerequisites are evidence of an unavailable
 runtime capability, not a passing test.

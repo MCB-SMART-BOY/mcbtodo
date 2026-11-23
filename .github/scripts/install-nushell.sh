@@ -22,6 +22,22 @@ esac
 sudo apt-get update
 sudo apt-get install --yes bubblewrap
 
+# Probe the namespace flags used by the Worker before compiling the workspace.
+if ! /usr/bin/bwrap --unshare-user --disable-userns --unshare-pid \
+    --unshare-net --unshare-ipc --unshare-uts --unshare-cgroup \
+    --cap-drop ALL --die-with-parent --new-session \
+    --ro-bind / / --chdir / -- /usr/bin/true; then
+    printf 'Bubblewrap cannot start the required namespaces on this runner.\n' >&2
+    uname -srmo >&2
+    /usr/bin/bwrap --version >&2
+    if [[ -r /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
+        sysctl kernel.apparmor_restrict_unprivileged_userns >&2
+    fi
+    sudo journalctl -k -b --no-pager --lines=300 |
+        rg 'apparmor="DENIED".*(comm="bwrap"|unprivileged_userns)' >&2 || true
+    exit 1
+fi
+
 archive="$RUNNER_TEMP/nu-$version-$target.tar.gz"
 url="https://github.com/nushell/nushell/releases/download/$version/nu-$version-$target.tar.gz"
 curl --fail --location --silent --show-error "$url" --output "$archive"
