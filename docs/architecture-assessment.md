@@ -136,7 +136,7 @@ directory whose path was not canonical failed the platform path invariant. The
 Windows MCP test expected the Unix tool set even though Windows intentionally
 exposes the read-only tool set.
 
-The current working tree addresses those findings. CI now installs Bubblewrap
+The subsequent fixes addressed those findings. CI installs Bubblewrap
 from apt and installs the pinned Nushell `0.107.0` release binary for each
 native Linux architecture after verifying its SHA-256 digest. Inbox capture
 publishes through the canonical root held by the active Vault lock. The MCP
@@ -172,19 +172,26 @@ the in-memory vDSO as an address without a library name. The sandbox now
 accepts this address-only entry without adding a mount. It still resolves
 file-backed dependencies through the trusted system path and ownership checks.
 The ARM64 loader regression and `MCBTODO_REQUIRE_SANDBOX=1 cargo xtask check`
-passed locally. The hosted namespace setup issue remains open.
+passed locally.
 
 Run `45090905556` reproduced the namespace failure before the Rust build
 on both hosted Linux architectures. Both runners reported Ubuntu's
 AppArmor user namespace restriction enabled. CI now loads a profile for
 the system Bubblewrap binary on affected GitHub-hosted runners and reruns
 the same unprivileged namespace probe. CI requires the sandbox integration
-tests to execute.
+tests to execute. Run `45091033055` passed both Linux jobs, including sandbox
+tests against extracted release archives, both native macOS and Windows CLI
+and Vault jobs, and both cross-target checks.
 
 The packaged Worker smoke requires the expected script exit code and
 checks that the ungranted Agent run reaches revision authorization without
 contacting the Agent provider. The updated smoke passed with freshly
-extracted Linux AArch64 binaries.
+extracted Linux AArch64 binaries locally and on Linux x86_64 in run
+`45091408663`. The ARM64 job in that run stopped at a Daemon test fixture
+that could break the Prepare pipe before the supervisor observed Worker exit.
+The fixture now preserves the pipe on a separate inherited descriptor while
+its descendant holds stdout. The exit assertion, attempt invalidation,
+empty history, and descendant cleanup assertions still run.
 
 ## Latest Review
 

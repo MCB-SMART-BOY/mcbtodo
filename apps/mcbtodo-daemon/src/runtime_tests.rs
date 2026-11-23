@@ -689,9 +689,11 @@ fn worker_exit_before_ready_fails_the_claim_even_while_a_descendant_holds_the_pi
         bail!("expected an executable node");
     };
     let binary = base.path().join("worker-exits-before-ready");
+    // A background command may get /dev/null as stdin. Preserve the Prepare
+    // pipe on a separate descriptor through the fork and stdin redirection.
     fs::write(
         &binary,
-        b"#!/bin/sh\n/bin/sleep 10 <&0 &\nprintf '%s\\n' \"$!\" > \"$HOME/descendant.pid\"\nexit 23\n",
+        b"#!/bin/sh\nexec 3<&0\n/bin/sleep 10 <&3 &\nprintf '%s\\n' \"$!\" > \"$HOME/descendant.pid\"\nexit 23\n",
     )?;
     fs::set_permissions(&binary, fs::Permissions::from_mode(0o700))?;
     let attempt = runtime
