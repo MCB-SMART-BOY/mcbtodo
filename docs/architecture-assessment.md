@@ -313,11 +313,21 @@ the rows. A failed query leaves navigation available and the calendar shows
 the service error. The systemd smoke opens a new TUI on the continuation day
 of a saved all-day event and reads it in Day view.
 
-The TUI still loads a local snapshot for task outlines, object pickers and
-remaining foreground edits. File watching still takes place in the client.
-Each new calendar query scans the Vault in the daemon and can wait up to the
-existing IPC deadline. GUI, launcher integration and service-side change
-notifications remain planned.
+### Shared Outline query over local IPC
+
+The Linux default-Vault Outline uses the same socket as the calendar. The
+Daemon projects one validated snapshot and can send that result in ordered
+frames. The typed client publishes rows only after the final frame. Drawing,
+selection and Task capture share one result, including the selected Project
+revision. The socket regression exercises a multi-frame hierarchy and typed
+client assembly. The TUI regression covers stale revision rejection with the
+form still open. The systemd smoke reads the captured Task from a second TUI.
+
+The TUI still loads a local snapshot at startup and uses it for Graph, Inbox,
+object pickers and remaining foreground edits. File watching still takes place
+in the client. Each new calendar or Outline query scans the Vault in the daemon
+and can wait up to the existing IPC deadline. GUI, launcher integration and
+service-side change notifications remain planned.
 
 ## Latest Review
 

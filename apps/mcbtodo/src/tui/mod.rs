@@ -1,5 +1,6 @@
 mod calendar;
 mod creation;
+mod daemon_views;
 mod deadline;
 mod graph;
 mod keymap;
@@ -35,8 +36,9 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use mcbtodo_application::{
-    CalendarItem, TargetAction, VaultCommands, deadline_edit_context, project_action_targets,
-    project_calendar, project_inbox, project_outline, project_revision_in_snapshot,
+    CalendarItem, OutlineItem, TargetAction, VaultCommands, deadline_edit_context,
+    project_action_targets, project_calendar, project_inbox, project_outline,
+    project_revision_in_snapshot,
 };
 use mcbtodo_domain::{CalendarKind, Id, Occurrence, time::Span};
 use mcbtodo_platform::{AppConfig, AppConfigSnapshot, HomeViewPolicy, TuiTheme, WorkspacePaths};
@@ -238,7 +240,7 @@ struct State {
     row: usize,
     document_id: Option<Id>,
     calendar_focus: Option<FocusIdentity>,
-    daemon_calendar: Option<calendar::DaemonCalendar>,
+    daemon_views: Option<daemon_views::DaemonViews>,
     week_hour: usize,
     graph_selection: Option<BTreeSet<Id>>,
     graph_nodes: RefCell<Option<Rc<[graph::Node]>>>,
@@ -262,7 +264,7 @@ impl State {
             row: 0,
             document_id: None,
             calendar_focus: None,
-            daemon_calendar: None,
+            daemon_views: None,
             week_hour: 0,
             graph_selection: None,
             graph_nodes: RefCell::new(None),
@@ -381,8 +383,10 @@ impl State {
             View::Agenda => self.agenda(vault),
             View::Timeline => self.calendar_entries(vault, View::Timeline),
             View::Outline => {
-                return project_outline(vault)
-                    .into_iter()
+                return self
+                    .outline_rows(vault)
+                    .unwrap_or_default()
+                    .iter()
                     .map(|row| FocusIdentity::Document(row.id))
                     .collect();
             }
@@ -411,9 +415,16 @@ impl State {
 
     fn calendar_entries(&self, vault: &Vault, view: View) -> Result<Vec<CalendarItem>> {
         let dates = calendar::window(view, self.day, self.selected_range());
-        match &self.daemon_calendar {
-            Some(calendar) => calendar.entries(dates, vault.timezone()),
+        match &self.daemon_views {
+            Some(service) => Ok(service.calendar(dates, vault.timezone())?.to_vec()),
             None => project_calendar(vault, dates),
+        }
+    }
+
+    fn outline_rows(&self, vault: &Vault) -> Result<Rc<[OutlineItem]>> {
+        match &self.daemon_views {
+            Some(service) => service.outline(vault.timezone()),
+            None => Ok(project_outline(vault).into()),
         }
     }
 
@@ -435,9 +446,9 @@ impl State {
         ))
     }
 
-    fn invalidate_calendar(&mut self) {
-        if let Some(calendar) = &mut self.daemon_calendar {
-            calendar.invalidate();
+    fn invalidate_daemon_views(&mut self) {
+        if let Some(service) = &mut self.daemon_views {
+            service.invalidate();
         }
     }
 
@@ -1017,9 +1028,21 @@ impl State {
             .clone()
     }
 
-    fn selected_project_revision(&self, vault: &Vault) -> Option<(Id, Revision)> {
+    fn selected_project_revision(&self, vault: &Vault) -> Option<(Id, creation::ProjectRevision)> {
+        if self.view != View::Outline {
+            return None;
+        }
+        if self.daemon_views.is_some() {
+            let rows = self.outline_rows(vault).ok()?;
+            let row = rows.get(self.row).filter(|row| row.depth == 0)?;
+            return Some((
+                row.id,
+                creation::ProjectRevision::Daemon(row.revision.clone()),
+            ));
+        }
         let id = self.selected_document(vault)?;
-        project_revision_in_snapshot(vault, id).map(|revision| (id, revision))
+        project_revision_in_snapshot(vault, id)
+            .map(|revision| (id, creation::ProjectRevision::Local(revision)))
     }
 
     fn reload(&mut self, root: &Path, vault: &mut Vault) {
@@ -1030,7 +1053,7 @@ impl State {
                 self.message = "Vault reloaded".into();
             }
             Err(error) => {
-                self.invalidate_calendar();
+                self.invalidate_daemon_views();
                 self.message = format!("Reload failed · {error:#}");
             }
         }
@@ -1043,7 +1066,7 @@ impl State {
                 if vault.has_same_documents(&next) {
                     // A local action may already have loaded these exact bytes.
                     if recovered {
-                        self.invalidate_calendar();
+                        self.invalidate_daemon_views();
                     }
                     return recovered;
                 }
@@ -1057,7 +1080,7 @@ impl State {
                     return false;
                 }
                 self.vault_warning = Some(warning);
-                self.invalidate_calendar();
+                self.invalidate_daemon_views();
                 true
             }
         }
@@ -1069,7 +1092,7 @@ impl State {
             .or_else(|| self.document_id.map(FocusIdentity::Document));
         *vault = next;
         *self.graph_nodes.get_mut() = None;
-        self.invalidate_calendar();
+        self.invalidate_daemon_views();
         self.document_id = preferred.map(FocusIdentity::document_id);
         self.sync_row(vault, preferred);
         if let Some(selected) = &mut self.graph_selection {
@@ -1353,7 +1376,7 @@ pub(super) fn run(
     require_terminal()?;
     let mut state = State::new(day);
     if creation::is_daemon_vault(paths, root)? {
-        state.daemon_calendar = Some(calendar::DaemonCalendar::new(paths.clone()));
+        state.daemon_views = Some(daemon_views::DaemonViews::new(paths.clone()));
     }
     state.has_timezone_override = has_timezone_override;
     state.no_color = no_color_requested();

@@ -103,7 +103,7 @@ cargo run --locked -- --vault examples/vault outline
 cargo run --locked -- --vault examples/vault graph
 ```
 
-在 Linux 上，默认 Vault 的 TUI 月历、周历、日历、议程和 Timeline 从 `mcbtodo-daemon` 查询日程。服务离线时会显示启动提示，TUI 菜单仍可使用。服务恢复后按 `r` 重试。议程日期范围最多 366 天，结果过大时请缩小日期范围。通过 `--vault` 打开的外部 Vault 和非 Linux 前台模式从本地读取。
+在 Linux 上，默认 Vault 的 TUI 月历、周历、日历、议程、Timeline 和大纲从 `mcbtodo-daemon` 读取。服务离线时会显示启动提示，TUI 菜单仍可使用。服务恢复后按 `r` 重试。议程日期范围最多 366 天，结果过大时请缩小日期范围。通过 `--vault` 打开的外部 Vault 和非 Linux 前台模式从本地读取。
 
 `mcbtodo calendar --daemon --date 2026-11-25 --json` 通过同一接口查询默认 Vault，支持 `--timezone`。普通 `calendar` 命令直接读取 Vault，支持 `--vault`。
 
@@ -140,7 +140,7 @@ view_workflow = "7"
 
 按 `:` 打开命令模式：`:view month|week|day|agenda|outline|graph|timeline|workflow` 切换视图，`:search <文字>` 打开对象搜索，`:timer status|start|pause|stop` 操作计时器，`:proposals` 打开提案审阅；`:today`、`:date YYYY-MM-DD`、`:reload`、`:help` 和 `:quit` 提供日期、重载、帮助与退出操作。直接输入视图名称也可切换视图。
 
-在 Outline 中选中 Project 后按 `Space c t` 可捕获 Task；创建成功后会切换到 Outline 并聚焦新 Task。Project 在表单打开期间被外部修改时，写入会因 revision 冲突被拒绝，不会覆盖外部内容。
+在 Outline 中选中 Project 后按 `Space c t` 可捕获 Task；创建成功后会切换到 Outline 并聚焦新 Task。默认 Vault 的表单使用大纲返回的 Project revision。若该 Project 已被修改，服务会拒绝写入并保留草稿。
 
 Linux 上，TUI 将默认 Vault 的 Task 捕获以及 Project、Deadline 和全天事件创建交给 `mcbtodo-daemon` 保存。服务未启动时表单会保留，启动服务后可以提交。若请求发出后连接中断，TUI 会提示核对对应的 UUID，再决定是否重试。显式选择其他 Vault 时，这些操作由前台直接保存。macOS 和 Windows 也走前台保存路径。
 

@@ -79,6 +79,7 @@ impl Timer {
                 Request::Workflow(_)
                 | Request::FocusReport { .. }
                 | Request::Calendar { .. }
+                | Request::Outline { .. }
                 | Request::ListNotifications { .. }
                 | Request::ListReminderNotifications { .. }
                 | Request::CaptureTask { .. }

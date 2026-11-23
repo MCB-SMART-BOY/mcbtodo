@@ -112,6 +112,14 @@ pub(crate) fn run(root: &Path, bin_dir: &Path) -> Result<()> {
         smoke.cli(&["outline"])?.contains(CAPTURED_TASK),
         "the Task captured over IPC is absent from the Vault"
     );
+    crate::smoke::drive_default_tui(
+        smoke.client(),
+        &[
+            ("Month", &format!(":search {CAPTURED_TASK}\r")),
+            (" Picker ", "\r"),
+            (&format!("›   {CAPTURED_TASK}"), "q"),
+        ],
+    )?;
 
     const CAPTURED_EVENT: &str = "All-day event from systemd smoke";
     let mut client = smoke.client();

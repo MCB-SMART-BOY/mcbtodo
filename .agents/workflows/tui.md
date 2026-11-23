@@ -236,6 +236,11 @@ hint and navigation works. Exercise an external Vault in the offline
 terminal smoke. Use the same date-window response for drawing and selection.
 On refresh, keep the exact selected occurrence if it is still present.
 
+Open a second TUI after capturing a Task and confirm the saved title appears
+in Outline. Use the same Outline response for drawing, selection and the
+Project revision in the Task form. Keep the draft open on a stale revision.
+Verify that a truncated multi-frame response does not publish partial rows.
+
 ## Verification
 
 Run focused TUI tests and the complete workspace checks.

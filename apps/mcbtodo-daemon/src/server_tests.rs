@@ -287,6 +287,86 @@ fn calendar_uses_the_requested_zone_and_rejects_unusable_projections() -> Result
 }
 
 #[test]
+fn outline_returns_one_snapshot_even_when_rows_exceed_one_frame() -> Result<()> {
+    let dir = private_tempdir()?;
+    let paths = WorkspacePaths::from_home(dir.path().to_owned());
+    paths.initialize()?;
+    let root = paths.vault_root();
+    let project = root.join("projects/outline");
+    let project_id = Uuid::new_v4();
+    fs::create_dir_all(project.join("tasks"))?;
+    fs::write(
+        project.join("project.md"),
+        format!("---\nschema: mcbtodo.project/v1\nid: {project_id}\n---\n\n# 任务规划\n"),
+    )?;
+    for index in 0..100 {
+        let id = Uuid::new_v4();
+        fs::write(
+            project.join(format!("tasks/{id}.md")),
+            format!(
+                "---\nschema: mcbtodo.task/v1\nid: {id}\nproject_id: {project_id}\n---\n\n# Task {index:03} {}\n",
+                "日".repeat(199),
+            ),
+        )?;
+    }
+    let socket = paths.socket_path();
+    let mut server = Server::open(paths, crate::DEFAULT_WORKER_SLOTS)?;
+    let items = thread::scope(|scope| -> Result<Vec<serde_json::Value>> {
+        let peer = scope.spawn(|| -> Result<Vec<serde_json::Value>> {
+            let mut stream = UnixStream::connect(&socket)?;
+            stream.set_read_timeout(Some(Duration::from_secs(3)))?;
+            wire::write(
+                &mut stream,
+                &serde_json::json!({"command": "outline", "timezone": "UTC"}),
+            )?;
+            let mut items = Vec::new();
+            let mut frames = 0;
+            loop {
+                let response: serde_json::Value = wire::read(&mut stream)?;
+                assert_eq!(response["result"], "outline", "{response}");
+                frames += 1;
+                items.extend(response["items"].as_array().unwrap().iter().cloned());
+                if response["more"] == false {
+                    break;
+                }
+                assert_eq!(response["more"], true);
+            }
+            assert!(frames > 1);
+            Ok(items)
+        });
+        while !peer.is_finished() {
+            server.step()?;
+        }
+        peer.join().unwrap()
+    })?;
+    let expected = VaultQueries::new(root, chrono_tz::UTC).outline()?;
+    assert_eq!(
+        status(
+            &mut server,
+            socket,
+            Request::Outline {
+                timezone: "UTC".into(),
+            },
+        ),
+        Response::Outline {
+            items: expected.clone(),
+            more: false,
+        },
+    );
+    assert_eq!(
+        items,
+        serde_json::to_value(expected)?
+            .as_array()
+            .unwrap()
+            .as_slice()
+    );
+    assert_eq!(items.len(), 101);
+    assert_eq!(items[0]["title"], "任务规划");
+    assert_eq!(items[100]["project_id"], project_id.to_string());
+    Ok(())
+}
+
+#[test]
 fn planned_project_creation_preserves_calendar_kind_and_checks_the_writer_lock() -> Result<()> {
     use chrono::NaiveDate;
     use mcbtodo_domain::{

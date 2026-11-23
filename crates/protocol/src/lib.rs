@@ -12,7 +12,7 @@ pub use mcbtodo_ports::focus::TimerState;
 pub use wire::ProtocolError;
 
 use chrono::{DateTime, FixedOffset, NaiveDate, Utc};
-use mcbtodo_domain::CalendarItem;
+use mcbtodo_domain::{CalendarItem, OutlineItem};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -37,6 +37,10 @@ pub enum Request {
         start: NaiveDate,
         through: NaiveDate,
         /// IANA timezone used to determine which local dates an occurrence overlaps.
+        timezone: String,
+    },
+    /// Project the default Vault hierarchy from one validated snapshot.
+    Outline {
         timezone: String,
     },
     /// List terminal workflow notifications, starting strictly before the given run ID.
@@ -105,6 +109,12 @@ pub enum Response {
     FocusReport(focus::DailyFocusReport),
     Calendar {
         items: Vec<CalendarItem>,
+    },
+    /// One or more ordered frames on a single Outline connection.
+    /// The typed client assembles all frames before returning the response.
+    Outline {
+        items: Vec<OutlineItem>,
+        more: bool,
     },
     Notifications(notifications::NotificationPage),
     ReminderNotifications(notifications::ReminderNotificationPage),

@@ -205,6 +205,7 @@ impl Server {
                 through,
                 timezone,
             } => query_calendar(self.runtime.paths(), start, through, &timezone),
+            Request::Outline { timezone } => query_outline(self.runtime.paths(), &timezone),
             Request::CaptureTask {
                 task_id,
                 project_id,
@@ -397,6 +398,25 @@ fn query_calendar(
             Response::Error {
                 code: ErrorCode::Internal,
                 message: "could not load the default Vault calendar; check the daemon log".into(),
+            }
+        }
+    }
+}
+
+fn query_outline(paths: &WorkspacePaths, timezone: &str) -> Response {
+    let Ok(timezone) = timezone.parse::<Tz>() else {
+        return Response::Error {
+            code: ErrorCode::InvalidRequest,
+            message: "expected an IANA timezone".into(),
+        };
+    };
+    match VaultQueries::new(paths.vault_root(), timezone).outline() {
+        Ok(items) => Response::Outline { items, more: false },
+        Err(error) => {
+            eprintln!("mcbtodo-daemon: loading outline: {error:#}");
+            Response::Error {
+                code: ErrorCode::Internal,
+                message: "could not load the default Vault outline; check the daemon log".into(),
             }
         }
     }

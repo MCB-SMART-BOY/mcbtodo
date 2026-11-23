@@ -15,13 +15,13 @@ use std::{
 use anyhow::{Result, ensure};
 use chrono::{DateTime, FixedOffset, NaiveDate};
 use chrono_tz::Tz;
-pub use mcbtodo_domain::CalendarItem;
 use mcbtodo_domain::{
     Availability, CalendarEvent, EvidenceRef, Id, InboxEntry, Project, Task, TaskGraph, TimeBlock,
     WorkUnit, WorkflowRevisionHash,
     recurrence::{Reminder, ReminderSchedule},
     time::{DateSpan, DateTimeSpan, Deadline, Span, ZonedMoment},
 };
+pub use mcbtodo_domain::{CalendarItem, OutlineItem};
 use mcbtodo_vault::{
     AddWorkUnitGraph, BindWorkflow, CaptureInboxEntry, CaptureTask, CompleteWorkUnit, CreateEvent,
     CreateProject, CreateReminder, CreateTimeBlock, CreateWorkUnit, MaterializeTaskOccurrences,
@@ -842,17 +842,6 @@ pub fn project_inbox(vault: &Vault) -> Vec<InboxSummary> {
             revision: revision_digest(vault, entry.data.id),
         })
         .collect()
-}
-
-#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
-pub struct OutlineItem {
-    pub id: Id,
-    pub depth: usize,
-    pub title: String,
-    pub project_id: Option<Id>,
-    pub task_id: Option<Id>,
-    pub blocked: bool,
-    pub revision: String,
 }
 
 /// Projects the validated Vault snapshot into the owned hierarchy used by adapters.

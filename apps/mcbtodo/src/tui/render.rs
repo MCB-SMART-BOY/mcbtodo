@@ -463,11 +463,11 @@ fn render_view(frame: &mut Frame<'_>, area: Rect, model: &Content<'_>, theme: Th
         Content::Month(month_model) => return month(frame, area, month_model, theme),
         Content::Week(week) => return schedule::week(frame, area, week, theme),
         Content::Day(day) => return schedule::day(frame, area, day, theme),
-        Content::CalendarError(message) => {
+        Content::ViewError { title, message } => {
             frame.render_widget(
                 Paragraph::new(message.as_str())
                     .style(Style::new().fg(theme.error))
-                    .block(content_panel(theme.panel(" Calendar error "), area))
+                    .block(content_panel(theme.panel(*title), area))
                     .wrap(Wrap { trim: true }),
                 area,
             );
@@ -879,7 +879,7 @@ mod tests {
             revision: String::new(),
         };
         let model = OutlineScreenModel::project(
-            vec![
+            &[
                 row(0, "规划 Plan", false),
                 row(1, "导入 Import", false),
                 row(2, "校验 Review", true),
@@ -895,7 +895,7 @@ mod tests {
         assert_eq!(screen[(9, 5)].symbol(), "校");
         assert_eq!(screen[(71, 5)].fg, theme.border);
         let empty = render(
-            Content::Outline(OutlineScreenModel::project(Vec::new(), 0)),
+            Content::Outline(OutlineScreenModel::project(&[], 0)),
             &state,
             (40, 6),
             theme,
@@ -1199,7 +1199,7 @@ mod tests {
 
         state.view = View::Outline;
         let buffer = render(
-            Content::Outline(OutlineScreenModel::project(Vec::new(), 0)),
+            Content::Outline(OutlineScreenModel::project(&[], 0)),
             &state,
             (24, 5),
             theme,

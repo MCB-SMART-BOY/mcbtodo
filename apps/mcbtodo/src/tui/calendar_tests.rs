@@ -86,7 +86,7 @@ fn daemon_calendar_uses_the_same_rows_for_render_selection_and_refresh() -> Resu
         Ok(())
     });
     let mut state = State::new(through);
-    state.daemon_calendar = Some(calendar::DaemonCalendar::new(paths));
+    state.daemon_views = Some(daemon_views::DaemonViews::new(paths));
     state.anchor = Some(start);
     state.switch(View::Agenda, &vault);
     assert!(screen(&state, &vault, 80, 16).contains("Earlier occurrence"));

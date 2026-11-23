@@ -40,7 +40,7 @@ pub(super) struct Form {
     pub kind: Kind,
     pub fields: Vec<Field>,
     pub selected: usize,
-    task_project: Option<(Id, Revision)>,
+    task_project: Option<(Id, ProjectRevision)>,
     reminder: Option<(Tz, Option<Id>)>,
 }
 
@@ -80,8 +80,23 @@ pub(super) enum Schedule {
     },
     Task {
         project_id: Id,
-        expected_revision: Revision,
+        expected_revision: ProjectRevision,
     },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum ProjectRevision {
+    Local(Revision),
+    Daemon(String),
+}
+
+impl ProjectRevision {
+    fn digest(self) -> String {
+        match self {
+            Self::Local(revision) => revision.digest(),
+            Self::Daemon(revision) => revision,
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -129,7 +144,7 @@ impl Form {
         }
     }
 
-    pub(super) fn task(project_id: Id, expected_revision: Revision) -> Self {
+    pub(super) fn task(project_id: Id, expected_revision: ProjectRevision) -> Self {
         Self {
             kind: Kind::Task,
             fields: vec![Field::new("Title", None)],
@@ -534,7 +549,7 @@ impl State {
                 },
             )
             .map(|synced| publication_message("Task", id, synced))
-        } else {
+        } else if let ProjectRevision::Local(expected_revision) = expected_revision {
             match VaultCommands::new(root, vault.timezone()).capture_task(
                 Task::new(id, project_id),
                 request.title,
@@ -550,6 +565,10 @@ impl State {
                 }
                 Err(error) => Err(CreationError::Rejected(error.to_string())),
             }
+        } else {
+            Err(CreationError::Rejected(
+                "Task form belongs to the daemon's Vault".into(),
+            ))
         };
         let saved = match saved {
             Ok(message) => message,

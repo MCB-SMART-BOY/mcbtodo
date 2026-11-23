@@ -131,6 +131,12 @@ fn exchange(
         },
     };
     stream.set_deadline(Instant::now() + TRANSFER_TIMEOUT);
+    if let Response::Outline { items, .. } = response {
+        if let Err(error) = wire::write_outline(&mut stream, items) {
+            eprintln!("mcbtodo-daemon: sending outline: {error}");
+        }
+        return;
+    }
     let result = match wire::write(&mut stream, &response) {
         // The encoder checks size before writing any bytes.
         Err(ProtocolError::FrameSize(_)) if matches!(response, Response::Calendar { .. }) => {

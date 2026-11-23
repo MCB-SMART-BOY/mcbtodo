@@ -2,9 +2,9 @@
 
 mcbtodo 的后台服务运行于 Linux AArch64 和 x86_64。macOS ARM64 和 Windows x64 的前台应用有原生 CI 测试。
 
-`mcbtodo-daemon` 常驻并拥有专注计时、提醒、调度和工作流运行状态。终端运行 `mcbtodo` 默认打开 TUI，可独立打开和关闭。脚本和 Agent 由 Daemon 按节点派发给临时 `mcbtodo-worker`。Linux 默认 Vault 的五种 TUI 日历视图、`mcbtodo calendar --daemon` 和部分创建操作使用同用户的 Unix socket。任务大纲、对象查找和部分编辑操作仍直接访问 Markdown Vault。写入共用 Vault 写锁和 revision 校验。
+`mcbtodo-daemon` 常驻并拥有专注计时、提醒、调度和工作流运行状态。终端运行 `mcbtodo` 默认打开 TUI，可独立打开和关闭。脚本和 Agent 由 Daemon 按节点派发给临时 `mcbtodo-worker`。Linux 默认 Vault 的五种 TUI 日历视图、大纲、`mcbtodo calendar --daemon` 和部分创建操作使用同用户的 Unix socket。TUI 启动仍加载本地快照，Graph、Inbox、对象查找和部分编辑操作仍直接访问 Markdown Vault。写入共用 Vault 写锁和 revision 校验。
 
-日历响应使用共享的 `CalendarItem` 领域类型，未来 GUI 可以通过 `mcbtodo-protocol` 消费同一投影。Daemon 对每个查询读取一次新的有效 Vault 快照，使已返回成功的写入能被下一次查询看到。TUI 的显示和选择共用最近一次日期窗口的响应。手动重载、写入后重载及监听到有效文件变更都会刷新该缓存。外部 Vault 与非 Linux 前台路径仍使用本地投影。日历查询最多覆盖 366 个日期，超过 64 KiB IPC 帧上限时返回错误。查询索引、分页、变更订阅、GUI 和桌面启动器入口仍待实现。
+日历和大纲分别使用共享的 `CalendarItem` 和 `OutlineItem`，未来 GUI 可以通过 `mcbtodo-protocol` 消费同一投影。Daemon 每次查询读取一个有效 Vault 快照。TUI 的显示和选择共用最近一次查询的响应，新 Task 表单使用大纲中的 Project revision。手动重载、写入后重载及客户端监听到文件变更都会使缓存失效。外部 Vault 与非 Linux 前台路径仍使用本地投影。日历查询最多覆盖 366 个日期，超过 64 KiB IPC 帧上限时返回错误。大纲可在同一连接返回多个有序帧，客户端收齐后才更新视图。查询索引、服务端变更订阅、GUI 和桌面启动器入口仍待实现。
 
 ## Cargo workspace
 

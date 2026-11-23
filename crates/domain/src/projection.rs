@@ -163,3 +163,15 @@ impl<'a> CalendarEntry<'a> {
         }
     }
 }
+
+/// A row in the ordered Project, Task, and WorkUnit hierarchy.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct OutlineItem {
+    pub id: Id,
+    pub depth: usize,
+    pub title: String,
+    pub project_id: Option<Id>,
+    pub task_id: Option<Id>,
+    pub blocked: bool,
+    pub revision: String,
+}

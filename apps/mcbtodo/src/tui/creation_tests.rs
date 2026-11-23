@@ -298,6 +298,76 @@ fn default_task_capture_keeps_the_form_when_the_daemon_is_absent() {
 
 #[cfg(target_os = "linux")]
 #[test]
+fn task_capture_uses_the_revision_displayed_by_the_daemon_outline() -> Result<()> {
+    use std::{os::unix::net::UnixListener, thread};
+
+    use mcbtodo_domain::OutlineItem;
+    use mcbtodo_protocol::{Request, Response, wire};
+
+    let home = tempfile::tempdir()?;
+    let paths = WorkspacePaths::from_home(home.path().to_owned());
+    paths.initialize()?;
+    let root = paths.vault_root();
+    let (mut vault, project_id) = project_vault(&root);
+    let remote_revision = "a".repeat(64);
+    assert_ne!(
+        vault.revision(project_id).unwrap().digest(),
+        remote_revision
+    );
+
+    let listener = UnixListener::bind(paths.socket_path())?;
+    let row = OutlineItem {
+        id: project_id,
+        depth: 0,
+        title: "Edited in another client".into(),
+        project_id: Some(project_id),
+        task_id: None,
+        blocked: false,
+        revision: remote_revision.clone(),
+    };
+    let peer = thread::spawn(move || -> Result<Request> {
+        let (mut stream, _) = listener.accept()?;
+        stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+        assert!(matches!(wire::read(&mut stream)?, Request::Outline { .. }));
+        wire::write_outline(&mut stream, vec![row])?;
+
+        let (mut stream, _) = listener.accept()?;
+        stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+        let sent = wire::read(&mut stream)?;
+        wire::write(
+            &mut stream,
+            &Response::Error {
+                code: mcbtodo_protocol::ErrorCode::StaleRevision,
+                message: "the Project has changed since it was selected".into(),
+            },
+        )?;
+        Ok(sent)
+    });
+    let mut state = State::new(day("2026-11-25"));
+    state.daemon_views = Some(super::daemon_views::DaemonViews::new(paths.clone()));
+    state.switch(View::Outline, &vault);
+    let displayed = super::calendar_tests::screen(&state, &vault, 80, 16);
+    assert!(
+        displayed.contains("Edited in another client"),
+        "{displayed}"
+    );
+    let Action::CreateTask(request) = press(&mut state, &vault, " ctWrite tests\n") else {
+        panic!("expected Task capture");
+    };
+    state.create_task(&root, &mut vault, &paths, request);
+    assert!(matches!(
+        peer.join().unwrap()?,
+        Request::CaptureTask { project_id: observed, project_revision, .. }
+            if observed == project_id && project_revision == remote_revision
+    ));
+    assert!(matches!(state.overlay, Overlay::CreateForm(_)));
+    assert!(state.message.contains("Project changed"));
+    assert_eq!(Vault::load(&root, ZONE)?.outline().len(), 1);
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 fn default_task_capture_does_not_repeat_a_request_without_a_response() {
     let home = tempfile::tempdir().unwrap();
     let paths = mcbtodo_platform::WorkspacePaths::from_home(home.path().to_owned());

@@ -2,9 +2,7 @@ use std::borrow::Cow;
 
 use chrono::{Datelike, Days, NaiveDate};
 use chrono_tz::Tz;
-use mcbtodo_application::{
-    CalendarItem, InboxSummary, OutlineItem, project_inbox, project_outline,
-};
+use mcbtodo_application::{CalendarItem, InboxSummary, OutlineItem, project_inbox};
 use mcbtodo_domain::CalendarKind;
 use mcbtodo_vault::Vault;
 use ratatui::text::Line;
@@ -205,7 +203,10 @@ pub(super) enum Content<'a> {
     Inbox(InboxScreenModel),
     Graph(GraphScreenModel<'a>),
     Timeline(TimelineScreenModel),
-    CalendarError(String),
+    ViewError {
+        title: &'static str,
+        message: String,
+    },
     Workflow(WorkflowScreenModel<'a>),
     Menu {
         title: &'static str,
@@ -550,7 +551,7 @@ impl<'a> ScreenModel<'a> {
                     .selection_hint(width)
                     .unwrap_or_else(|| hints.visible(width, height, false)),
                 Content::Inbox(inbox) => hints.visible(width, height, inbox.rows.is_empty()),
-                Content::CalendarError(_) => hints.visible(width, height, true),
+                Content::ViewError { .. } => hints.visible(width, height, true),
                 _ => hints.visible(width, height, false),
             },
             ScreenFooter::Time { can_add_block } => ScreenFooter::timer_hint(width, *can_add_block),
@@ -578,7 +579,14 @@ impl<'a> ScreenModel<'a> {
                         message.push('\n');
                         message.push_str(&display_line(&error.to_string()));
                     }
-                    Content::CalendarError(message)
+                    Content::ViewError {
+                        title: if state.view == View::Outline {
+                            " Outline error "
+                        } else {
+                            " Calendar error "
+                        },
+                        message,
+                    }
                 }),
             Overlay::Space(viewport) => Content::Menu {
                 title: " Actions ",
@@ -697,7 +705,7 @@ impl<'a> ScreenModel<'a> {
                 state.row,
             )),
             View::Outline => Content::Outline(OutlineScreenModel::project(
-                project_outline(vault),
+                &state.outline_rows(vault)?,
                 state.row,
             )),
             View::Inbox => Content::Inbox(InboxScreenModel::project(
@@ -788,11 +796,11 @@ pub(super) struct OutlineRow {
 }
 
 impl OutlineScreenModel {
-    pub(super) fn project(rows: Vec<OutlineItem>, focused: usize) -> Self {
+    pub(super) fn project(rows: &[OutlineItem], focused: usize) -> Self {
         let has_blocked_work = rows.iter().any(|row| row.blocked);
         Self {
             rows: rows
-                .into_iter()
+                .iter()
                 .map(|row| OutlineRow {
                     indent: ["", "  ", "    "][row.depth.min(2)],
                     title: display_line(&row.title),

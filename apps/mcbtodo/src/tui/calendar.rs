@@ -1,5 +1,3 @@
-use std::cell::RefCell;
-
 use chrono::{DateTime, Datelike, Days, LocalResult, NaiveDate, TimeZone, Timelike};
 use chrono_tz::Tz;
 use mcbtodo_application::CalendarItem;
@@ -7,7 +5,6 @@ use mcbtodo_domain::{
     CalendarKind, Occurrence,
     time::{DateSpan, Span},
 };
-use mcbtodo_platform::WorkspacePaths;
 
 use super::{View, timeline};
 
@@ -36,55 +33,6 @@ pub(super) fn window(view: View, day: NaiveDate, selection: (NaiveDate, NaiveDat
         through.min(NaiveDate::from_ymd_opt(9999, 12, 31).unwrap()),
     )
     .expect("calendar windows contain a day in the display years")
-}
-
-/// The most recently queried service window, including errors. Drawing and
-/// input share it until the window changes or a reload invalidates it.
-pub(super) struct DaemonCalendar {
-    paths: WorkspacePaths,
-    cached: RefCell<Option<WindowResult>>,
-}
-
-struct WindowResult {
-    dates: DateSpan,
-    timezone: Tz,
-    items: Result<Vec<CalendarItem>, String>,
-}
-
-impl DaemonCalendar {
-    pub(super) fn new(paths: WorkspacePaths) -> Self {
-        Self {
-            paths,
-            cached: RefCell::new(None),
-        }
-    }
-
-    pub(super) fn entries(
-        &self,
-        dates: DateSpan,
-        timezone: Tz,
-    ) -> anyhow::Result<Vec<CalendarItem>> {
-        let mut cached = self.cached.borrow_mut();
-        if let Some(result) = cached.as_ref()
-            && result.dates == dates
-            && result.timezone == timezone
-        {
-            return result.items.clone().map_err(anyhow::Error::msg);
-        }
-        let items = crate::daemon_calendar(&self.paths, dates, timezone)
-            .map_err(|error| format!("{error:#}"));
-        let result = items.clone().map_err(anyhow::Error::msg);
-        *cached = Some(WindowResult {
-            dates,
-            timezone,
-            items,
-        });
-        result
-    }
-
-    pub(super) fn invalidate(&mut self) {
-        self.cached.get_mut().take();
-    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

@@ -1,10 +1,14 @@
-//! One length-prefixed JSON request and response per Unix stream connection.
+//! Length-prefixed JSON frames for the local protocol.
 
 use std::io::{self, Read, Write};
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::value::RawValue;
 use thiserror::Error;
+
+use mcbtodo_domain::OutlineItem;
+
+use crate::{ErrorCode, Response};
 
 pub const PROTOCOL_VERSION: u16 = 1;
 pub const MAX_FRAME_BYTES: u32 = 64 * 1024;
@@ -56,4 +60,47 @@ pub fn write<T: Serialize>(writer: &mut impl Write, body: &T) -> Result<(), Prot
     writer.write_all(&data)?;
     writer.flush()?;
     Ok(())
+}
+
+/// Write one complete Outline response as ordered frames. The reader only
+/// publishes the rows after receiving the final frame.
+pub fn write_outline(
+    writer: &mut impl Write,
+    items: Vec<OutlineItem>,
+) -> Result<(), ProtocolError> {
+    // Leave room for the fixed envelope fields and array separators.
+    const ROW_BUDGET: usize = MAX_FRAME_BYTES as usize - 128;
+    let mut bytes = 0;
+    let mut frame = Vec::new();
+    for item in items {
+        let size = serde_json::to_vec(&item)?.len() + 1;
+        if size > ROW_BUDGET {
+            return write(
+                writer,
+                &Response::Error {
+                    code: ErrorCode::InvalidRequest,
+                    message: format!("outline row {} exceeds the IPC size limit", item.id),
+                },
+            );
+        }
+        if bytes + size > ROW_BUDGET {
+            write(
+                writer,
+                &Response::Outline {
+                    items: std::mem::take(&mut frame),
+                    more: true,
+                },
+            )?;
+            bytes = 0;
+        }
+        frame.push(item);
+        bytes += size;
+    }
+    write(
+        writer,
+        &Response::Outline {
+            items: frame,
+            more: false,
+        },
+    )
 }
