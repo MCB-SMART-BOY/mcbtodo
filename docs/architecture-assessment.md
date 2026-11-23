@@ -174,6 +174,18 @@ file-backed dependencies through the trusted system path and ownership checks.
 The ARM64 loader regression and `MCBTODO_REQUIRE_SANDBOX=1 cargo xtask check`
 passed locally. The hosted namespace setup issue remains open.
 
+Run `45090905556` reproduced the namespace failure before the Rust build
+on both hosted Linux architectures. Both runners reported Ubuntu's
+AppArmor user namespace restriction enabled. CI now loads a profile for
+the system Bubblewrap binary on affected GitHub-hosted runners and reruns
+the same unprivileged namespace probe. CI requires the sandbox integration
+tests to execute.
+
+The packaged Worker smoke requires the expected script exit code and
+checks that the ungranted Agent run reaches revision authorization without
+contacting the Agent provider. The updated smoke passed with freshly
+extracted Linux AArch64 binaries.
+
 ## Latest Review
 
 On 2026-11-22, the Linux AArch64 release packaging follow-up verified all

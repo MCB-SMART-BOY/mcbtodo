@@ -942,8 +942,7 @@ nodes:
 }
 
 fn packaged_worker_failure_reason_is_valid(reason: &str) -> bool {
-    reason.contains("script exited with exit status: 23")
-        || reason.contains("Bubblewrap failed to start the isolated runner")
+    reason.lines().next() == Some("script exited with exit status: 23")
 }
 
 fn exercise_packaged_supervisor_rejects_malformed_worker(
@@ -1461,7 +1460,26 @@ fn exercise_agent(
     fs::write(&policy, providers)?;
     let run = smoke.json(&["workflow", "run", revision])?;
     let id = run["id"].as_str().context("denied Agent run has no ID")?;
-    smoke.await_run(id, "failed")?;
+    let denied = smoke.await_run(id, "failed")?;
+    assert_failed_check(smoke, id)?;
+    let steps = denied["step_count"]
+        .as_u64()
+        .context("denied Agent run has no step count")?;
+    let mut triage = Value::Null;
+    for index in 1..steps {
+        let step = smoke.json(&["workflow", "trace", id, &index.to_string()])?;
+        if step["trace"]["node"] == "triage" {
+            triage = step;
+            break;
+        }
+    }
+    ensure!(
+        triage["trace"]["status"] == "failed"
+            && triage["trace"]["reason"]
+                .as_str()
+                .is_some_and(|reason| reason.contains("not authorized for this revision")),
+        "denied Agent run did not reach the revision authorization boundary: {triage}"
+    );
     ensure!(
         listener
             .accept()
@@ -2589,11 +2607,11 @@ fn terminal_markers_follow_cursor_updates_and_current_screen() {
 }
 
 #[test]
-fn packaged_worker_failure_accepts_script_and_sandbox_start_failures() {
+fn packaged_worker_failure_requires_the_expected_script_exit() {
     assert!(packaged_worker_failure_reason_is_valid(
         "script exited with exit status: 23\nstdout: \nstderr: "
     ));
-    assert!(packaged_worker_failure_reason_is_valid(
+    assert!(!packaged_worker_failure_reason_is_valid(
         "sandbox could not start the script: Bubblewrap failed to start the isolated runner \
          (exit status: 1): bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted"
     ));
