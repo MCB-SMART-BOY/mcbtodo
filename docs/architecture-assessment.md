@@ -166,6 +166,14 @@ The packaged crash fixture also uses built-ins. The tests still require
 Failure reports include the Daemon history or the smoke run's first trace to
 identify the operation that failed.
 
+GitHub Actions run `45090214588` reproduced Bubblewrap's loopback failure on
+both Linux architectures. The ARM64 logs also showed that glibc can list
+the in-memory vDSO as an address without a library name. The sandbox now
+accepts this address-only entry without adding a mount. It still resolves
+file-backed dependencies through the trusted system path and ownership checks.
+The ARM64 loader regression and `MCBTODO_REQUIRE_SANDBOX=1 cargo xtask check`
+passed locally. The hosted namespace setup issue remains open.
+
 ## Latest Review
 
 On 2026-11-22, the Linux AArch64 release packaging follow-up verified all

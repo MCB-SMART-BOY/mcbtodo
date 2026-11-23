@@ -566,7 +566,7 @@ fn mount_runtime_files<'a>(
         for line in std::str::from_utf8(&listing.stdout)?.lines().map(str::trim) {
             let Some((name, resolution)) = line.split_once(" => ") else {
                 ensure!(
-                    line.starts_with("linux-vdso.so.1 ") || line.starts_with(loader),
+                    loader_pseudo_entry(line, loader),
                     "unexpected loader entry for {executable}: {line}"
                 );
                 continue;
@@ -595,6 +595,16 @@ fn mount_runtime_files<'a>(
             .arg(Path::new("/runtime").join(name));
     }
     Ok(())
+}
+
+fn loader_pseudo_entry(line: &str, loader: &str) -> bool {
+    // glibc's vDSO entry can have an empty name when the kernel supplies no SONAME.
+    let (name, address) = line.rsplit_once(' ').unwrap_or(("", line));
+    (matches!(name, "" | "linux-vdso.so.1") || name == loader)
+        && address
+            .strip_prefix("(0x")
+            .and_then(|hex| hex.strip_suffix(')'))
+            .is_some_and(|hex| !hex.is_empty() && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
 }
 
 // Classic BPF instructions as read by bwrap --seccomp. Deny other syscall ABIs, socket
@@ -805,6 +815,25 @@ mod tests {
         (printf '{}' > "$PROD_OUTPUT_JSON"; kill -STOP "$BASHPID") &
         wait
     "#;
+
+    #[test]
+    fn loader_recognizes_nameless_vdso_without_ignoring_unknown_files() {
+        let loader = "/lib/ld-linux-aarch64.so.1";
+        assert!(loader_pseudo_entry("(0x0000ffedd2b20000)", loader));
+        assert!(loader_pseudo_entry(
+            "linux-vdso.so.1 (0x0000ffedd2b20000)",
+            loader
+        ));
+        assert!(loader_pseudo_entry(
+            "/lib/ld-linux-aarch64.so.1 (0x0000ffedd2b20000)",
+            loader
+        ));
+        assert!(!loader_pseudo_entry(
+            "/lib/ld-linux-aarch64.so.1.extra (0x0000ffedd2b20000)",
+            loader
+        ));
+        assert!(!loader_pseudo_entry("(0xinvalid)", loader));
+    }
 
     fn execute(
         state_dir: &Path,
