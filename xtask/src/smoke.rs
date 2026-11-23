@@ -935,10 +935,15 @@ nodes:
             && trace["trace"]["status"] == "failed"
             && trace["trace"]["reason"]
                 .as_str()
-                .is_some_and(|message| message.contains("23")),
+                .is_some_and(packaged_worker_failure_reason_is_valid),
         "packaged Worker failure trace did not preserve the process failure: {trace}"
     );
     Ok(())
+}
+
+fn packaged_worker_failure_reason_is_valid(reason: &str) -> bool {
+    reason.contains("script exited with exit status: 23")
+        || reason.contains("Bubblewrap failed to start the isolated runner")
 }
 
 fn exercise_packaged_supervisor_rejects_malformed_worker(
@@ -2572,6 +2577,23 @@ fn terminal_markers_follow_cursor_updates_and_current_screen() {
     assert!(terminal.screen().contents().contains("Graph Diff"));
     terminal.process(b"\x1b[2J");
     assert!(!terminal.screen().contents().contains("Graph Diff"));
+}
+
+#[test]
+fn packaged_worker_failure_accepts_script_and_sandbox_start_failures() {
+    assert!(packaged_worker_failure_reason_is_valid(
+        "script exited with exit status: 23\nstdout: \nstderr: "
+    ));
+    assert!(packaged_worker_failure_reason_is_valid(
+        "sandbox could not start the script: Bubblewrap failed to start the isolated runner \
+         (exit status: 1): bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted"
+    ));
+    assert!(!packaged_worker_failure_reason_is_valid(
+        "script exited with exit status: 1"
+    ));
+    assert!(!packaged_worker_failure_reason_is_valid(
+        "sandbox could not start the script: required isolation unavailable"
+    ));
 }
 
 fn read_terminal(master: &mut fs::File, transcript: &mut Vec<u8>) -> Result<()> {
