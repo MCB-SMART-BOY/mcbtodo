@@ -12,6 +12,17 @@ This review traced the checked-out source. The CI runs and smoke results
 recorded below retain their original scope and dates. The current route and
 platform summary lives in the [architecture overview](architecture.md).
 
+### Shared Outline client (2026-11-23)
+
+`mcbtodo outline --daemon` and the connected TUI call the same Outline
+query in `mcbtodo-client`. Plain `outline` still reads the local Vault.
+CLI integration tests cover a disconnected service and rejection of an
+explicit Vault with `--daemon`. The sandbox smoke test connects both
+frontends to a real Daemon, checks the same project before and after a
+Daemon restart, and exercises external edit, validation failure and repair
+in the TUI. On Linux AArch64, `cargo xtask check` passed 716 tests,
+the sandbox smoke passed, and the example Vault validated.
+
 ### Terminal client extraction (2026-11-23)
 
 `apps/mcbtodo` assembles the default terminal session from `mcbtodo-tui`.

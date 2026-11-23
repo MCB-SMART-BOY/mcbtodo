@@ -55,16 +55,9 @@ impl DaemonViews {
     }
 
     pub(super) fn outline(&self, timezone: Tz) -> Result<Rc<[OutlineItem]>> {
-        self.outline
-            .rows(timezone, || match mcbtodo_client::daemon_client::exchange(
-                &self.paths,
-                Request::Outline {
-                    timezone: timezone.name().into(),
-                },
-            )? {
-                Response::Outline { items, more: false } => Ok(items),
-                _ => bail!("unexpected response to outline request"),
-            })
+        self.outline.rows(timezone, || {
+            mcbtodo_client::daemon_client::outline(&self.paths, timezone)
+        })
     }
 
     pub(super) fn deadline_context(&self, id: Id) -> Result<(String, Option<Deadline>)> {

@@ -7,7 +7,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use chrono_tz::Tz;
-use mcbtodo_domain::{CalendarItem, Id, time::DateSpan};
+use mcbtodo_domain::{CalendarItem, Id, OutlineItem, time::DateSpan};
 use mcbtodo_platform::WorkspacePaths;
 use mcbtodo_protocol::{
     ErrorCode, ProtocolError, Request, Response, TimerStatus, VaultWatchStatus, request,
@@ -42,6 +42,20 @@ pub fn calendar(
     )? {
         Response::Calendar { items } => Ok(items),
         _ => bail!("unexpected response to calendar request"),
+    }
+}
+
+/// Read the complete outline projection for a display timezone.
+pub fn outline(paths: &WorkspacePaths, timezone: Tz) -> Result<Vec<OutlineItem>> {
+    match exchange(
+        paths,
+        Request::Outline {
+            timezone: timezone.name().into(),
+        },
+    )? {
+        Response::Outline { items, more: false } => Ok(items),
+        Response::Outline { more: true, .. } => bail!("daemon returned an incomplete outline"),
+        _ => bail!("unexpected response to outline request"),
     }
 }
 

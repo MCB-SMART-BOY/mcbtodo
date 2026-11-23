@@ -2488,6 +2488,11 @@ impl Smoke<'_> {
         let mut wait =
             |marker| wait_for_terminal_marker(&mut child, &mut master, &mut terminal, marker);
         wait("Watch initial project")?;
+        ensure!(
+            self.cli(&["outline", "--daemon"])?
+                .contains("Watch initial project"),
+            "CLI did not return the same initial Outline as the TUI"
+        );
         fs::write(&source, document("Watch updated project"))?;
         wait("Watch updated project")?;
         fs::write(&source, "invalid Markdown")?;
@@ -2499,6 +2504,11 @@ impl Smoke<'_> {
         fs::write(&source, document("Watch project after restart"))?;
         *daemon = self.start_daemon()?;
         wait("Watch project after restart")?;
+        ensure!(
+            self.cli(&["outline", "--daemon"])?
+                .contains("Watch project after restart"),
+            "CLI did not return the updated Outline after the Daemon restarted"
+        );
         master.write_all(b"q")?;
         poll("TUI exit after daemon restart", || {
             let Some(status) = child.0.try_wait()? else {

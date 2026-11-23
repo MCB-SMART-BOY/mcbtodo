@@ -82,7 +82,7 @@ CLI 的 Vault 写命令从已加载快照取得乐观并发控制 token 时使�
 
 | 入口 | Vault 访问路径 |
 | --- | --- |
-| CLI | `validate`、`outline`、`graph`、`vault` 和默认的 `calendar` 使用本地 Vault。`calendar --daemon` 只查询默认 Vault 的单日投影，并拒绝与 `--vault` 或 iCalendar 导入导出组合。计时、通知和工作流运行命令使用 IPC，工作流校验、模拟和发布通过本地应用用例。 |
+| CLI | `validate`、`outline`、`graph`、`vault` 和 `calendar` 默认读取本地 Vault。`outline --daemon` 和 `calendar --daemon` 使用 TUI 共用的客户端查询默认 Vault，断连时返回错误，且拒绝与 `--vault` 组合。`calendar --daemon` 限于单日查询。计时、通知和工作流运行命令使用 IPC，工作流校验、模拟和发布通过本地应用用例。 |
 | Linux TUI，默认 Vault | 启动时建立服务投影缓存。Month、Week、Day、Agenda、Timeline、大纲、全局搜索、Inbox 列表及分流、Graph 浏览及依赖预览和确认走 IPC。Task 捕获、Project、Deadline 快速创建、全天事件、单次提醒、WorkUnit 时间块和现有截止日期编辑也走 IPC。默认 Vault 的文件监听由 Daemon 持有。 |
 | Linux TUI，外部 Vault，以及非 Linux TUI | 使用本地 Vault 投影和可用的前台编辑功能。外部 Vault 没有独立后台服务。 |
 | MCP | stdio 服务通过共享用例读取选定 Vault。在支持私有队列的平台，业务写入提案需人工批准。批准工作流快照只发布内容寻址 revision，执行授权与入队各有独立入口。 |

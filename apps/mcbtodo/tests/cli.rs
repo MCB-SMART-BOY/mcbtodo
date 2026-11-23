@@ -130,6 +130,34 @@ fn calendar_explicit_daemon_route_does_not_silently_read_the_local_vault() {
 }
 
 #[test]
+fn outline_rejects_an_explicit_vault_with_the_daemon_route() {
+    let result = query(&fixture(), &["outline", "--daemon"]);
+    assert!(!result.status.success());
+    assert!(result.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("cannot be combined with --vault"));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn outline_explicit_daemon_route_does_not_silently_read_the_local_vault() {
+    let home = tempfile::tempdir().unwrap();
+    output(cli_in_home(home.path()).arg("init").output().unwrap());
+    copy_tree(&fixture(), &home.path().join(".mcbtodo/vault"));
+    assert!(
+        output(cli_in_home(home.path()).arg("outline").output().unwrap())
+            .contains("实现地址转换 [blocked]")
+    );
+
+    let result = cli_in_home(home.path())
+        .args(["outline", "--daemon"])
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(result.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("Start mcbtodo-daemon"));
+}
+
+#[test]
 fn workflow_approve_requires_the_review_argument_before_contacting_daemon() {
     let result = cli()
         .args([

@@ -107,7 +107,7 @@ cargo run --locked -- --vault examples/vault --timezone Asia/Shanghai outline
 
 在 Linux 上，默认 Vault 的 TUI 月历、周历、日历、议程、Timeline、大纲、Inbox 和 Graph 从 `mcbtodo-daemon` 读取。Graph 的依赖编辑预览与确认也经由服务。服务离线时会显示启动提示，TUI 菜单仍可使用。服务恢复后按 `r` 重试。议程日期范围最多 366 天，结果过大时请缩小日期范围。通过 `--vault` 打开的外部 Vault 和非 Linux 前台模式从本地读取。
 
-`mcbtodo calendar --daemon --date 2026-11-25 --json` 通过同一接口查询默认 Vault，支持 `--timezone`。普通 `calendar` 命令直接读取 Vault，支持 `--vault`。
+`mcbtodo calendar --daemon --date 2026-11-25 --json` 和 `mcbtodo outline --daemon` 通过与 TUI 共用的客户端查询默认 Vault。两者均支持 `--timezone`。省略 `--daemon` 时直接读取 Vault，可用 `--vault` 指定目录。
 
 `calendar export-ical` 输出选定日期窗内的标准 iCalendar：日期区间用排他式 `DTEND`，精确时段统一输出 UTC，截止日输出为 `VTODO/DUE`。活动期、任务发生项、活动、时间块与期限会保留 `X-MCBTODO-KIND` 和 `X-MCBTODO-ID` 来源属性。省略 `--output` 时写入 stdout。`calendar import-ical <PATH>` 只接受可表达为独立日历活动的 `VEVENT`，支持全天日期、UTC 和 IANA 时区；本项目导出的两个 `X-MCBTODO-*` 来源属性可识别但不影响 UID 身份映射，其它未知扩展属性、嵌入式 `VTIMEZONE`、重复属性、重复规则、浮动时刻、DST 歧义/缺口、VTODO 及其他无法映射的属性会拒绝。导入 UID 映射为稳定 UUID，整批先验证，再以一次目录交换发布；任何校验失败都不会导入部分事件。重复导入相同 UID 会因稳定 UUID 已存在而整体失败，不会创建重复事件。
 

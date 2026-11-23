@@ -65,7 +65,11 @@ enum Command {
         command: vault_cli::Command,
     },
     /// List projects, tasks and work units.
-    Outline,
+    Outline {
+        /// Query the Linux daemon's default Vault.
+        #[arg(long)]
+        daemon: bool,
+    },
     /// Show the selected day's calendar projection.
     Calendar {
         /// Query the Linux daemon's default Vault for this day.
@@ -286,9 +290,17 @@ fn run(cli: Cli) -> Result<()> {
                 vault_cli::run_without_snapshot(command, &root, timezone)?;
             }
         }
-        Command::Outline => {
+        Command::Outline { daemon } => {
+            ensure!(
+                !daemon || location.root_override.is_none(),
+                "--daemon queries the default Vault and cannot be combined with --vault"
+            );
             let (root, timezone) = location.resolve(&paths)?;
-            let rows = VaultQueries::new(root, timezone).outline()?;
+            let rows = if daemon {
+                daemon_client::outline(&paths, timezone)?
+            } else {
+                VaultQueries::new(root, timezone).outline()?
+            };
             for row in rows {
                 let blocked = if row.blocked { " [blocked]" } else { "" };
                 println!(
