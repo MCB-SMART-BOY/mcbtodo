@@ -127,7 +127,7 @@ pub fn build(root: &Path, bin_dir: &Path, out_dir: &Path) -> Result<PathBuf> {
             0o755,
         ),
         (
-            root.join("deploy/systemd/mcbtodo-daemon.service"),
+            root.join("apps/mcbtodo-daemon/assets/mcbtodo-daemon.service"),
             "usr/lib/systemd/user/mcbtodo-daemon.service",
             0o644,
         ),

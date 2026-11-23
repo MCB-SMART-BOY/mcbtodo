@@ -98,7 +98,9 @@ reads it back from the Vault. It exercises checkpoint recovery after the
 service restarts.
 
 For Cargo installation changes, verify all three binaries in the same Cargo
-`bin` directory, verify the user unit resolves `ExecStart` there, and run
+`bin` directory. Run the installed `mcbtodo-daemon install-service` outside the
+checkout with temporary user config, verify that the unit resolves `ExecStart`
+to the installed Daemon, and verify that an existing user unit is preserved. Run
 `cargo xtask smoke-systemd --bin-dir "$HOME/.cargo/bin"` against the installed
 binaries.
 

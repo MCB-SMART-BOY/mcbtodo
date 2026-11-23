@@ -7,19 +7,24 @@ mod runtime;
 #[cfg(target_os = "linux")]
 mod server;
 #[cfg(target_os = "linux")]
+mod service;
+#[cfg(target_os = "linux")]
 mod timer;
 #[cfg(target_os = "linux")]
 mod worker_process;
 
 use anyhow::Result;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use mcbtodo_platform::WorkerSlots;
 
 #[cfg(all(test, target_os = "linux"))]
 const DEFAULT_WORKER_SLOTS: u8 = WorkerSlots::MIN;
 
 #[derive(Parser)]
-#[command(about = "Run the local mcbtodo workspace daemon in the foreground")]
+#[command(
+    about = "Run the local mcbtodo workspace daemon",
+    args_conflicts_with_subcommands = true
+)]
 struct Args {
     /// Override the Worker limit in config.toml (default: 1).
     #[arg(
@@ -28,6 +33,14 @@ struct Args {
             .range(i64::from(WorkerSlots::MIN)..=i64::from(WorkerSlots::MAX))
     )]
     worker_slots: Option<u8>,
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Install a systemd user unit for this executable without starting it (Linux).
+    InstallService,
 }
 
 #[cfg(target_os = "linux")]
@@ -52,8 +65,13 @@ fn main() -> Result<()> {
     #[cfg(target_os = "linux")]
     {
         let paths = mcbtodo_platform::WorkspacePaths::discover()?;
-        let worker_limit = args.worker_limit(&paths);
-        server::Server::open(paths, worker_limit)?.run()
+        match args.command {
+            Some(Command::InstallService) => service::install(paths.home_dir()),
+            None => {
+                let worker_limit = args.worker_limit(&paths);
+                server::Server::open(paths, worker_limit)?.run()
+            }
+        }
     }
     #[cfg(not(target_os = "linux"))]
     {

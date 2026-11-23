@@ -14,15 +14,15 @@ cargo install --locked --root "$HOME/.cargo" \
 
 也可以从本地工作树安装。在仓库根目录分别执行 `cargo install --locked --root "$HOME/.cargo" --path apps/mcbtodo`，并对 `apps/mcbtodo-daemon` 和 `apps/mcbtodo-worker` 执行相同命令。
 
-首次安装时，在仓库根目录用随附的模板创建用户服务。已有用户服务可以用 `systemctl --user edit --full mcbtodo-daemon.service` 修改 `ExecStart`，保留其余设置。该命令也可用来将 `ExecStart` 指向自定义 `--root` 下的 `bin/mcbtodo-daemon`。
+首次安装时，用已安装的 Daemon 创建用户服务。在任意目录都可以运行这条命令。
 
 ```sh
-mkdir -p "$HOME/.config/systemd/user"
-sed 's|^ExecStart=/usr/bin/mcbtodo-daemon$|ExecStart=%h/.cargo/bin/mcbtodo-daemon|' \
-  deploy/systemd/mcbtodo-daemon.service > "$HOME/.config/systemd/user/mcbtodo-daemon.service"
+mcbtodo-daemon install-service
 ```
 
-只有安装程序的步骤需要 Cargo。服务配置和启动由 systemd 管理。
+命令将内置模板写到 `~/.config/systemd/user/mcbtodo-daemon.service`。如果设置了绝对路径 `XDG_CONFIG_HOME`，则使用其下的 `systemd/user/`。`ExecStart` 指向运行该命令的 Daemon，支持自定义 Cargo `--root`。已有用户单元会保留，可用 `systemctl --user edit --full mcbtodo-daemon.service` 更新 `ExecStart`。
+
+Cargo 安装程序，`install-service` 写入用户单元，服务的启动和登录自启由 systemd 管理。
 继续执行下方的“启动和使用”。更新时重新执行所选安装命令，然后执行
 `systemctl --user restart mcbtodo-daemon.service`。从本地工作树重装同一版本时，给三条命令加上 `--force`。
 

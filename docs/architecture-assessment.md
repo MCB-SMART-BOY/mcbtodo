@@ -246,6 +246,19 @@ The AArch64 systemd smoke drove the real TUI Task form and read the resulting
 Task from the isolated Vault. Other Vault mutations still use their existing
 entry points.
 
+CI run `45095220559` passed both Linux jobs, both native foreground jobs,
+and both cross-target checks for default-Vault Task capture.
+
+The Cargo-installed Daemon now ships the user-unit template and can install
+it from outside the checkout with `mcbtodo-daemon install-service`. The
+Linux AArch64 check installed all three programs into a custom Cargo root
+containing a space and `%n`. `systemd-analyze --user verify` accepted the
+generated unit with the installed Daemon as `ExecStart`. A repeat install
+preserved the existing unit. The systemd smoke exercised the installed
+binaries in a transient user unit and verified TUI reopen, Task capture,
+timer recovery, and reports. Workspace checks passed 672 tests and the
+Daemon's Cargo package listing included the template.
+
 ## Latest Review
 
 On 2026-11-22, the Linux AArch64 release packaging follow-up verified all

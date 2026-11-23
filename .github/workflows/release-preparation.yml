@@ -96,7 +96,7 @@ jobs:
           (cd "$RUNNER_TEMP" && sha256sum --check "mcbtodo-linux-$ARCH.tar.gz.sha256")
           package_dir="$(mktemp -d "$RUNNER_TEMP/mcbtodo-package.XXXXXXXX")"
           tar -xzf "$RUNNER_TEMP/mcbtodo-linux-$ARCH.tar.gz" -C "$package_dir"
-          cmp deploy/systemd/mcbtodo-daemon.service "$package_dir/usr/lib/systemd/user/mcbtodo-daemon.service"
+          cmp apps/mcbtodo-daemon/assets/mcbtodo-daemon.service "$package_dir/usr/lib/systemd/user/mcbtodo-daemon.service"
           cmp LICENSE "$package_dir/usr/share/licenses/mcbtodo/LICENSE"
           test -x "$package_dir/usr/bin/mcbtodo-worker"
           cargo xtask smoke --bin-dir "$package_dir/usr/bin" --sandbox

@@ -895,7 +895,7 @@ Markdown、外部网页、GitHub Issue、测试日志、AI 输出均可包含不
 
 ### 15.3 systemd
 
-仓库提供 [systemd 用户服务模板](../deploy/systemd/mcbtodo-daemon.service)。Daemon 以用户身份运行，通过服务日志提供诊断信息。
+Daemon 以用户身份运行，通过服务日志提供诊断信息。发行归档和 `mcbtodo-daemon install-service` 共用一份 [systemd 用户服务模板](../apps/mcbtodo-daemon/assets/mcbtodo-daemon.service)。Cargo 安装后，`install-service` 将当前可执行文件的路径写入用户单元，保留已有用户单元。服务由用户通过 systemd 启用。[部署指南](../deploy/systemd/README.md)
 
 ### 15.4 CLI 示例
 
