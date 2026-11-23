@@ -19,7 +19,9 @@ TUI 退出后后台任务继续运行。Daemon 委派脚本和 Agent 节点给�
 | `mcbtodo-protocol` (`crates/protocol`) | 本机 Unix socket 的计时、日历查询和工作流等请求与响应，以及 Daemon 与单次 Worker 之间有界、带 attempt 身份的消息契约。 |
 | `mcbtodo-storage-sqlite` (`crates/storage-sqlite`) | Daemon 使用工作流运行、调度、通知和专注会话的持久化接口。Vault 使用完成意图、提交、游标读取和快照验证接口。SQLite 连接由适配器持有。 |
 | `mcbtodo-application` (`crates/application`) | 共享 Vault 业务命令、查询投影，以及工作流校验、模拟和 revision 发布用例。依赖 domain、Vault 和 workflow。 |
-| `mcbtodo` (`apps/mcbtodo`) | CLI、Ratatui、MCP、人工提案审批和备份恢复。 |
+| `mcbtodo-client` (`crates/client`) | CLI 与 TUI 共用的 Daemon 调用、提案队列、Agent 配置摘要及少量共用格式化。 |
+| `mcbtodo-tui` (`crates/tui`) | 终端会话、按键与命令输入、展示模型、Ratatui 渲染和交互表单。 |
+| `mcbtodo` (`apps/mcbtodo`) | 命令行参数解析、默认 TUI 装配、CLI、MCP 和备份恢复入口。 |
 | `mcbtodo-daemon` (`apps/mcbtodo-daemon`) | 单用户守护进程。管理计时、持久化调度、审批和工作流执行；为每个可执行节点启动并监督一个 Worker 子进程，独占运行队列及结果提交。 |
 | `mcbtodo-worker` (`apps/mcbtodo-worker`) | 按单次 attempt 运行的 Linux Worker。通过受限协议接收固定输入，复用 Agent 与脚本执行适配器，不拥有队列、Vault 或运行数据库。 |
 | `mcbtodo-xtask` (`xtask`) | 仓库检查、隔离及 systemd 冒烟测试、发行打包、开发用 AI harness 与 workflow 的选择和准备；仅供仓库开发，不发布到 crates.io。 |
@@ -85,19 +87,19 @@ CLI 的 Vault 写命令从已加载快照取得乐观并发控制 token 时使�
 | Linux TUI，外部 Vault，以及非 Linux TUI | 使用本地 Vault 投影和可用的前台编辑功能。外部 Vault 没有独立后台服务。 |
 | MCP | stdio 服务通过共享用例读取选定 Vault。在支持私有队列的平台，业务写入提案需人工批准。批准工作流快照只发布内容寻址 revision，执行授权与入队各有独立入口。 |
 
-CLI 和 TUI 共用[客户端 IPC 模块](../apps/mcbtodo/src/daemon_client.rs)中的
+CLI 和 TUI 共用[客户端 IPC 模块](../crates/client/src/daemon_client.rs)中的
 请求处理。TUI 通过该模块判断当前 Vault 是否由 Daemon 管理。写入处理保留
 修订冲突、拒绝和提交结果未知的区别。
 帧编解码和同用户身份检查仍由协议和平台层负责。查询缓存和请求分派见
-[TUI 的查询缓存](../apps/mcbtodo/src/tui/daemon_views.rs)与
+[TUI 的查询缓存](../crates/tui/src/tui/daemon_views.rs)与
 [Daemon 的请求分派](../apps/mcbtodo-daemon/src/server.rs)。
 
 截止日期表单接收已读出的日期和 revision，表单按键只改变草稿或发出刷新和
 提交动作。TUI 交互循环处理打开、刷新和提交，连接会话通过 Daemon 查询和提交，
 本地会话通过 Application 执行对应操作。修订冲突后按 `r` 从当前数据来源
 重读 revision，保留用户草稿并要求再次确认。见
-[表单](../apps/mcbtodo/src/tui/deadline.rs)和
-[动作处理](../apps/mcbtodo/src/tui/deadline_io.rs)。
+[表单](../crates/tui/src/tui/deadline.rs)和
+[动作处理](../crates/tui/src/tui/deadline_io.rs)。
 
 服务端每个投影查询重新加载一次有效 Vault 快照。TUI 按查询参数缓存行或错误，
 供渲染与选择共用。手动重载、写入后重载或 watcher 安装新快照会清除缓存；
@@ -109,17 +111,33 @@ CLI 和 TUI 共用[客户端 IPC 模块](../apps/mcbtodo/src/daemon_client.rs)�
 
 ## 应用边界的演进
 
-`mcbtodo` 继续作为 Cargo 默认入口，在终端中启动 TUI。Linux 默认工作区的
+`mcbtodo` 继续作为 Cargo 默认入口，在终端中启动 `mcbtodo-tui`。Linux 默认工作区的
 业务读写逐步集中到 Daemon，Vault 继续持有 Markdown 的解析和一致性规则。
 TUI 与未来的 GUI 共用面向业务的客户端调用，分别维护导航、选中项、草稿与
 渲染。显式外部 Vault 和现有非 Linux 会话保留本地入口，复用 Application
 用例。连接模式遇到服务错误时展示连接状态。
 
-当前 [TUI 会话](../apps/mcbtodo/src/tui/session.rs)负责管理终端、分派动作和
-处理编辑器交接。[数据收集](../apps/mcbtodo/src/tui/screen_data.rs)访问当前
-视图所需的行和表单上下文，[ScreenModel](../apps/mcbtodo/src/tui/screen_model.rs)
-接收这些数据及交互状态。[Ratatui 绘制](../apps/mcbtodo/src/tui/render.rs)
+当前 TUI 会话负责管理终端、分派动作和
+处理编辑器交接。[数据收集](../crates/tui/src/tui/screen_data.rs)访问当前
+视图所需的行和表单上下文，[ScreenModel](../crates/tui/src/tui/screen_model.rs)
+接收这些数据及交互状态。[Ratatui 绘制](../crates/tui/src/tui/render.rs)
 使用模型与主题。数据收集仍在终端线程同步运行，缓存未命中时会等待 IPC。
+见[终端会话](../crates/tui/src/tui/session.rs)。
+
+### 命令与事件
+
+TUI 的快捷键、菜单和 `:` 命令逐步映射到同一组类型化动作。比如 `:view workflow`
+和视图菜单调用相同的视图切换，切换后保留当前日期位置。界面动作处理导航、焦点
+和草稿。CLI、TUI 与未来 GUI 的业务写入复用应用用例或已有的 Daemon 请求，
+由界面解析选中对象后明确传递 UUID、操作参数和所见 revision。终端尺寸变化、
+文字输入、文件监听和异步响应仍由各自的事件处理路径消费。
+见[TUI 命令](../crates/tui/src/tui/command.rs)。
+
+### 插件扩展
+
+内建 Agent 和其他适配器通过 `mcbtodo-ports` 扩展。独立进程扩展有真实调用方后，
+`mcbtodo-plugin` 可承载握手、能力、请求结果和取消的宿主与插件共享契约。
+Daemon 负责授权、预算、修订校验及结果提交。TUI 命令枚举是终端实现细节。
 
 按一条真实的读写路径推进，每阶段校验数据来源、修订冲突、断线行为和现有
 快捷键。

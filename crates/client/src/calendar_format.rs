@@ -2,7 +2,7 @@ use chrono_tz::Tz;
 use mcbtodo_application::CalendarItem;
 use mcbtodo_domain::{Occurrence, time::Span};
 
-pub(crate) fn item_label(entry: &CalendarItem, timezone: Tz) -> String {
+pub fn item_label(entry: &CalendarItem, timezone: Tz) -> String {
     let busy = if entry.busy { "busy" } else { "free" };
     let mut label = format!("{} · {busy} · {}", entry.kind.label(), entry.title);
     match entry.occurrence {

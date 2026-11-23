@@ -186,9 +186,10 @@ fn resolve_time(
 ) -> Result<DateTime<FixedOffset>> {
     let input = input.trim();
     let (day, input) = match input.split_once(' ') {
-        Some((date, rest)) if is_end && date.len() == 10 => {
-            (crate::parse_day(date).map_err(anyhow::Error::msg)?, rest)
-        }
+        Some((date, rest)) if is_end && date.len() == 10 => (
+            mcbtodo_client::parse_day(date).map_err(anyhow::Error::msg)?,
+            rest,
+        ),
         _ => (day, input),
     };
     let (clock, offset) = match input.split_once(' ') {

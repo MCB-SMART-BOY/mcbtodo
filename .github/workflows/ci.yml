@@ -118,7 +118,7 @@ jobs:
 
       - name: Test TUI presentation and settings
         run: |
-          cargo test --locked -p mcbtodo --bin mcbtodo -- tui::render::tests:: tui::screen_model::tests:: tui::keymap::tests:: settings session_palette_override
+          cargo test --locked -p mcbtodo-tui --lib -- tui::render::tests:: tui::screen_model::tests:: tui::keymap::tests:: settings session_palette_override
 
       - name: Test settings file persistence
         run: cargo test --locked -p mcbtodo-platform --test workspace_paths -- config_defaults_only_omitted_preferences config_rejects_invalid_and_unknown_fields saving_config saving_unchanged_config concurrent_config_saves
@@ -152,7 +152,7 @@ jobs:
 
       - name: Test TUI presentation and settings
         run: |
-          cargo test --locked -p mcbtodo --bin mcbtodo -- tui::render::tests:: tui::screen_model::tests:: tui::keymap::tests:: settings session_palette_override
+          cargo test --locked -p mcbtodo-tui --lib -- tui::render::tests:: tui::screen_model::tests:: tui::keymap::tests:: settings session_palette_override
 
       - name: Test settings file persistence
         run: cargo test --locked -p mcbtodo-platform --test workspace_paths -- config_defaults_only_omitted_preferences config_rejects_invalid_and_unknown_fields saving_config saving_unchanged_config concurrent_config_saves

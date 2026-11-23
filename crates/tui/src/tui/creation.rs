@@ -13,7 +13,7 @@ use mcbtodo_platform::WorkspacePaths;
 use mcbtodo_protocol::{ProjectDates, Request, Response};
 use mcbtodo_vault::{Revision, Vault, WriteError};
 
-use crate::daemon_client::{WriteFailure, owns_vault, submit_write};
+use mcbtodo_client::daemon_client::{WriteFailure, owns_vault, submit_write};
 
 use super::{Action, Overlay, State, View, time_block};
 
@@ -67,7 +67,7 @@ impl Field {
         {
             return Ok(date);
         }
-        crate::parse_day(&self.value).map_err(|error| format!("{} · {error}", self.label))
+        mcbtodo_client::parse_day(&self.value).map_err(|error| format!("{} · {error}", self.label))
     }
 }
 

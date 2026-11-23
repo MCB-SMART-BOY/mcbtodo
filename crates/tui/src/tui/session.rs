@@ -32,7 +32,7 @@ enum TerminalHandoff<'a> {
     ApplyProposal(Id),
 }
 
-pub(crate) fn repair_config(
+pub fn repair_config(
     paths: &WorkspacePaths,
     snapshot: AppConfigSnapshot,
 ) -> Result<Option<AppConfig>> {
@@ -89,7 +89,7 @@ pub(super) fn present<'a>(state: &'a State, vault: &Vault) -> screen_model::Scre
     screen_model::ScreenModel::project(state, vault.timezone(), data)
 }
 
-pub(crate) fn run(
+pub fn run(
     root: &Path,
     mut vault: Vault,
     day: NaiveDate,
@@ -99,7 +99,7 @@ pub(crate) fn run(
 ) -> Result<()> {
     require_terminal()?;
     let mut state = State::new(day);
-    if crate::daemon_client::owns_vault(paths, root)? {
+    if mcbtodo_client::daemon_client::owns_vault(paths, root)? {
         state.daemon_views = Some(daemon_views::DaemonViews::new(paths.clone()));
     }
     state.has_timezone_override = has_timezone_override;
@@ -181,8 +181,8 @@ pub(crate) fn run(
                     }
                 }
                 Action::Timer(operation) => {
-                    state.message = match crate::daemon_client::timer(paths, operation) {
-                        Ok(status) => crate::focus_report::timer_label(&status),
+                    state.message = match mcbtodo_client::daemon_client::timer(paths, operation) {
+                        Ok(status) => mcbtodo_client::timer_label(&status),
                         Err(error) => format!("Timer failed · {error:#}"),
                     };
                 }

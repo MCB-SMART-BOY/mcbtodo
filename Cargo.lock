@@ -777,26 +777,25 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "clap",
- "crossterm",
  "hex",
  "icalendar",
  "mcbtodo-application",
+ "mcbtodo-client",
  "mcbtodo-domain",
  "mcbtodo-execution",
  "mcbtodo-platform",
  "mcbtodo-ports",
  "mcbtodo-protocol",
  "mcbtodo-storage-sqlite",
+ "mcbtodo-tui",
  "mcbtodo-vault",
  "mcbtodo-workflow",
- "ratatui",
  "rusqlite",
  "rustix",
  "serde",
  "serde_json",
  "sha2",
  "tempfile",
- "toml",
  "uuid",
 ]
 
@@ -823,6 +822,25 @@ dependencies = [
  "serde",
  "tempfile",
  "thiserror",
+]
+
+[[package]]
+name = "mcbtodo-client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "chrono-tz",
+ "mcbtodo-application",
+ "mcbtodo-domain",
+ "mcbtodo-execution",
+ "mcbtodo-platform",
+ "mcbtodo-protocol",
+ "mcbtodo-vault",
+ "mcbtodo-workflow",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -943,6 +961,31 @@ dependencies = [
  "sha2",
  "tempfile",
  "thiserror",
+ "uuid",
+]
+
+[[package]]
+name = "mcbtodo-tui"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "chrono-tz",
+ "crossterm",
+ "mcbtodo-application",
+ "mcbtodo-client",
+ "mcbtodo-domain",
+ "mcbtodo-execution",
+ "mcbtodo-platform",
+ "mcbtodo-protocol",
+ "mcbtodo-vault",
+ "mcbtodo-workflow",
+ "ratatui",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "toml",
  "uuid",
 ]
 

@@ -8,14 +8,14 @@ use mcbtodo_domain::{CalendarItem, time::DateSpan};
 use mcbtodo_platform::WorkspacePaths;
 use mcbtodo_protocol::{ErrorCode, ProtocolError, Request, Response, TimerStatus, request};
 
-pub(crate) fn timer(paths: &WorkspacePaths, operation: Request) -> Result<TimerStatus> {
+pub fn timer(paths: &WorkspacePaths, operation: Request) -> Result<TimerStatus> {
     match exchange(paths, operation)? {
         Response::Status(status) => Ok(status),
         _ => bail!("unexpected response to timer request"),
     }
 }
 
-pub(crate) fn calendar(
+pub fn calendar(
     paths: &WorkspacePaths,
     window: DateSpan,
     timezone: Tz,
@@ -33,7 +33,7 @@ pub(crate) fn calendar(
     }
 }
 
-pub(crate) fn exchange(paths: &WorkspacePaths, operation: Request) -> Result<Response> {
+pub fn exchange(paths: &WorkspacePaths, operation: Request) -> Result<Response> {
     let socket = paths.socket_path();
     let exchange = request(&socket, operation);
     if let Err(ProtocolError::Io(error)) = &exchange
@@ -50,14 +50,14 @@ pub(crate) fn exchange(paths: &WorkspacePaths, operation: Request) -> Result<Res
     }
 }
 
-pub(crate) enum WriteFailure {
+pub enum WriteFailure {
     StaleRevision,
     Rejected(String),
     /// The daemon may have acted, but no recognized confirmation arrived.
     Unknown,
 }
 
-pub(crate) fn owns_vault(paths: &WorkspacePaths, root: &Path) -> Result<bool> {
+pub fn owns_vault(paths: &WorkspacePaths, root: &Path) -> Result<bool> {
     if cfg!(target_os = "linux") {
         paths.is_default_vault(root)
     } else {
@@ -65,7 +65,7 @@ pub(crate) fn owns_vault(paths: &WorkspacePaths, root: &Path) -> Result<bool> {
     }
 }
 
-pub(crate) fn submit_write(
+pub fn submit_write(
     paths: &WorkspacePaths,
     operation: Request,
     confirmation: impl FnOnce(Response) -> Option<bool>,

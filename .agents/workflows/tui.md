@@ -280,7 +280,7 @@ Check the startup hint and Esc dismissal when the service is offline.
 Run focused TUI tests and the complete workspace checks.
 
 ```sh
-cargo test --locked -p mcbtodo --bin mcbtodo tui::
+cargo test --locked -p mcbtodo-tui --lib tui::
 cargo fmt --all -- --check
 git diff --check
 cargo xtask check

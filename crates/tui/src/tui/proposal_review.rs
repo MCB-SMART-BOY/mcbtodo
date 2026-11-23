@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 use super::{Action, move_row, review::PannableReview};
 use mcbtodo_application::graph_diff::GraphDiff;
 
-use crate::proposal::{Operation, Proposal, Queue, Status};
+use mcbtodo_client::proposal::{Operation, Proposal, Queue, Status};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Request {
@@ -288,11 +288,9 @@ fn terminal_text(value: &str) -> String {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use crate::{
-        proposal::enqueue,
-        tui::{Overlay, State, calendar_tests::screen, tests::fixture},
-    };
+    use crate::tui::{Overlay, State, calendar_tests::screen, tests::fixture};
     use crossterm::event::KeyModifiers;
+    use mcbtodo_client::proposal::submit;
     use mcbtodo_vault::Vault;
     use serde_json::json;
 
@@ -498,7 +496,9 @@ mod tests {
                 {"id": "5dd2a1f8-270f-44b3-9013-22a39bd33551", "title": "Implement mapping", "depends_on": ["5dd2a1f8-270f-44b3-9013-22a39bd33550"]}
             ]
         })).unwrap();
-        let id = enqueue(Path::new(ROOT), ZONE, &paths, operation, None).unwrap();
+        let id = submit(Path::new(ROOT), ZONE, &paths, operation, None)
+            .unwrap()
+            .proposal_id;
         let press = |state: &mut State, code| review(state, &vault, &paths, code);
         press(&mut state, KeyCode::Char(' '));
         assert!(screen(&state, &vault, 80, 24).contains("a AI proposals"));
@@ -560,14 +560,15 @@ bindings:
         let mut sources = mcbtodo_workflow::ScriptSources::new();
         sources.insert("scripts/check.nu".to_owned(), source.to_vec());
         let draft = mcbtodo_workflow::WorkflowDraft::new(graph.to_owned(), sources).unwrap();
-        let id = enqueue(
+        let id = submit(
             Path::new(ROOT),
             ZONE,
             &paths,
             Operation::PublishWorkflow { draft },
             None,
         )
-        .unwrap();
+        .unwrap()
+        .proposal_id;
         let mut state = State::new("2026-11-20".parse().unwrap());
         let press = |state: &mut State, code| review(state, &vault, &paths, code);
         press(&mut state, KeyCode::Char(' '));
@@ -608,7 +609,9 @@ bindings:
             "availability": "free",
         }))
         .unwrap();
-        let id = enqueue(Path::new(ROOT), ZONE, &paths, operation, None).unwrap();
+        let id = submit(Path::new(ROOT), ZONE, &paths, operation, None)
+            .unwrap()
+            .proposal_id;
         let mut state = State::new("2026-11-20".parse().unwrap());
         let press = |state: &mut State, code| review(state, &vault, &paths, code);
         press(&mut state, KeyCode::Char(' '));
@@ -654,7 +657,9 @@ bindings:
             "date": "2026-12-10"
         }))
         .unwrap();
-        let id = enqueue(Path::new(ROOT), ZONE, &paths, operation, None).unwrap();
+        let id = submit(Path::new(ROOT), ZONE, &paths, operation, None)
+            .unwrap()
+            .proposal_id;
         let mut state = State::new("2026-11-20".parse().unwrap());
         let press = |state: &mut State, code| review(state, &vault, &paths, code);
         press(&mut state, KeyCode::Char(' '));

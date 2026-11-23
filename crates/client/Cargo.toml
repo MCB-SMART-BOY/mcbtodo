@@ -1,0 +1,30 @@
+[package]
+name = "mcbtodo-client"
+repository.workspace = true
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "Workspace client operations shared by the mcbtodo CLI and TUI."
+documentation = "https://docs.rs/mcbtodo-client"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+chrono-tz.workspace = true
+mcbtodo-application.workspace = true
+mcbtodo-domain.workspace = true
+mcbtodo-platform.workspace = true
+mcbtodo-protocol.workspace = true
+mcbtodo-vault.workspace = true
+mcbtodo-workflow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+mcbtodo-execution.workspace = true

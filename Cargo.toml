@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["apps/mcbtodo", "apps/mcbtodo-daemon", "apps/mcbtodo-worker", "crates/agent-codex", "crates/application", "crates/domain", "crates/execution", "crates/platform", "crates/ports", "crates/protocol", "crates/storage-sqlite", "crates/vault", "crates/workflow", "xtask"]
+members = ["apps/mcbtodo", "apps/mcbtodo-daemon", "apps/mcbtodo-worker", "crates/agent-codex", "crates/application", "crates/client", "crates/domain", "crates/execution", "crates/platform", "crates/ports", "crates/protocol", "crates/storage-sqlite", "crates/tui", "crates/vault", "crates/workflow", "xtask"]
 default-members = ["apps/mcbtodo"]
 
 [workspace.package]
@@ -21,6 +21,7 @@ crossterm = "0.29"
 hex = "0.4"
 icalendar = { version = "0.17.17", default-features = false }
 mcbtodo-agent-codex = { path = "crates/agent-codex", version = "0.1.0" }
+mcbtodo-client = { path = "crates/client", version = "0.1.0" }
 mcbtodo-domain = { path = "crates/domain", version = "0.1.0" }
 mcbtodo-execution = { path = "crates/execution", version = "0.1.0" }
 mcbtodo-application = { path = "crates/application", version = "0.1.0" }
@@ -31,6 +32,7 @@ mcbtodo-storage-sqlite = { path = "crates/storage-sqlite", version = "0.1.0" }
 mcbtodo-workflow = { path = "crates/workflow", version = "0.1.0" }
 mcbtodo-vault = { path = "crates/vault", version = "0.1.0" }
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
+mcbtodo-tui = { path = "crates/tui", version = "0.1.0" }
 rusqlite = { version = "0.38", features = ["bundled"] }
 rustix = "1"
 serde = { version = "1", features = ["derive"] }

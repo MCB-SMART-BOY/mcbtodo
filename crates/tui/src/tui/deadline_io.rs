@@ -74,7 +74,7 @@ impl State {
         let revision = match (&self.daemon_views, revision) {
             (None, deadline::EditRevision::Local(revision)) => revision,
             (Some(service), deadline::EditRevision::Daemon(revision)) => {
-                use crate::daemon_client::WriteFailure;
+                use mcbtodo_client::daemon_client::WriteFailure;
 
                 self.message = match service.set_deadline(id, revision, deadline) {
                     Ok(synced) => {

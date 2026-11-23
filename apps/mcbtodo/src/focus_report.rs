@@ -11,24 +11,8 @@ use clap::Args;
 use mcbtodo_application::{ProjectSummary, VaultQueries, WorkUnitSummary};
 use mcbtodo_domain::Id;
 use mcbtodo_platform::WorkspacePaths;
-use mcbtodo_protocol::{Request, Response, TimerState, TimerStatus, focus::DailyFocusReport};
+use mcbtodo_protocol::{Request, Response, focus::DailyFocusReport};
 use serde::Serialize;
-
-pub(crate) fn timer_label(status: &TimerStatus) -> String {
-    let state = match status.state {
-        TimerState::Idle => "idle",
-        TimerState::Running => "running",
-        TimerState::Paused => "paused",
-        TimerState::NeedsReview => "needs review",
-    };
-    match &status.session {
-        Some(session) => format!(
-            "Timer {state} · {}s · {}",
-            session.elapsed_seconds, session.id
-        ),
-        None => format!("Timer {state}"),
-    }
-}
 
 // The daemon exposes one snapshot per day and scans the history for each request.
 const MAX_REPORT_DAYS: i64 = 366;

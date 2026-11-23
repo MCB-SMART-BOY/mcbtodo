@@ -74,7 +74,7 @@ impl Form {
                 let deadline = if self.cleared {
                     None
                 } else {
-                    match crate::parse_day(&self.value) {
+                    match mcbtodo_client::parse_day(&self.value) {
                         Ok(value) if self.original_day == Some(value) => self.original,
                         Ok(value) => Some(Deadline::Date { value }),
                         Err(error) => {

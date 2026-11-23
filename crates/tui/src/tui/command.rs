@@ -23,7 +23,7 @@ impl Command {
             ["q" | "quit"] => Ok(Self::Quit),
             ["reload"] => Ok(Self::Reload),
             ["today"] => Ok(Self::Today),
-            ["date", value] => crate::parse_day(value).map(Self::Date),
+            ["date", value] => mcbtodo_client::parse_day(value).map(Self::Date),
             ["help" | "?"] => Ok(Self::Help),
             ["settings"] => Ok(Self::Settings),
             ["search", query @ ..] if !query.is_empty() => Ok(Self::Search(query.join(" "))),

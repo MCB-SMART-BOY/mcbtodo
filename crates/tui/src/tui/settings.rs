@@ -7,7 +7,7 @@ use mcbtodo_platform::{
 };
 
 use super::{keymap::Keymap, move_row};
-use crate::agent_discovery::Discovery;
+use mcbtodo_client::agent_discovery::Discovery;
 #[cfg(target_os = "linux")]
 use mcbtodo_platform::agent_policy::{AgentBackend, AgentPolicyEdit, AgentPolicySnapshot};
 

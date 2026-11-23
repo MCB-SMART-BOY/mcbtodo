@@ -292,7 +292,7 @@ fn refresh() -> Action {
 }
 
 fn call(paths: &WorkspacePaths, command: &WorkflowRequest) -> Result<WorkflowResponse> {
-    match crate::daemon_client::exchange(paths, Request::Workflow(command.clone()))? {
+    match mcbtodo_client::daemon_client::exchange(paths, Request::Workflow(command.clone()))? {
         Response::Workflow(response) => Ok(response),
         _ => bail!("unexpected response to workflow request"),
     }

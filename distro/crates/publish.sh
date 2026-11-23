@@ -47,6 +47,8 @@ packages=(
   mcbtodo-vault
   mcbtodo-application
   mcbtodo-execution
+  mcbtodo-client
+  mcbtodo-tui
   mcbtodo-worker
   mcbtodo-daemon
   mcbtodo
@@ -127,7 +129,7 @@ for ((index = start; index < ${#packages[@]}; index++)); do
   package="${packages[$index]}"
   publish "$package"
   case "$package" in
-    mcbtodo-workflow|mcbtodo-ports|mcbtodo-platform|mcbtodo-storage-sqlite|mcbtodo-vault|mcbtodo-application|mcbtodo-execution)
+    mcbtodo-workflow|mcbtodo-ports|mcbtodo-platform|mcbtodo-storage-sqlite|mcbtodo-vault|mcbtodo-application|mcbtodo-execution|mcbtodo-client|mcbtodo-tui)
       if ((wait_seconds > 0)); then
         sleep "$wait_seconds"
       fi

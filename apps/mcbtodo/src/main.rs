@@ -1,14 +1,10 @@
-mod agent_discovery;
 #[cfg_attr(not(unix), path = "backup_unsupported.rs")]
 mod backup;
-mod calendar_format;
-mod daemon_client;
 mod doctor;
 mod focus_report;
 mod ical_import;
 mod mcp;
-mod proposal;
-mod tui;
+mod proposal_cli;
 mod vault_cli;
 mod workflow;
 mod workflow_runtime_cli;
@@ -25,12 +21,13 @@ use chrono_tz::Tz;
 use clap::{Parser, Subcommand};
 use icalendar::{Calendar as IcalCalendar, Component, Event as IcalEvent, EventLike, Todo};
 use mcbtodo_application::{CalendarItem, VaultCommands, VaultQueries};
-use mcbtodo_domain::{
-    Id, Occurrence,
-    time::{DateParseError, Deadline, parse_date},
+use mcbtodo_client::{
+    agent_discovery, calendar_format, daemon_client, parse_day, proposal, timer_label,
 };
+use mcbtodo_domain::{Id, Occurrence, time::Deadline};
 use mcbtodo_platform::{AppConfig, WorkspacePaths};
 use mcbtodo_protocol::{Request, Response};
+use mcbtodo_tui as tui;
 use mcbtodo_vault::Vault;
 
 #[derive(Parser)]
@@ -117,7 +114,7 @@ enum Command {
     /// Review proposed Vault changes.
     Proposal {
         #[command(subcommand)]
-        command: proposal::Command,
+        command: proposal_cli::Command,
     },
     /// Back up the configured workspace while mcbtodo-daemon is stopped.
     Backup { destination: PathBuf },
@@ -202,7 +199,7 @@ fn run(cli: Cli) -> Result<()> {
                 return Ok(());
             };
             let vault = Vault::load(&root, timezone)?;
-            let day = date.unwrap_or_else(|| today(&vault));
+            let day = date.unwrap_or_else(|| Utc::now().with_timezone(&timezone).date_naive());
             tui::run(&root, vault, day, &paths, config, has_timezone_override)?;
         }
         Command::Workflow { command } => workflow::run(command, &paths)?,
@@ -243,7 +240,7 @@ fn run(cli: Cli) -> Result<()> {
                 serde_json::to_writer_pretty(io::stdout().lock(), &status)?;
                 println!();
             } else {
-                println!("{}", focus_report::timer_label(&status));
+                println!("{}", timer_label(&status));
             }
         }
         Command::Mcp {
@@ -271,7 +268,7 @@ fn run(cli: Cli) -> Result<()> {
         }
         Command::Proposal { command } => {
             let (root, timezone) = location.resolve(&paths)?;
-            proposal::run(command, &root, timezone, &paths)?;
+            proposal_cli::run(command, &root, timezone, &paths)?;
         }
         Command::Backup { destination } => {
             ensure!(
@@ -438,10 +435,6 @@ pub(crate) fn require_default_focus_vault(paths: &WorkspacePaths, root: &Path) -
     Ok(())
 }
 
-pub(crate) fn today(vault: &Vault) -> NaiveDate {
-    Utc::now().with_timezone(&vault.timezone()).date_naive()
-}
-
 fn export_ical(entries: Vec<CalendarItem>, timezone: Tz, output: Option<&Path>) -> Result<()> {
     let mut calendar = IcalCalendar::new().name("mcbtodo").done();
     for entry in entries {
@@ -503,11 +496,4 @@ fn export_ical(entries: Vec<CalendarItem>, timezone: Tz, output: Option<&Path>) 
         print!("{serialized}");
     }
     Ok(())
-}
-
-pub(crate) fn parse_day(value: &str) -> Result<NaiveDate, String> {
-    parse_date(value).map_err(|error| match error {
-        DateParseError::Format => "expected a date in YYYY-MM-DD format".into(),
-        DateParseError::YearRange => "year must be between 0001 and 9999".into(),
-    })
 }

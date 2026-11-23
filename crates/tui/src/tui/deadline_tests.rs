@@ -254,7 +254,7 @@ fn default_deadline_editor_never_falls_back_to_a_local_document() -> Result<()> 
         ],
     );
     let mut state = State::new("2026-11-25".parse()?);
-    assert!(crate::daemon_client::owns_vault(&paths, &root)?);
+    assert!(mcbtodo_client::daemon_client::owns_vault(&paths, &root)?);
     state.daemon_views = Some(daemon_views::DaemonViews::new(paths));
     state.view = View::Outline;
     open_deadline(&mut state, &vault, " d");
@@ -291,7 +291,7 @@ fn external_deadline_editor_persists_locally() -> Result<()> {
     let root = external.path();
     let id = Id::new_v4();
     write_project(root, id)?;
-    assert!(!crate::daemon_client::owns_vault(&paths, root)?);
+    assert!(!mcbtodo_client::daemon_client::owns_vault(&paths, root)?);
     let mut vault = Vault::load(root, chrono_tz::UTC)?;
     let mut state = State::new("2026-11-25".parse()?);
     state.view = View::Outline;

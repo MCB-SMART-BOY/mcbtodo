@@ -109,7 +109,7 @@ Windows 门禁。Linux 专用烟测、打包、systemd 和沙箱示例任务在�
 高度依次缩小时，先移除标题，再移除操作反馈，最后移除操作提示。
 
 Workflow 展示切片通过 `WorkflowScreenModel` 投影运行列表、详情、
-时区、轨迹标题和操作提示。`cargo test --locked -p mcbtodo --bin mcbtodo tui::`
+时区、轨迹标题和操作提示。`cargo test --locked -p mcbtodo-tui --lib tui::`
 覆盖内存渲染、现有键位与审批弹窗。检查 30×6 高对比度下的中英文对齐、
 选中焦点、边框和页脚，并验证零步骤运行不会显示轨迹快捷键。
 
@@ -145,7 +145,7 @@ Vault 快照。快照比较依据源文件路径和 revision。
 
 ## 7. Phase 5 — Process Plugin Protocol
 
-至少两个真实 Provider 或 Backend 通过同类端口，并证明有跨进程扩展需求后，才建立 `mcbtodo-plugin-protocol`。首期采用 stdio framed JSON。Rust 动态库不作为公共插件机制。
+至少两个真实 Provider 或 Backend 通过同类端口，并证明有跨进程扩展需求后，才建立共享契约 crate `mcbtodo-plugin`。首期采用 stdio framed JSON。Rust 动态库不作为公共插件机制。
 
 协议规定 framing、message ID、响应关联、版本、消息上限、错误、取消与终止。基础消息包括 hello、capabilities、health、prepare、execute、cancel、result、diagnostic、shutdown。Manifest 校验 provider ID、版本、可执行目标、capabilities、required permissions 与配置。宿主决定授权。生命周期覆盖发现、版本选择、启动超时、健康检查、崩溃恢复、重启、熔断、卸载、日志保留和配置验证。以真实 Provider 和契约测试验证错误诊断、权限及协议协商。
 

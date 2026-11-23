@@ -14,7 +14,7 @@ use super::{
     screen_data::{ScreenData, ViewRows},
     settings, timeline,
 };
-use crate::calendar_format;
+use mcbtodo_client::calendar_format;
 
 mod dependency_graph;
 mod proposals;

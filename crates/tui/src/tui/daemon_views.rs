@@ -62,13 +62,13 @@ impl DaemonViews {
 
     pub(super) fn calendar(&self, dates: DateSpan, timezone: Tz) -> Result<Rc<[CalendarItem]>> {
         self.calendar.rows((dates, timezone), || {
-            crate::daemon_client::calendar(&self.paths, dates, timezone)
+            mcbtodo_client::daemon_client::calendar(&self.paths, dates, timezone)
         })
     }
 
     pub(super) fn outline(&self, timezone: Tz) -> Result<Rc<[OutlineItem]>> {
-        self.outline.rows(timezone, || {
-            match crate::daemon_client::exchange(
+        self.outline
+            .rows(timezone, || match mcbtodo_client::daemon_client::exchange(
                 &self.paths,
                 Request::Outline {
                     timezone: timezone.name().into(),
@@ -76,12 +76,12 @@ impl DaemonViews {
             )? {
                 Response::Outline { items, more: false } => Ok(items),
                 _ => bail!("unexpected response to outline request"),
-            }
-        })
+            })
     }
 
     pub(super) fn deadline_context(&self, id: Id) -> Result<(String, Option<Deadline>)> {
-        match crate::daemon_client::exchange(&self.paths, Request::DeadlineContext { id })? {
+        match mcbtodo_client::daemon_client::exchange(&self.paths, Request::DeadlineContext { id })?
+        {
             Response::DeadlineContext { revision, deadline } => Ok((revision, deadline)),
             _ => bail!("unexpected response to deadline context request"),
         }
@@ -92,8 +92,8 @@ impl DaemonViews {
         id: Id,
         revision: String,
         deadline: Option<Deadline>,
-    ) -> Result<bool, crate::daemon_client::WriteFailure> {
-        crate::daemon_client::submit_write(
+    ) -> Result<bool, mcbtodo_client::daemon_client::WriteFailure> {
+        mcbtodo_client::daemon_client::submit_write(
             &self.paths,
             Request::SetDeadline {
                 id,
@@ -109,7 +109,7 @@ impl DaemonViews {
 
     pub(super) fn inbox(&self) -> Result<Rc<[InboxSummary]>> {
         self.inbox.rows((), || {
-            match crate::daemon_client::exchange(&self.paths, Request::Inbox)? {
+            match mcbtodo_client::daemon_client::exchange(&self.paths, Request::Inbox)? {
                 Response::Inbox { items, more: false } => Ok(items),
                 _ => bail!("unexpected response to Inbox request"),
             }
@@ -117,8 +117,8 @@ impl DaemonViews {
     }
 
     pub(super) fn graph(&self, timezone: Tz) -> Result<Rc<[super::graph::Node]>> {
-        self.graph.rows(timezone, || {
-            match crate::daemon_client::exchange(
+        self.graph
+            .rows(timezone, || match mcbtodo_client::daemon_client::exchange(
                 &self.paths,
                 Request::WorkUnitGraph {
                     timezone: timezone.name().into(),
@@ -126,8 +126,7 @@ impl DaemonViews {
             )? {
                 Response::WorkUnitGraph { items, more: false } => Ok(super::graph::nodes(items)),
                 _ => bail!("unexpected response to WorkUnit graph request"),
-            }
-        })
+            })
     }
 
     pub(super) fn preview_dependency_change(
@@ -137,7 +136,7 @@ impl DaemonViews {
         operation: DependencyOperation,
         timezone: Tz,
     ) -> Result<WorkUnitDependencyPreview> {
-        match crate::daemon_client::exchange(
+        match mcbtodo_client::daemon_client::exchange(
             &self.paths,
             Request::PreviewWorkUnitDependencyChange {
                 target,
@@ -154,8 +153,8 @@ impl DaemonViews {
     pub(super) fn set_dependencies(
         &self,
         edit: super::graph::Submission,
-    ) -> Result<bool, crate::daemon_client::WriteFailure> {
-        crate::daemon_client::submit_write(
+    ) -> Result<bool, mcbtodo_client::daemon_client::WriteFailure> {
+        mcbtodo_client::daemon_client::submit_write(
             &self.paths,
             Request::SetWorkUnitDependencies {
                 target: edit.target,

@@ -47,7 +47,7 @@ distro/crates/publish.sh --plan
 
 The first crates.io release is sequential: a crate that depends on another
 `mcbtodo` crate cannot be published until the dependency is available in the
-registry index. The script orders all thirteen public workspace packages by
+registry index. The script orders publishable workspace packages by
 their Cargo dependencies and waits between dependency groups for index
 propagation. `mcbtodo-xtask` is repository tooling and is not published.
 

@@ -20,7 +20,7 @@ mod timeline;
 mod watch;
 mod workflow;
 
-pub(super) use session::{repair_config, run};
+pub use session::{repair_config, run};
 
 use std::{cell::RefCell, collections::BTreeSet, io, path::Path, rc::Rc};
 
@@ -462,7 +462,11 @@ impl State {
         match command {
             Command::Quit => return Action::Quit,
             Command::Reload => return Action::Reload,
-            Command::Today => self.set_day(crate::today(vault)),
+            Command::Today => self.set_day(
+                chrono::Utc::now()
+                    .with_timezone(&vault.timezone())
+                    .date_naive(),
+            ),
             Command::Date(day) => self.set_day(day),
             Command::Help => self.overlay = Overlay::Help(Default::default()),
             Command::Settings => return Action::OpenSettings,
@@ -990,10 +994,10 @@ impl State {
         project_id: Id,
         revision: InboxRevision,
     ) {
-        use crate::daemon_client::WriteFailure;
+        use mcbtodo_client::daemon_client::WriteFailure;
 
         let result = match revision {
-            InboxRevision::Daemon(inbox_revision) => crate::daemon_client::submit_write(
+            InboxRevision::Daemon(inbox_revision) => mcbtodo_client::daemon_client::submit_write(
                 paths,
                 Request::TriageInbox {
                     inbox_id,
@@ -1170,9 +1174,8 @@ impl State {
 
     fn apply_proposal(&mut self, root: &Path, vault: &mut Vault, paths: &WorkspacePaths, id: Id) {
         let zone = vault.timezone();
-        // The CLI re-reads and displays the exact record before accepting
-        // confirmation. The queue verifies that record under its lock.
-        let apply = crate::proposal::run(crate::proposal::Command::Apply { id }, root, zone, paths);
+        let apply = mcbtodo_client::proposal::Queue::open(root, zone, paths)
+            .and_then(|queue| mcbtodo_client::proposal::apply_interactively(&queue, id));
         if let Err(error) = apply {
             self.message = format!("Proposal apply failed · {error:#}");
             return;
@@ -1211,14 +1214,14 @@ impl State {
                         "Dependencies updated · directory sync could not be confirmed".into()
                     }
                 }
-                Err(crate::daemon_client::WriteFailure::StaleRevision) => {
+                Err(mcbtodo_client::daemon_client::WriteFailure::StaleRevision) => {
                     self.invalidate_daemon_views();
                     "WorkUnit changed · r to reload, then retry".into()
                 }
-                Err(crate::daemon_client::WriteFailure::Rejected(error)) => {
+                Err(mcbtodo_client::daemon_client::WriteFailure::Rejected(error)) => {
                     format!("Graph edit failed · {error}")
                 }
-                Err(crate::daemon_client::WriteFailure::Unknown) => {
+                Err(mcbtodo_client::daemon_client::WriteFailure::Unknown) => {
                     self.invalidate_daemon_views();
                     self.sync_row(vault, Some(FocusIdentity::Document(target)));
                     format!("Graph edit outcome unknown · Check WorkUnit {target} before retrying")

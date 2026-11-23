@@ -13,7 +13,6 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use anyhow::{Context, Result, bail, ensure};
 use chrono::{DateTime, FixedOffset, NaiveDate};
 use chrono_tz::Tz;
-use clap::Subcommand;
 use mcbtodo_application::{
     TargetAction, TargetSummary, VaultCommands, VaultQueries, WorkUnitGraphReview,
     WorkflowUseCases, graph_diff, validate_markdown,
@@ -35,12 +34,12 @@ use mcbtodo_workflow::WorkflowDraft;
 use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
 
-pub(crate) const QUEUE_SUPPORTED: bool = cfg!(unix);
+pub const QUEUE_SUPPORTED: bool = cfg!(unix);
 const VERSION: u8 = 1;
 
 #[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub(crate) enum Operation {
+pub enum Operation {
     CaptureTask {
         project_id: Id,
         title: String,
@@ -186,7 +185,7 @@ impl Operation {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum Status {
+pub enum Status {
     Pending,
     Applying,
     Applied,
@@ -202,12 +201,12 @@ enum Binding {
 
 #[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct Proposal {
+pub struct Proposal {
     version: u8,
-    pub(crate) id: Id,
+    pub id: Id,
     vault: Binding,
     timezone: Tz,
-    pub(crate) target_title: String,
+    pub target_title: String,
     expected_revision: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     workflow_revision: Option<String>,
@@ -215,12 +214,12 @@ pub(crate) struct Proposal {
     result_id: Option<Id>,
     #[serde(skip_serializing_if = "Option::is_none")]
     graph: Option<GraphReview>,
-    pub(crate) operation: Operation,
-    pub(crate) status: Status,
+    pub operation: Operation,
+    pub status: Status,
 }
 
 impl Proposal {
-    pub(crate) fn graph_diff(&self) -> Option<&graph_diff::GraphDiff> {
+    pub fn graph_diff(&self) -> Option<&graph_diff::GraphDiff> {
         self.graph.as_ref().map(|graph| &graph.diff)
     }
 
@@ -232,7 +231,7 @@ impl Proposal {
         }
     }
 
-    pub(crate) fn workflow_revision(&self) -> Option<&str> {
+    pub fn workflow_revision(&self) -> Option<&str> {
         self.workflow_revision.as_deref()
     }
 }
@@ -276,8 +275,8 @@ impl GraphReview {
 }
 
 #[derive(Serialize)]
-pub(crate) struct Submission {
-    pub(crate) proposal_id: Id,
+pub struct Submission {
+    pub proposal_id: Id,
     status: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     graph_diff: Option<graph_diff::GraphDiff>,
@@ -296,75 +295,48 @@ impl From<Proposal> for Submission {
     }
 }
 
-#[derive(Subcommand)]
-pub(crate) enum Command {
-    /// List proposals for the configured Vault.
-    List,
-    /// Show the exact operation and its expected revision.
-    Show { id: Id },
-    /// Review and confirm a proposal in an interactive terminal.
-    Apply { id: Id },
-    /// Reject a pending proposal.
-    Reject { id: Id },
-}
-
-pub(crate) fn run(
-    command: Command,
-    root: &Path,
-    timezone: Tz,
-    paths: &WorkspacePaths,
-) -> Result<()> {
-    let queue = Queue::open(root, timezone, paths)?;
-    match command {
-        Command::List => print_review(&queue.list()?),
-        Command::Show { id } => print_review(&queue.review(id)?),
-        Command::Reject { id } => {
-            queue.reject(id)?;
-            println!("Rejected proposal {id}");
-            Ok(())
+/// Display the exact review record, confirm through the terminal, and apply it.
+/// The queue verifies the reviewed record again under its lock.
+pub fn apply_interactively(queue: &Queue, id: Id) -> Result<()> {
+    let reviewed = queue.review(id)?;
+    if reviewed.status != Status::Applied {
+        if !matches!(
+            (&reviewed.operation, reviewed.status),
+            (Operation::PublishWorkflow { .. }, Status::Applying)
+        ) {
+            ensure_pending(reviewed.status)?;
         }
-        Command::Apply { id } => {
-            let reviewed = queue.review(id)?;
-            if reviewed.status != Status::Applied {
-                if !matches!(
-                    (&reviewed.operation, reviewed.status),
-                    (Operation::PublishWorkflow { .. }, Status::Applying)
-                ) {
-                    ensure_pending(reviewed.status)?;
-                }
-                let stdin = io::stdin();
-                let stdout = io::stdout();
-                ensure!(
-                    stdin.is_terminal() && stdout.is_terminal(),
-                    "proposal apply requires an interactive terminal"
-                );
-                print_review(&reviewed)?;
-                print!("Type 'apply' to confirm: ");
-                stdout.lock().flush()?;
-                let mut response = String::new();
-                stdin.lock().read_line(&mut response)?;
-                ensure!(response.trim() == "apply", "proposal was not confirmed");
-            }
-            let ids = queue.apply(&reviewed)?;
-            if let Some(hash) = reviewed.workflow_revision() {
-                println!("Published workflow revision {hash}");
-            } else if let [id] = ids.as_slice() {
-                println!("Applied proposal {} to document {id}", reviewed.id);
-            } else {
-                println!(
-                    "Applied proposal {} to {} work units",
-                    reviewed.id,
-                    ids.len()
-                );
-            }
-            Ok(())
-        }
+        let stdin = io::stdin();
+        let stdout = io::stdout();
+        ensure!(
+            stdin.is_terminal() && stdout.is_terminal(),
+            "proposal apply requires an interactive terminal"
+        );
+        print_review(&reviewed)?;
+        print!("Type 'apply' to confirm: ");
+        stdout.lock().flush()?;
+        let mut response = String::new();
+        stdin.lock().read_line(&mut response)?;
+        ensure!(response.trim() == "apply", "proposal was not confirmed");
     }
+    let ids = queue.apply(&reviewed)?;
+    if let Some(hash) = reviewed.workflow_revision() {
+        println!("Published workflow revision {hash}");
+    } else if let [id] = ids.as_slice() {
+        println!("Applied proposal {} to document {id}", reviewed.id);
+    } else {
+        println!(
+            "Applied proposal {} to {} work units",
+            reviewed.id,
+            ids.len()
+        );
+    }
+    Ok(())
 }
 
 // The JSON serializer escapes ASCII control characters. Escape Unicode controls
 // and formatting characters that could also interfere with terminal review.
-fn print_review(value: &impl Serialize) -> Result<()> {
+pub fn print_review(value: &impl Serialize) -> Result<()> {
     let json = serde_json::to_string_pretty(value)?;
     let mut out = io::stdout().lock();
     for ch in json.chars() {
@@ -386,7 +358,7 @@ fn print_review(value: &impl Serialize) -> Result<()> {
 /// Queue a typed operation. A repeated request ID with the same operation keeps
 /// the original revision and document UUID even after the Vault has changed.
 #[cfg(all(test, unix))]
-pub(crate) fn enqueue(
+fn enqueue(
     root: &Path,
     timezone: Tz,
     paths: &WorkspacePaths,
@@ -396,7 +368,7 @@ pub(crate) fn enqueue(
     Ok(submit(root, timezone, paths, operation, request_id)?.proposal_id)
 }
 
-pub(crate) fn submit(
+pub fn submit(
     root: &Path,
     timezone: Tz,
     paths: &WorkspacePaths,
@@ -408,7 +380,7 @@ pub(crate) fn submit(
     queue.enqueue(operation, request_id)
 }
 
-pub(crate) struct Queue {
+pub struct Queue {
     root: PathBuf,
     paths: WorkspacePaths,
     binding: Binding,
@@ -417,7 +389,7 @@ pub(crate) struct Queue {
 }
 
 impl Queue {
-    pub(crate) fn open(root: &Path, timezone: Tz, paths: &WorkspacePaths) -> Result<Self> {
+    pub fn open(root: &Path, timezone: Tz, paths: &WorkspacePaths) -> Result<Self> {
         ensure!(
             QUEUE_SUPPORTED,
             "the private proposal queue is unavailable on this platform"
@@ -535,7 +507,7 @@ impl Queue {
         Ok(record.into())
     }
 
-    pub(crate) fn list(&self) -> Result<Vec<Proposal>> {
+    pub fn list(&self) -> Result<Vec<Proposal>> {
         let mut proposals = Vec::new();
         for entry in fs::read_dir(&self.directory)? {
             let path = entry?.path();
@@ -550,7 +522,7 @@ impl Queue {
         Ok(proposals)
     }
 
-    pub(crate) fn review(&self, id: Id) -> Result<Proposal> {
+    pub fn review(&self, id: Id) -> Result<Proposal> {
         self.read(id)?
             .filter(|proposal| self.matches(proposal))
             .with_context(|| {
@@ -562,7 +534,7 @@ impl Queue {
         self.binding == proposal.vault && self.timezone == proposal.timezone
     }
 
-    pub(crate) fn reject(&self, id: Id) -> Result<()> {
+    pub fn reject(&self, id: Id) -> Result<()> {
         let _lock = lock_queue(&self.directory)?;
         let mut record = self.review(id)?;
         if record.status == Status::Rejected {
@@ -713,7 +685,7 @@ impl Queue {
 /// Acquire this before the Vault's writer lock, the order used by proposal
 /// apply. Hold both until the Vault and proposal records have been captured.
 #[cfg(unix)]
-pub(crate) fn lock_for_snapshot(paths: &WorkspacePaths) -> Result<ProposalSnapshot> {
+pub fn lock_for_snapshot(paths: &WorkspacePaths) -> Result<ProposalSnapshot> {
     let directory = canonical_workspace(paths)?.proposals_dir();
     prepare_queue_directory(&directory)?;
     let lock = lock_queue(&directory)?;
@@ -724,7 +696,7 @@ pub(crate) fn lock_for_snapshot(paths: &WorkspacePaths) -> Result<ProposalSnapsh
 }
 
 #[cfg(unix)]
-pub(crate) struct ProposalSnapshot {
+pub struct ProposalSnapshot {
     directory: PathBuf,
     _lock: File,
 }
@@ -733,7 +705,7 @@ pub(crate) struct ProposalSnapshot {
 impl ProposalSnapshot {
     /// Copy the exact bytes of portable proposals into a private staging home.
     /// The caller supplies the Vault writer lock for the same source workspace.
-    pub(crate) fn copy_to(&self, destination: &WorkspacePaths) -> Result<()> {
+    pub fn copy_to(&self, destination: &WorkspacePaths) -> Result<()> {
         let target = destination.proposals_dir();
         for entry in fs::read_dir(&self.directory)? {
             let path = entry?.path();
@@ -756,7 +728,7 @@ impl ProposalSnapshot {
 
 /// Validate the staged or restored proposal subset without creating state.
 #[cfg(unix)]
-pub(crate) fn validate_snapshot(paths: &WorkspacePaths) -> Result<()> {
+pub fn validate_snapshot(paths: &WorkspacePaths) -> Result<()> {
     let directory = paths.proposals_dir();
     let metadata = match fs::symlink_metadata(&directory) {
         Ok(metadata) => metadata,

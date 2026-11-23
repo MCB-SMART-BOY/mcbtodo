@@ -271,13 +271,14 @@ fn proposal_queue_restores_across_homes_with_its_idempotency_key() -> Result<()>
         title: "Portable request".to_owned(),
         body: String::new(),
     };
-    let id = proposal::enqueue(
+    let id = proposal::submit(
         &paths.vault_root(),
         timezone,
         &paths,
         operation(),
         Some(request_id),
-    )?;
+    )?
+    .proposal_id;
     assert_eq!(id, request_id);
     let mut sources = ScriptSources::new();
     sources.insert(
@@ -307,13 +308,14 @@ bindings:
         sources,
     )?;
     let workflow_request_id = Id::new_v4();
-    let workflow_id = proposal::enqueue(
+    let workflow_id = proposal::submit(
         &paths.vault_root(),
         timezone,
         &paths,
         Operation::PublishWorkflow { draft },
         Some(workflow_request_id),
-    )?;
+    )?
+    .proposal_id;
     assert_eq!(workflow_id, workflow_request_id);
     let queue = paths.proposals_dir();
     fs::write(queue.join(".tmp-interrupted"), b"partial proposal")?;
@@ -333,13 +335,14 @@ bindings:
     assert_eq!(fs::read(queue.join(&filename))?, expected);
     assert_eq!(fs::read(queue.join(&workflow_filename))?, expected_workflow);
     assert_eq!(
-        proposal::enqueue(
+        proposal::submit(
             &restored.vault_root(),
             timezone,
             &restored,
             operation(),
             Some(request_id),
-        )?,
+        )?
+        .proposal_id,
         request_id
     );
     assert_eq!(fs::read(queue.join(filename))?, expected);
