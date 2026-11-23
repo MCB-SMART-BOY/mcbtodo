@@ -6,6 +6,7 @@ use super::View;
 pub(super) enum Command {
     Quit,
     Reload,
+    Edit,
     Today,
     Date(NaiveDate),
     Help,
@@ -24,6 +25,7 @@ impl Command {
         match parts.as_slice() {
             ["q" | "quit"] => Ok(Self::Quit),
             ["reload"] => Ok(Self::Reload),
+            ["edit"] => Ok(Self::Edit),
             ["today"] => Ok(Self::Today),
             ["date", value] => mcbtodo_client::parse_day(value).map(Self::Date),
             ["help" | "?"] => Ok(Self::Help),

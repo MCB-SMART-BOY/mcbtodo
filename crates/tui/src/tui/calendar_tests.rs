@@ -153,7 +153,13 @@ recurrence:
     press(&mut state, &vault, ":view day\n");
     assert_eq!(state.view, View::Day);
     assert!(screen(&state, &vault, 42, 12).contains("月度回顾"));
-    assert!(state.source(&vault).unwrap().ends_with("review.md"));
+    assert!(
+        state
+            .source(&vault)
+            .unwrap()
+            .unwrap()
+            .ends_with("review.md")
+    );
 }
 
 #[test]
@@ -201,7 +207,10 @@ recurrence:
     press(&mut state, &vault, " ud");
     assert_eq!(state.view, View::Day);
     assert_eq!(state.selected_focus(&vault), Some(selected));
-    assert_eq!(state.source(&vault), Some(path.as_path()));
+    assert_eq!(
+        state.source(&vault).unwrap().as_deref(),
+        Some(path.as_path())
+    );
 }
 
 #[test]
@@ -262,7 +271,13 @@ fn command_mode_navigates_views_and_searches_the_outline() {
     assert!(text.contains("实现地址转换"), "{text}");
     press(&mut state, &vault, "\n");
     assert!(state.view == View::Outline);
-    assert!(state.source(&vault).unwrap().ends_with("translation.md"));
+    assert!(
+        state
+            .source(&vault)
+            .unwrap()
+            .unwrap()
+            .ends_with("translation.md")
+    );
 
     press(&mut state, &vault, ":workflow\n");
     assert!(state.view == View::Workflow);
@@ -285,7 +300,13 @@ fn short_document_picker_keeps_match_and_actions_visible() {
         "{text}"
     );
     press(&mut state, &vault, "\n");
-    assert!(state.source(&vault).unwrap().ends_with("translation.md"));
+    assert!(
+        state
+            .source(&vault)
+            .unwrap()
+            .unwrap()
+            .ends_with("translation.md")
+    );
 }
 
 #[test]
@@ -312,7 +333,13 @@ fn narrow_outline_keeps_the_blocked_indicator_visible_before_a_long_title() {
             .modifier
             .contains(ratatui::style::Modifier::BOLD)
     );
-    assert!(state.source(&vault).unwrap().ends_with("translation.md"));
+    assert!(
+        state
+            .source(&vault)
+            .unwrap()
+            .unwrap()
+            .ends_with("translation.md")
+    );
 }
 
 #[test]
@@ -425,16 +452,16 @@ availability: free
             .unwrap()
             .contains("hl date  jk plan  ?")
     );
-    let source = state.source(&vault);
+    let source = state.source(&vault).unwrap();
 
     press(&mut state, &vault, "l");
     assert_eq!(state.day.to_string(), "2026-11-26");
     let compact = screen(&state, &vault, 30, 6);
     assert!(compact.contains("Plan · 2026-11-26"), "{compact}");
     assert!(compact.contains("› --  E 远程讨论"), "{compact}");
-    assert_eq!(state.source(&vault), source);
+    assert_eq!(state.source(&vault).unwrap(), source);
     press(&mut state, &vault, "j");
-    assert!(state.source(&vault).is_some());
+    assert!(state.source(&vault).unwrap().is_some());
 }
 
 #[test]
@@ -832,9 +859,21 @@ fn day_rows_allow_editing_the_focused_entry_and_keep_document_focus_across_views
     let vault = fixture();
     let mut state = State::new("2026-11-25".parse().unwrap());
     press(&mut state, &vault, " udjj");
-    assert!(state.source(&vault).unwrap().ends_with("mapping.md"));
+    assert!(
+        state
+            .source(&vault)
+            .unwrap()
+            .unwrap()
+            .ends_with("mapping.md")
+    );
     press(&mut state, &vault, " ul um ud");
-    assert!(state.source(&vault).unwrap().ends_with("mapping.md"));
+    assert!(
+        state
+            .source(&vault)
+            .unwrap()
+            .unwrap()
+            .ends_with("mapping.md")
+    );
 }
 
 #[test]
@@ -876,7 +915,13 @@ fn week_hour_cursor_previews_and_opens_the_focused_entry() {
     let text = screen(&state, &vault, 80, 24);
     assert!(text.contains("13:00–15:00  远程讨论"), "{text}");
     press(&mut state, &vault, "\n");
-    assert!(state.source(&vault).unwrap().ends_with("review.md"));
+    assert!(
+        state
+            .source(&vault)
+            .unwrap()
+            .unwrap()
+            .ends_with("review.md")
+    );
 }
 
 #[test]
@@ -905,7 +950,13 @@ fn compact_week_keeps_the_focused_hour_and_occurrence_visible() {
 
     press(&mut state, &vault, "\n");
     assert_eq!(state.view, View::Day);
-    assert!(state.source(&vault).unwrap().ends_with("review.md"));
+    assert!(
+        state
+            .source(&vault)
+            .unwrap()
+            .unwrap()
+            .ends_with("review.md")
+    );
 }
 
 #[test]
@@ -1012,7 +1063,13 @@ fn graph_locates_outline_focus_and_follows_outgoing_and_incoming_edges() {
         .unwrap();
     press(&mut state, &vault, "g");
     assert_eq!(state.view.label(), "Graph");
-    assert!(state.source(&vault).unwrap().ends_with("mapping.md"));
+    assert!(
+        state
+            .source(&vault)
+            .unwrap()
+            .unwrap()
+            .ends_with("mapping.md")
+    );
     let text = screen(&state, &vault, 52, 22);
     for label in [
         "阅读 Sv39 规范",
@@ -1024,11 +1081,23 @@ fn graph_locates_outline_focus_and_follows_outgoing_and_incoming_edges() {
         assert!(text.contains(label), "missing {label}\n{text}");
     }
     press(&mut state, &vault, "vlx");
-    assert!(state.source(&vault).unwrap().ends_with("translation.md"));
+    assert!(
+        state
+            .source(&vault)
+            .unwrap()
+            .unwrap()
+            .ends_with("translation.md")
+    );
     let text = screen(&state, &vault, 52, 22);
     assert!(text.contains("2 nodes"), "{text}");
     press(&mut state, &vault, "h ul");
-    assert!(state.source(&vault).unwrap().ends_with("mapping.md"));
+    assert!(
+        state
+            .source(&vault)
+            .unwrap()
+            .unwrap()
+            .ends_with("mapping.md")
+    );
 }
 
 #[test]
@@ -1172,7 +1241,13 @@ fn graph_shortcut_explains_why_a_calendar_event_cannot_open_graph() {
     let vault = fixture();
     let mut state = State::new("2026-11-25".parse().unwrap());
     press(&mut state, &vault, " ud");
-    assert!(state.source(&vault).unwrap().ends_with("university.md"));
+    assert!(
+        state
+            .source(&vault)
+            .unwrap()
+            .unwrap()
+            .ends_with("university.md")
+    );
     let selected = state.selected_document(&vault);
     press(&mut state, &vault, "g");
     assert!(state.view == View::Day);

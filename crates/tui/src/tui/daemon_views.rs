@@ -1,4 +1,4 @@
-use std::{cell::RefCell, collections::BTreeSet, rc::Rc};
+use std::{cell::RefCell, collections::BTreeSet, path::PathBuf, rc::Rc};
 
 use anyhow::{Error, Result, bail};
 use chrono_tz::Tz;
@@ -85,6 +85,10 @@ impl DaemonViews {
             Response::DeadlineContext { revision, deadline } => Ok((revision, deadline)),
             _ => bail!("unexpected response to deadline context request"),
         }
+    }
+
+    pub(super) fn document_source(&self, id: Id) -> Result<PathBuf> {
+        mcbtodo_client::daemon_client::document_source(&self.paths, id)
     }
 
     pub(super) fn set_deadline(

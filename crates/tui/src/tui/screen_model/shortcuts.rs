@@ -196,7 +196,7 @@ pub(in crate::tui) fn help(keys: &Keymap) -> Vec<String> {
             "Workflow trace: {horizontal} step, {vertical} scroll, PgUp/PgDn page, \
              Home/End jump, w wrap, HL pan, Esc back"
         ),
-        format!("{edit}   Open source in $VISUAL / $EDITOR / hx"),
+        format!("{edit} / {command}edit   Open source in $VISUAL / $EDITOR / hx"),
         format!("{reload}   Reload vault"),
         format!("{command}   view, search, timer, proposals, date, today, reload, quit"),
         format!("{command}time-block / {command}reminder   Create calendar entries"),

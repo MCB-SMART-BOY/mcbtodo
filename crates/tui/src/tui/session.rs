@@ -3,7 +3,7 @@
 use std::{
     env,
     io::{self, IsTerminal},
-    path::Path,
+    path::{Path, PathBuf},
     process::Command,
     time::Duration,
 };
@@ -26,9 +26,9 @@ use super::{
     screen_model, settings, theme, watch,
 };
 
-enum TerminalHandoff<'a> {
+enum TerminalHandoff {
     Quit,
-    Edit(&'a Path),
+    Edit(PathBuf),
     ApplyProposal(Id),
 }
 
@@ -228,14 +228,11 @@ pub fn run(
                     project_id,
                     revision,
                 } => state.triage_inbox(root, &mut vault, paths, inbox_id, project_id, revision),
-                Action::Edit => {
-                    let Some(path) = state.source(&vault) else {
-                        state.message =
-                            "Select a document in Day, Agenda, Outline or Graph to edit".into();
-                        continue;
-                    };
-                    break TerminalHandoff::Edit(path);
-                }
+                Action::Edit => match state.source(&vault) {
+                    Ok(Some(path)) => break TerminalHandoff::Edit(path),
+                    Ok(None) => state.message = "Select a document to edit".into(),
+                    Err(error) => state.message = format!("Cannot locate document · {error:#}"),
+                },
             }
         };
         drop(terminal);
@@ -256,7 +253,7 @@ pub fn run(
                 state.apply_proposal(root, &mut vault, paths, id);
             }
             TerminalHandoff::Edit(path) => {
-                let edit_result = edit(path);
+                let edit_result = edit(&path);
                 state.reload(root, &mut vault);
                 if let Err(error) = edit_result {
                     state.message = format!("Editor failed · {error:#} · {}", state.message);

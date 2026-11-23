@@ -46,6 +46,10 @@ pub enum Request {
     Outline {
         timezone: String,
     },
+    /// Locate the source Markdown for a document on the local host.
+    DocumentSource {
+        id: Uuid,
+    },
     /// Read the editable deadline and revision from the same default Vault snapshot.
     DeadlineContext {
         id: Uuid,
@@ -151,6 +155,10 @@ pub enum Response {
     Outline {
         items: Vec<OutlineItem>,
         more: bool,
+    },
+    DocumentSource {
+        /// Exact Unix path bytes, including non-UTF-8 filenames.
+        unix_path: Vec<u8>,
     },
     DeadlineContext {
         revision: String,

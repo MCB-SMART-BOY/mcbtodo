@@ -25,7 +25,13 @@ fn global_picker_fuzzy_searches_and_focuses_the_selected_outline_document() {
 
     press(&mut state, &vault, "\n");
     assert_eq!(state.view.label(), "Outline");
-    assert!(state.source(&vault).unwrap().ends_with("project.md"));
+    assert!(
+        state
+            .source(&vault)
+            .unwrap()
+            .unwrap()
+            .ends_with("project.md")
+    );
 }
 
 #[test]
@@ -39,8 +45,11 @@ fn global_picker_matches_vault_source_paths_after_outline_projection() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn default_picker_opens_a_document_absent_from_the_local_snapshot() -> Result<()> {
-    use std::{os::unix::net::UnixListener, thread};
+fn default_picker_can_edit_a_document_absent_from_the_local_snapshot() -> Result<()> {
+    use std::{ffi::OsStr, os::unix::ffi::OsStrExt, os::unix::net::UnixListener, thread};
+
+    use super::creation_tests::press as dispatch;
+    use mcbtodo_protocol::{Response, wire};
 
     let vault = fixture();
     let temp = tempfile::tempdir()?;
@@ -48,6 +57,12 @@ fn default_picker_opens_a_document_absent_from_the_local_snapshot() -> Result<()
     paths.initialize()?;
     let listener = UnixListener::bind(paths.socket_path())?;
     let id = Id::new_v4();
+    // The source moved after the Outline response. A display path from that
+    // projection would be both stale and lossy.
+    let source = paths
+        .vault_root()
+        .join(OsStr::from_bytes(b"projects/moved-\xff/project.md"));
+    let unix_path = source.as_os_str().as_bytes().to_vec();
     let mut remote = mcbtodo_application::project_outline(&vault).remove(0);
     remote.id = id;
     remote.project_id = Some(id);
@@ -57,10 +72,17 @@ fn default_picker_opens_a_document_absent_from_the_local_snapshot() -> Result<()
         let (mut stream, _) = listener.accept()?;
         stream.set_read_timeout(Some(std::time::Duration::from_secs(2)))?;
         assert!(matches!(
-            mcbtodo_protocol::wire::read(&mut stream)?,
+            wire::read(&mut stream)?,
             mcbtodo_protocol::Request::Outline { .. }
         ));
-        mcbtodo_protocol::wire::write_outline(&mut stream, vec![remote])?;
+        wire::write_outline(&mut stream, vec![remote])?;
+        let (mut stream, _) = listener.accept()?;
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(2)))?;
+        assert_eq!(
+            wire::read::<Request>(&mut stream)?,
+            Request::DocumentSource { id }
+        );
+        wire::write(&mut stream, &Response::DocumentSource { unix_path })?;
         Ok(())
     });
 
@@ -80,7 +102,11 @@ fn default_picker_opens_a_document_absent_from_the_local_snapshot() -> Result<()
     assert_eq!(state.view, View::Outline);
     assert_eq!(state.selected_document(&vault), Some(id));
     assert!(vault.source(id).is_none());
+    assert_eq!(dispatch(&mut state, &vault, "e"), Action::Edit);
+    assert_eq!(dispatch(&mut state, &vault, ":edit\n"), Action::Edit);
+    assert_eq!(state.source(&vault)?, Some(source));
     peer.join().unwrap()?;
+    assert!(state.source(&vault).is_err());
     Ok(())
 }
 

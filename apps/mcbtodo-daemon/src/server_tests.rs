@@ -22,6 +22,49 @@ fn status(server: &mut Server, path: PathBuf, command: Request) -> Response {
 }
 
 #[test]
+fn document_source_follows_moves_and_preserves_unix_path_bytes() -> Result<()> {
+    use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
+
+    let dir = private_tempdir()?;
+    let paths = WorkspacePaths::from_home(dir.path().to_owned());
+    paths.initialize()?;
+    let id = Uuid::from_u128(1);
+    let folder = paths.vault_root().join("projects/test");
+    fs::create_dir_all(&folder)?;
+    let original = folder.join("project.md");
+    fs::write(
+        &original,
+        format!("---\nschema: mcbtodo.project/v1\nid: {id}\n---\n# Test\n"),
+    )?;
+    let socket = paths.socket_path();
+    let mut server = Server::open(paths, crate::DEFAULT_WORKER_SLOTS)?;
+    let mut locate = |id| status(&mut server, socket.clone(), Request::DocumentSource { id });
+    assert_eq!(
+        locate(id),
+        Response::DocumentSource {
+            unix_path: original.as_os_str().as_bytes().to_vec()
+        }
+    );
+    let moved_folder = folder.with_file_name(OsStr::from_bytes(b"moved-\xff"));
+    fs::rename(&folder, &moved_folder)?;
+    let moved = moved_folder.join("project.md");
+    assert_eq!(
+        locate(id),
+        Response::DocumentSource {
+            unix_path: moved.as_os_str().as_bytes().to_vec()
+        }
+    );
+    assert!(matches!(
+        locate(Uuid::from_u128(2)),
+        Response::Error {
+            code: ErrorCode::NotFound,
+            ..
+        }
+    ));
+    Ok(())
+}
+
+#[test]
 fn deadline_edit_checks_observed_revision_and_writer_lock_over_ipc() -> Result<()> {
     let dir = private_tempdir()?;
     let paths = WorkspacePaths::from_home(dir.path().to_owned());

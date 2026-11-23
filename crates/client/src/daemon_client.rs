@@ -1,10 +1,13 @@
 //! IPC used by the CLI and terminal client. The protocol crate owns framing and peer checks.
 
-use std::{io, path::Path};
+use std::{
+    io,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, Result, bail};
 use chrono_tz::Tz;
-use mcbtodo_domain::{CalendarItem, time::DateSpan};
+use mcbtodo_domain::{CalendarItem, Id, time::DateSpan};
 use mcbtodo_platform::WorkspacePaths;
 use mcbtodo_protocol::{ErrorCode, ProtocolError, Request, Response, TimerStatus, request};
 
@@ -30,6 +33,23 @@ pub fn calendar(
     )? {
         Response::Calendar { items } => Ok(items),
         _ => bail!("unexpected response to calendar request"),
+    }
+}
+
+pub fn document_source(paths: &WorkspacePaths, id: Id) -> Result<PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+
+        match exchange(paths, Request::DocumentSource { id })? {
+            Response::DocumentSource { unix_path } => Ok(OsString::from_vec(unix_path).into()),
+            _ => bail!("unexpected response to document source request"),
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (paths, id);
+        bail!("local daemon document lookup is unavailable on this platform")
     }
 }
 

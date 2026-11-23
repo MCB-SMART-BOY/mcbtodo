@@ -117,6 +117,9 @@ TUI 与未来的 GUI 共用面向业务的客户端调用，分别维护导航�
 渲染。显式外部 Vault 和现有非 Linux 会话保留本地入口，复用 Application
 用例。连接模式遇到服务错误时展示连接状态。
 
+连接会话用文档 UUID 向 Daemon 查询当前 Markdown 路径。打开编辑器和恢复终端
+由 TUI 负责。本机 IPC 保留原始 Unix 路径字节，搜索列表中的显示路径用于匹配。
+
 当前 TUI 会话负责管理终端、分派动作和
 处理编辑器交接。[数据收集](../crates/tui/src/tui/screen_data.rs)访问当前
 视图所需的行和表单上下文，[ScreenModel](../crates/tui/src/tui/screen_model.rs)

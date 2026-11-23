@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 use std::io;
+use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::time::Instant;
 
@@ -207,6 +208,7 @@ impl Server {
                 timezone,
             } => query_calendar(self.runtime.paths(), start, through, &timezone),
             Request::Outline { timezone } => query_outline(self.runtime.paths(), &timezone),
+            Request::DocumentSource { id } => query_document_source(self.runtime.paths(), id),
             Request::DeadlineContext { id } => query_deadline(self.runtime.paths(), id),
             Request::SetDeadline {
                 id,
@@ -470,6 +472,27 @@ fn query_outline(paths: &WorkspacePaths, timezone: &str) -> Response {
             Response::Error {
                 code: ErrorCode::Internal,
                 message: "could not load the default Vault outline; check the daemon log".into(),
+            }
+        }
+    }
+}
+
+fn query_document_source(paths: &WorkspacePaths, id: Uuid) -> Response {
+    match paths.load_config().and_then(|config| {
+        VaultQueries::new(paths.vault_root(), config.timezone).document_source(id)
+    }) {
+        Ok(Some(path)) => Response::DocumentSource {
+            unix_path: path.as_os_str().as_bytes().to_vec(),
+        },
+        Ok(None) => Response::Error {
+            code: ErrorCode::NotFound,
+            message: format!("No source document for {id}"),
+        },
+        Err(error) => {
+            eprintln!("mcbtodo-daemon: locating document source: {error:#}");
+            Response::Error {
+                code: ErrorCode::Internal,
+                message: "could not locate the default Vault document; check the daemon log".into(),
             }
         }
     }

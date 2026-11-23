@@ -1051,6 +1051,10 @@ impl VaultQueries {
         Ok(deadline_edit_context(&self.snapshot()?, id))
     }
 
+    pub fn document_source(&self, id: Id) -> Result<Option<PathBuf>> {
+        Ok(self.snapshot()?.source(id).map(Path::to_owned))
+    }
+
     pub fn list_tasks(&self, project_filter: Option<Id>) -> Result<Vec<TaskSummary>> {
         Ok(self
             .outline()?

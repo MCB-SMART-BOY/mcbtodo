@@ -1837,6 +1837,11 @@ perform use-case work independently for some reads and interactions:
   service Outline in a connected session. Time-block selection uses its
   WorkUnit rows, including their parent labels and revisions. TUI keeps hierarchy
   rendering and passes the observed revision to the write command.
+  The edit key and `:edit` now resolve the selected UUID through the service
+  in a connected session. IPC coverage exercises document moves and exact
+  Unix path bytes. A TUI socket test exercises a server-only document and
+  a disconnected lookup. Session startup and local file watching still rely
+  on a Vault snapshot.
   Dependency-change validation,
   readiness impact, and the observed target revision come from the application
   preview; publication still uses the revision-checked application command and

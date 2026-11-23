@@ -22,7 +22,13 @@ mod workflow;
 
 pub use session::{repair_config, run};
 
-use std::{cell::RefCell, collections::BTreeSet, io, path::Path, rc::Rc};
+use std::{
+    cell::RefCell,
+    collections::BTreeSet,
+    io,
+    path::{Path, PathBuf},
+    rc::Rc,
+};
 
 use anyhow::{Context, Result};
 use chrono::{Datelike, Days, NaiveDate};
@@ -459,6 +465,7 @@ impl State {
         match command {
             Command::Quit => return Action::Quit,
             Command::Reload => return Action::Reload,
+            Command::Edit => return Action::Edit,
             Command::Today => self.set_day(
                 chrono::Utc::now()
                     .with_timezone(&vault.timezone())
@@ -811,7 +818,9 @@ impl State {
         match key.code {
             KeyCode::Char('q') => return self.execute(Command::Quit, vault),
             KeyCode::Char('r') => return self.execute(Command::Reload, vault),
-            KeyCode::Char('e') if self.view != View::Workflow => return Edit,
+            KeyCode::Char('e') if self.view != View::Workflow => {
+                return self.execute(Command::Edit, vault);
+            }
             KeyCode::Char('t') if self.view == View::Inbox => {
                 let entries = match self.inbox_rows(vault) {
                     Ok(entries) => entries,
@@ -1081,8 +1090,15 @@ impl State {
         }
     }
 
-    fn source<'a>(&self, vault: &'a Vault) -> Option<&'a Path> {
-        vault.source(self.selected_document(vault)?)
+    fn source(&self, vault: &Vault) -> Result<Option<PathBuf>> {
+        let Some(focus) = self.try_row_focuses(vault)?.get(self.row).copied() else {
+            return Ok(None);
+        };
+        let id = focus.document_id();
+        if let Some(service) = &self.daemon_views {
+            return service.document_source(id).map(Some);
+        }
+        Ok(vault.source(id).map(Path::to_owned))
     }
 
     fn selected_document(&self, vault: &Vault) -> Option<Id> {

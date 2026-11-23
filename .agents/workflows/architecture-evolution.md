@@ -146,6 +146,8 @@ Vault 快照。快照比较依据源文件路径和 revision。
 Daemon Outline 获取候选，刷新保留已审阅的 revision，断连不切换到本地候选。
 计时和提醒使用 Daemon Outline 判定关联对象。验证选中服务端对象时保留其
 UUID，查询失败时显示错误并停止命令。
+编辑键与 `:edit` 复用动作。连接会话根据文档 UUID 查询当前源文件。验证文件
+移动、原始 Unix 路径字节、本地快照尚未包含该 UUID 及断连时的行为。
 
 ## 7. Phase 5 — Process Plugin Protocol
 

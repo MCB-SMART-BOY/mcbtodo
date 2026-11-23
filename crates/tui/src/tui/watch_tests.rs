@@ -162,7 +162,7 @@ recurrence:
         state.day_entries(&vault).unwrap()[0].title,
         "Revised review"
     );
-    assert_eq!(state.source(&vault), Some(path.as_path()));
+    assert_eq!(state.source(&vault).unwrap(), Some(path));
 }
 
 #[test]
