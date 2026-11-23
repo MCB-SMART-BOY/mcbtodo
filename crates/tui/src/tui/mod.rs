@@ -460,6 +460,10 @@ impl State {
             Command::Quit => return Action::Quit,
             Command::Reload => return Action::Reload,
             Command::Edit => return Action::Edit,
+            Command::EditDeadline => match self.selected_document(vault) {
+                Some(id) => return Action::OpenDeadline(id),
+                None => self.message = "Select a Project, Task or WorkUnit first".into(),
+            },
             Command::Today => self.set_day(
                 chrono::Utc::now()
                     .with_timezone(&vault.timezone())
@@ -692,13 +696,7 @@ impl State {
                         self.overlay = Overlay::Create(Default::default());
                         self.message.clear();
                     }
-                    KeyCode::Char('d') => {
-                        let Some(id) = self.selected_document(vault) else {
-                            self.message = "Select a Project, Task or WorkUnit first".into();
-                            return Continue;
-                        };
-                        return OpenDeadline(id);
-                    }
+                    KeyCode::Char('d') => return self.execute(Command::EditDeadline, vault),
                     KeyCode::Char('a') => return self.execute(Command::Proposals, vault),
                     KeyCode::Char('?') => return self.execute(Command::Help, vault),
                     KeyCode::Char('r') => {

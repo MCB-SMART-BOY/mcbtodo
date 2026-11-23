@@ -12,6 +12,17 @@ This review traced the checked-out source. The CI runs and smoke results
 recorded below retain their original scope and dates. The current route and
 platform summary lives in the [architecture overview](architecture.md).
 
+### Deadline command dispatch (2026-11-23)
+
+The TUI prompt `:deadline` and menu key `Space d` now dispatch the same
+typed action for the focused document UUID. Enter still submits the
+reviewed revision. The command-dispatch regression failed before the
+implementation and passes now. The Linux socket test drives the prompt
+against a server-only document and checks stale revision rejection,
+refresh and explicit resubmission. On Linux AArch64, all 16 deadline
+tests passed, `cargo xtask check` passed 717 tests, and the example Vault
+validated.
+
 ### Shared Outline client (2026-11-23)
 
 `mcbtodo outline --daemon` and the connected TUI call the same Outline

@@ -6,7 +6,6 @@ fn open_deadline(state: &mut State, vault: &Workspace, input: &str) {
     let Action::OpenDeadline(id) = press(state, vault, input) else {
         panic!("expected deadline open action");
     };
-    assert!(matches!(state.overlay, Overlay::Space(_)));
     state.open_deadline(vault, id);
 }
 
@@ -123,7 +122,7 @@ fn deadline_editor_uses_daemon_context_for_a_document_absent_locally() -> Result
     let mut state = State::new("2026-11-25".parse()?);
     state.view = View::Outline;
     let mut vault = Workspace::daemon(vault.timezone(), paths.clone());
-    open_deadline(&mut state, &vault, " d");
+    open_deadline(&mut state, &vault, ":deadline\n");
     assert!(
         matches!(&state.overlay, Overlay::Deadline(form) if form.value == "2026-12-10"),
         "{}",
@@ -404,6 +403,19 @@ fn deadline_editor_keeps_input_feedback_and_actions_visible_at_28_by_5() {
         lines[4].contains("Enter save  Del clear  Esc"),
         "{rendered}"
     );
+}
+
+#[test]
+fn deadline_prompt_and_menu_dispatch_the_same_selection() {
+    let vault = tests::fixture();
+    let mut state = State::new("2026-11-25".parse().unwrap());
+    press(&mut state, &vault, " ul");
+    let id = state.selected_document(&vault).unwrap();
+    let menu = press(&mut state, &vault, " d");
+    assert_eq!(menu, Action::OpenDeadline(id));
+    press(&mut state, &vault, "\x1b");
+    let prompt = press(&mut state, &vault, ":deadline\n");
+    assert_eq!(prompt, menu);
 }
 
 #[test]
