@@ -1,14 +1,13 @@
 use anyhow::{Result, bail};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
+use mcbtodo_client::daemon_client;
 use mcbtodo_platform::WorkspacePaths;
-use mcbtodo_protocol::{
-    Request, Response,
-    workflow::{RunState, RunSummary, WorkflowRequest, WorkflowResponse},
-};
+use mcbtodo_protocol::workflow::{RunState, RunSummary, WorkflowRequest, WorkflowResponse};
 use uuid::Uuid;
 
 use super::{
     Action,
+    command::WorkflowCommand,
     keymap::Keymap,
     move_row,
     review::{PannableReview, ReviewViewport},
@@ -68,6 +67,50 @@ impl State {
     pub(super) fn open(&mut self) -> Action {
         self.panel = Panel::Runs;
         refresh()
+    }
+
+    pub(super) fn runs_command_for_key(&self, code: KeyCode) -> Option<WorkflowCommand> {
+        if !matches!(self.panel, Panel::Runs) {
+            return None;
+        }
+        match code {
+            KeyCode::Char('r') => Some(WorkflowCommand::Refresh),
+            KeyCode::Char('n') => Some(WorkflowCommand::Older),
+            KeyCode::Enter => Some(WorkflowCommand::Trace),
+            KeyCode::Char(key @ ('a' | 'd')) => Some(WorkflowCommand::Review {
+                approved: key == 'a',
+            }),
+            _ => None,
+        }
+    }
+
+    pub(super) fn run_command(&mut self, command: WorkflowCommand, message: &mut String) -> Action {
+        match command {
+            WorkflowCommand::Refresh => refresh(),
+            WorkflowCommand::Older => match self.next_before {
+                Some(before) => Action::Workflow(WorkflowRequest::List {
+                    before: Some(before),
+                }),
+                None => {
+                    *message = "No older runs".into();
+                    Action::Continue
+                }
+            },
+            WorkflowCommand::Trace => self.step(0, message),
+            WorkflowCommand::Review { approved } => {
+                if let Some(run_id) = self
+                    .selected()
+                    .filter(|run| run.state == RunState::Waiting)
+                    .map(|run| run.id)
+                {
+                    self.panel = Panel::InspectDecision { approved };
+                    Action::Workflow(WorkflowRequest::Inspect { run_id })
+                } else {
+                    *message = "Select a run waiting for approval".into();
+                    Action::Continue
+                }
+            }
+        }
     }
 
     pub(super) fn handle(
@@ -157,32 +200,6 @@ impl State {
                 self.row = move_row(self.row, false, self.runs.len());
                 Action::Continue
             }
-            KeyCode::Char('r') => refresh(),
-            KeyCode::Char('n') => match self.next_before {
-                Some(before) => Action::Workflow(WorkflowRequest::List {
-                    before: Some(before),
-                }),
-                None => {
-                    *message = "No older runs".into();
-                    Action::Continue
-                }
-            },
-            KeyCode::Enter => self.step(0, message),
-            KeyCode::Char(key @ ('a' | 'd')) => {
-                if let Some(run_id) = self
-                    .selected()
-                    .filter(|run| run.state == RunState::Waiting)
-                    .map(|run| run.id)
-                {
-                    self.panel = Panel::InspectDecision {
-                        approved: key == 'a',
-                    };
-                    Action::Workflow(WorkflowRequest::Inspect { run_id })
-                } else {
-                    *message = "Select a run waiting for approval".into();
-                    Action::Continue
-                }
-            }
             _ => return None,
         })
     }
@@ -206,7 +223,8 @@ impl State {
 
     pub(super) fn execute(&mut self, paths: &WorkspacePaths, command: WorkflowRequest) -> String {
         let decision = matches!(command, WorkflowRequest::Decide { .. });
-        let result = call(paths, &command).and_then(|response| self.apply(command, response));
+        let result = daemon_client::workflow(paths, command.clone())
+            .and_then(|response| self.apply(command, response));
         if result.is_err() && matches!(self.panel, Panel::InspectDecision { .. }) {
             self.panel = Panel::Runs;
         }
@@ -289,11 +307,4 @@ impl State {
 
 fn refresh() -> Action {
     Action::Workflow(WorkflowRequest::List { before: None })
-}
-
-fn call(paths: &WorkspacePaths, command: &WorkflowRequest) -> Result<WorkflowResponse> {
-    match mcbtodo_client::daemon_client::exchange(paths, Request::Workflow(command.clone()))? {
-        Response::Workflow(response) => Ok(response),
-        _ => bail!("unexpected response to workflow request"),
-    }
 }

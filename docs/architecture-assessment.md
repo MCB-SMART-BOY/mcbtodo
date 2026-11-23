@@ -2037,3 +2037,16 @@ Local archives for all 16 publishable packages passed Apache-2.0 metadata
 and `LICENSE` verification. This slice verifies a single-process-per-call
 Agent extension on Linux AArch64. General plugin discovery, additional plugin
 roles, streaming, and non-Linux sandbox adapters remain planned.
+
+### Shared creation, timer, and Workflow commands, 2026-11-23
+
+Creation forms pass their UUID, validated date or time, and observed revision
+to the shared client. CLI and TUI use the same timer operation type. Workflow
+list shortcuts and `:workflow` commands dispatch the same actions. Approval and
+rejection open a review, and only its explicit confirmation issues the decision.
+The CLI, evidence lookup, and TUI share the Workflow transport call.
+
+On Linux AArch64 the creation and timer slice passed 728 tests, and the Workflow
+slice passed 729 tests under `MCBTODO_REQUIRE_SANDBOX=1 cargo xtask check`.
+Both passed example Vault validation and the sandbox workspace smoke, including
+default TUI launch in a temporary home with an empty executable search path.

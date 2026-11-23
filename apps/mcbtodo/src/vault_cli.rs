@@ -18,13 +18,10 @@ use mcbtodo_domain::{
     time::{DateSpan, Deadline, Span},
 };
 use mcbtodo_platform::WorkspacePaths;
-use mcbtodo_protocol::{
-    Request, Response, request,
-    workflow::{WorkflowRequest, WorkflowResponse},
-};
+use mcbtodo_protocol::workflow::{WorkflowRequest, WorkflowResponse};
 use mcbtodo_vault::{Revision, Vault, VaultStore};
 
-use crate::parse_day;
+use crate::{daemon_client, parse_day};
 
 #[derive(Subcommand)]
 pub(crate) enum Command {
@@ -356,8 +353,7 @@ pub(crate) fn run(
                 VaultCommands::new(root, vault.timezone())
                     .with_completion_origin(origin)
                     .complete_work_unit(context, &evidence, |binding, evidence| {
-                        let socket = paths.socket_path();
-                        validate_evidence(&socket, binding, evidence)
+                        validate_evidence(paths, binding, evidence)
                     })?
             }
             Command::SetDeadline { id, date } => VaultCommands::new(root, vault.timezone())
@@ -472,14 +468,14 @@ pub(crate) fn run(
 }
 
 fn validate_evidence(
-    socket: &Path,
+    paths: &WorkspacePaths,
     binding: Option<&WorkflowRevisionHash>,
     references: &[EvidenceRef],
 ) -> Result<()> {
     for &EvidenceRef { run_id, step_index } in references {
         if let Some(binding) = binding {
             let WorkflowResponse::Run(run) =
-                workflow_request(socket, WorkflowRequest::Inspect { run_id })?
+                daemon_client::workflow(paths, WorkflowRequest::Inspect { run_id })?
             else {
                 bail!("unexpected response while inspecting workflow run {run_id}");
             };
@@ -489,8 +485,8 @@ fn validate_evidence(
                 run.revision
             );
         }
-        let response = workflow_request(
-            socket,
+        let response = daemon_client::workflow(
+            paths,
             WorkflowRequest::Step {
                 run_id,
                 index: step_index,
@@ -513,16 +509,6 @@ fn successful_step_evidence(step: &serde_json::Value) -> bool {
     step.pointer("/trace/status")
         .and_then(serde_json::Value::as_str)
         == Some("succeeded")
-}
-
-fn workflow_request(socket: &Path, command: WorkflowRequest) -> Result<WorkflowResponse> {
-    match request(socket, Request::Workflow(command))
-        .with_context(|| format!("contacting mcbtodo-daemon at {}", socket.display()))?
-    {
-        Response::Workflow(response) => Ok(response),
-        Response::Error { code, message } => bail!("{code:?}: {message}"),
-        _ => bail!("unexpected response to workflow request"),
-    }
 }
 
 fn parse_evidence(value: &str) -> Result<EvidenceRef> {

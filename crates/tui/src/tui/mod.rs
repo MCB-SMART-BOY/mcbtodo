@@ -535,6 +535,14 @@ impl State {
                     return self.workflow.open();
                 }
             }
+            Command::Workflow(command) => {
+                if self.view == View::Workflow
+                    && matches!(self.workflow.panel, workflow::Panel::Runs)
+                {
+                    return self.workflow.run_command(command, &mut self.message);
+                }
+                self.message = "Open the Workflow runs list first".into();
+            }
             Command::GraphDependencies(operation) => {
                 if self.view != View::Graph {
                     self.message = "Open Graph and select source WorkUnits first".into();
@@ -843,10 +851,13 @@ impl State {
             }
             Overlay::None => {}
         }
-        if self.view == View::Workflow
-            && let Some(action) = self.workflow.handle(key, &self.keymap, &mut self.message)
-        {
-            return action;
+        if self.view == View::Workflow {
+            if let Some(command) = self.workflow.runs_command_for_key(key.code) {
+                return self.execute(Command::Workflow(command), vault);
+            }
+            if let Some(action) = self.workflow.handle(key, &self.keymap, &mut self.message) {
+                return action;
+            }
         }
         match key.code {
             KeyCode::Char('q') => return self.execute(Command::Quit, vault),

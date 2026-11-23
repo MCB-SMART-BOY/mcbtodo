@@ -80,6 +80,11 @@ In Graph review, use arrows or `j` and `k`, Page Up or Page Down, or Home and
 End to read the preview. Enter or `y` applies the
 edit and Esc or `n` closes the review.
 
+In the Workflow runs list, `:workflow refresh`, `:workflow older`, and
+`:workflow trace` share the actions for `r`, `n`, and Enter.
+`:workflow approve` and `:workflow reject` load the selected run for review
+like `a` and `d`. The confirmation key shown in the review submits the decision.
+
 `TimelineScreenModel` projects the two-week date labels, occurrence markers,
 selected row and compact list labels. The renderer switches to the scrollable
 list below 51 content columns or five content rows. Both layouts keep the

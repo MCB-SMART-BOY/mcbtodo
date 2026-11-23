@@ -20,6 +20,7 @@ pub(super) enum Command {
     Create(Kind),
     TimeBlock,
     GraphDependencies(DependencyOperation),
+    Workflow(WorkflowCommand),
 }
 
 impl Command {
@@ -42,6 +43,18 @@ impl Command {
             }
             ["graph", ..] if parts.len() > 1 => {
                 Err("Usage: graph add-dependency|remove-dependency".into())
+            }
+            ["workflow", "refresh"] => Ok(Self::Workflow(WorkflowCommand::Refresh)),
+            ["workflow", "older"] => Ok(Self::Workflow(WorkflowCommand::Older)),
+            ["workflow", "trace"] => Ok(Self::Workflow(WorkflowCommand::Trace)),
+            ["workflow", "approve"] => {
+                Ok(Self::Workflow(WorkflowCommand::Review { approved: true }))
+            }
+            ["workflow", "reject"] => {
+                Ok(Self::Workflow(WorkflowCommand::Review { approved: false }))
+            }
+            ["workflow", ..] if parts.len() > 1 => {
+                Err("Usage: workflow refresh|older|trace|approve|reject".into())
             }
             ["time-block"] | ["create", "time-block"] => Ok(Self::TimeBlock),
             ["reminder"] | ["create", "reminder"] => Ok(Self::Create(Kind::Reminder)),
@@ -73,4 +86,11 @@ pub(super) enum TimerCommand {
     Start,
     Pause,
     Stop,
+}
+
+pub(super) enum WorkflowCommand {
+    Refresh,
+    Older,
+    Trace,
+    Review { approved: bool },
 }

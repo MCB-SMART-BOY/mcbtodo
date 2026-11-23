@@ -48,6 +48,88 @@ fn open_confirmation(state: &mut State, vault: &Workspace, choice: char, run: Ru
 }
 
 #[test]
+fn workflow_prompt_and_keys_share_run_commands() {
+    let vault = fixture();
+    let mut waiting = run(10, RunState::Waiting, 1);
+    waiting.detail = Some("Review task creation".into());
+    let review = waiting.approval_review().expect("waiting run has a review");
+    for (command, shortcut, request) in [
+        (
+            "refresh",
+            KeyCode::Char('r'),
+            WorkflowRequest::List { before: None },
+        ),
+        (
+            "older",
+            KeyCode::Char('n'),
+            WorkflowRequest::List {
+                before: Some(waiting.id),
+            },
+        ),
+        (
+            "trace",
+            KeyCode::Enter,
+            WorkflowRequest::Step {
+                run_id: waiting.id,
+                index: 0,
+            },
+        ),
+        (
+            "approve",
+            KeyCode::Char('a'),
+            WorkflowRequest::Inspect { run_id: waiting.id },
+        ),
+        (
+            "reject",
+            KeyCode::Char('d'),
+            WorkflowRequest::Inspect { run_id: waiting.id },
+        ),
+    ] {
+        let setup = || {
+            let mut state = State::new("2026-11-25".parse().unwrap());
+            open(&mut state, &vault);
+            state
+                .workflow
+                .apply(
+                    WorkflowRequest::List { before: None },
+                    WorkflowResponse::Runs {
+                        runs: vec![waiting.clone()],
+                        next_before: Some(waiting.id),
+                    },
+                )
+                .unwrap();
+            state
+        };
+        let mut typed = setup();
+        for ch in format!(":workflow {command}").chars() {
+            assert_eq!(key(&mut typed, &vault, KeyCode::Char(ch)), Action::Continue);
+        }
+        let action = key(&mut typed, &vault, KeyCode::Enter);
+        assert_eq!(action, Action::Workflow(request.clone()));
+        let mut keyed = setup();
+        assert_eq!(key(&mut keyed, &vault, shortcut), action);
+
+        if matches!(request, WorkflowRequest::Inspect { .. }) {
+            typed
+                .workflow
+                .apply(request, WorkflowResponse::Run(waiting.clone()))
+                .unwrap();
+            assert_eq!(key(&mut typed, &vault, KeyCode::Enter), Action::Continue);
+            let approved = command == "approve";
+            assert_eq!(
+                key(&mut typed, &vault, KeyCode::Char('y')),
+                Action::Workflow(WorkflowRequest::Decide {
+                    run_id: waiting.id,
+                    node: "review".into(),
+                    approved,
+                    review: if approved { Some(review.clone()) } else { None },
+                }),
+            );
+        }
+    }
+}
+
+#[test]
 fn workflow_paginates_and_shows_recorded_steps_for_the_selected_run() {
     let vault = fixture();
     let mut state = State::new("2026-11-25".parse().unwrap());

@@ -19,6 +19,7 @@ use mcbtodo_platform::WorkspacePaths;
 use mcbtodo_protocol::{
     ErrorCode, ProjectDates, ProtocolError, Request, Response, TimerStatus, VaultWatchStatus,
     request,
+    workflow::{WorkflowRequest, WorkflowResponse},
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -39,6 +40,13 @@ pub fn timer(paths: &WorkspacePaths, operation: TimerOperation) -> Result<TimerS
     match exchange(paths, request)? {
         Response::Status(status) => Ok(status),
         _ => bail!("unexpected response to timer request"),
+    }
+}
+
+pub fn workflow(paths: &WorkspacePaths, operation: WorkflowRequest) -> Result<WorkflowResponse> {
+    match exchange(paths, Request::Workflow(operation))? {
+        Response::Workflow(response) => Ok(response),
+        _ => bail!("unexpected response to workflow request"),
     }
 }
 

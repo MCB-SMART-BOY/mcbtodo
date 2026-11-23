@@ -1,19 +1,15 @@
-use std::{
-    io::{self, Write},
-    path::Path,
-};
+use std::io::{self, Write};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use chrono::{DateTime, Utc};
 use clap::{Args, Subcommand, ValueEnum};
 use mcbtodo_platform::WorkspacePaths;
-use mcbtodo_protocol::{
-    Request, Response, request,
-    workflow::{
-        Fold, Missed, ObservedOutcome, Overlap, Trigger, WorkflowRequest, WorkflowResponse,
-    },
+use mcbtodo_protocol::workflow::{
+    Fold, Missed, ObservedOutcome, Overlap, Trigger, WorkflowRequest, WorkflowResponse,
 };
 use uuid::Uuid;
+
+use crate::daemon_client;
 
 #[derive(Subcommand)]
 pub enum Command {
@@ -179,7 +175,6 @@ impl ScheduleOptions {
 }
 
 pub fn run(command: Command, paths: &WorkspacePaths) -> Result<()> {
-    let socket = paths.socket_path();
     let command = match command {
         Command::Run {
             revision,
@@ -206,7 +201,7 @@ pub fn run(command: Command, paths: &WorkspacePaths) -> Result<()> {
         },
         Command::Runs { before } => WorkflowRequest::List { before },
         Command::Trace { run_id, index } => WorkflowRequest::Step { run_id, index },
-        Command::Artifact { run_id, index } => return read_artifact(&socket, run_id, index),
+        Command::Artifact { run_id, index } => return read_artifact(paths, run_id, index),
         Command::Approve {
             run_id,
             node,
@@ -295,7 +290,7 @@ pub fn run(command: Command, paths: &WorkspacePaths) -> Result<()> {
         },
     };
     let inspect = matches!(&command, WorkflowRequest::Inspect { .. });
-    let output = call(&socket, command)?;
+    let output = daemon_client::workflow(paths, command)?;
     let stdout = io::stdout().lock();
     match output {
         WorkflowResponse::Run(run) => {
@@ -322,22 +317,12 @@ pub fn run(command: Command, paths: &WorkspacePaths) -> Result<()> {
     Ok(())
 }
 
-fn call(socket: &Path, command: WorkflowRequest) -> Result<WorkflowResponse> {
-    match request(socket, Request::Workflow(command))
-        .with_context(|| format!("contacting mcbtodo-daemon at {}", socket.display()))?
-    {
-        Response::Workflow(response) => Ok(response),
-        Response::Error { code, message } => bail!("{code:?}: {message}"),
-        _ => bail!("unexpected response to workflow request"),
-    }
-}
-
-fn read_artifact(socket: &Path, run_id: Uuid, index: u32) -> Result<()> {
+fn read_artifact(paths: &WorkspacePaths, run_id: Uuid, index: u32) -> Result<()> {
     let mut stdout = io::stdout().lock();
     let mut offset = 0;
     loop {
-        let WorkflowResponse::Artifact { bytes, next_offset } = call(
-            socket,
+        let WorkflowResponse::Artifact { bytes, next_offset } = daemon_client::workflow(
+            paths,
             WorkflowRequest::Artifact {
                 run_id,
                 index,
