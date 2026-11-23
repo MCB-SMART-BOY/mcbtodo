@@ -11,7 +11,7 @@ fn open_deadline(state: &mut State, vault: &Vault, input: &str) {
 }
 
 #[cfg(target_os = "linux")]
-use std::{os::unix::net::UnixListener, thread};
+use std::{os::unix::net::UnixListener, thread, time::Duration};
 
 #[cfg(target_os = "linux")]
 use mcbtodo_protocol::{ErrorCode, Response, wire};

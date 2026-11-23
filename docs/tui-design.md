@@ -1,9 +1,9 @@
 # TUI design system
 
-The TUI projects a validated application and Vault snapshot before calling
-Ratatui. `ScreenModel::project` prepares view-specific data such as calendar
-cells, agenda labels, graph nodes, timelines and picker rows. `render::draw`
-consumes the projection and a `Theme`. Day maps the active entry to a display
+The terminal session collects rows and form context for the active screen.
+`ScreenModel::project` uses that in-memory data and the interaction state to
+prepare calendar cells, agenda labels, graph views, timelines and picker rows.
+`render::draw` consumes the projection and a `Theme`. Day maps the active entry to a display
 row after inserting section headings, and Agenda stores the focused row.
 The renderer receives neither the Vault nor the input `State` or `Keymap`.
 It still owns widget layout and some display formatting. The model is private

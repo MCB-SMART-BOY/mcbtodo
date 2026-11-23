@@ -1,3 +1,4 @@
+use crossterm::event::KeyEventKind;
 use mcbtodo_protocol::workflow::{RunState, RunSummary, WorkflowResponse};
 use serde_json::json;
 use uuid::Uuid;
@@ -367,7 +368,7 @@ fn workflow_confirmation_advertises_remapped_scrolling_in_short_monochrome() {
     open_confirmation(&mut state, &vault, 'a', waiting);
 
     let draw = |state: &State| {
-        let model = screen_model::ScreenModel::project(state, &vault);
+        let model = session::present(state, &vault);
         let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(24, 5)).unwrap();
         let monochrome = theme::Theme::with_palette(mcbtodo_platform::TuiTheme::Monochrome);
         let buffer = terminal

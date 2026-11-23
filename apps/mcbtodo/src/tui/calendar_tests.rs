@@ -1,3 +1,6 @@
+#[cfg(target_os = "linux")]
+use std::time::Duration;
+
 use super::{tests::fixture, *};
 use ratatui::backend::TestBackend;
 
@@ -13,11 +16,7 @@ fn press(state: &mut State, vault: &Vault, keys: &str) {
 }
 
 pub(super) fn screen(state: &State, vault: &Vault, width: u16, height: u16) -> String {
-    projected_screen(
-        &screen_model::ScreenModel::project(state, vault),
-        width,
-        height,
-    )
+    projected_screen(&session::present(state, vault), width, height)
 }
 
 pub(super) fn projected_screen(
@@ -295,7 +294,7 @@ fn narrow_outline_keeps_the_blocked_indicator_visible_before_a_long_title() {
     let mut state = State::new("2026-11-25".parse().unwrap());
     press(&mut state, &vault, ":search 地址转换\n\n");
     assert_eq!(state.view, View::Outline);
-    let model = screen_model::ScreenModel::project(&state, &vault);
+    let model = session::present(&state, &vault);
     let mut terminal = Terminal::new(TestBackend::new(23, 5)).unwrap();
     let monochrome = theme::Theme::with_palette(mcbtodo_platform::TuiTheme::Monochrome);
     let frame = terminal
@@ -886,7 +885,7 @@ fn compact_week_keeps_the_focused_hour_and_occurrence_visible() {
     let mut state = State::new("2026-11-25".parse().unwrap());
     press(&mut state, &vault, " uwj");
 
-    let model = screen_model::ScreenModel::project(&state, &vault);
+    let model = session::present(&state, &vault);
     let mut terminal = Terminal::new(TestBackend::new(24, 5)).unwrap();
     let monochrome = theme::Theme::with_palette(mcbtodo_platform::TuiTheme::Monochrome);
     let frame = terminal

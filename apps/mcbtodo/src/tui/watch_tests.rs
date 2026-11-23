@@ -45,7 +45,7 @@ fn rendered_text(
     state: &State,
     vault: &Vault,
 ) -> String {
-    let model = screen_model::ScreenModel::project(state, vault);
+    let model = session::present(state, vault);
     terminal
         .draw(|frame| render::draw(frame, &model, theme::Theme::default()))
         .unwrap()

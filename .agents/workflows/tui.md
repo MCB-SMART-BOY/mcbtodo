@@ -7,11 +7,12 @@ behavior.
 
 ## Presentation Boundary
 
-Project a Vault or Application snapshot into a pure in-memory `ScreenModel` or
-presenter result. A Ratatui renderer receives that model, theme, and metrics and
-only draws it. Keep Vault data access, input `State`, `Keymap`, business
-queries, workflow state inference, and complex status decisions in the owner
-or projection layer.
+The terminal session owns input polling, action dispatch, and terminal handoff.
+Collect the active view's rows and form context in `screen_data` before building
+`ScreenModel`. Project the model from the collected data and in-memory input
+state. A Ratatui renderer receives that model, theme, and metrics and draws it.
+Use in-memory rows to test the projection and the session's load-and-present
+path to test integration.
 
 Keep domain identity and occurrence identity distinct. A repeated calendar row
 must retain the selected object and occurrence date/time. Shared screen data may

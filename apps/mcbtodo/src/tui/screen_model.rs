@@ -4,7 +4,6 @@ use chrono::{Datelike, Days, NaiveDate};
 use chrono_tz::Tz;
 use mcbtodo_application::{CalendarItem, InboxSummary, OutlineItem};
 use mcbtodo_domain::CalendarKind;
-use mcbtodo_vault::Vault;
 use ratatui::text::Line;
 
 use super::{
@@ -12,6 +11,7 @@ use super::{
     calendar::{self, Lane, Week},
     creation, deadline, picker,
     review::ReviewViewport,
+    screen_data::{ScreenData, ViewRows},
     settings, timeline,
 };
 use crate::calendar_format;
@@ -563,30 +563,18 @@ impl<'a> ScreenModel<'a> {
         }
     }
 
-    pub(super) fn project(state: &'a State, vault: &Vault) -> Self {
-        let timezone = vault.timezone();
-        let content = match &state.overlay {
-            _ if state.view == View::Workflow
-                && matches!(state.workflow.panel, super::workflow::Panel::Confirm(_)) =>
-            {
-                Content::Workflow(WorkflowScreenModel::project(
-                    &state.workflow,
-                    timezone,
-                    &state.keymap,
-                ))
-            }
-            Overlay::None | Overlay::Time | Overlay::Command(_) => Self::project_view(state, vault)
-                .unwrap_or_else(|error| {
-                    Self::view_error(
-                        if state.view == View::Outline {
-                            " Outline error "
-                        } else {
-                            " Calendar error "
-                        },
-                        error,
-                    )
-                }),
-            Overlay::Space(viewport) => Content::Menu {
+    pub(super) fn project(state: &'a State, timezone: Tz, data: ScreenData<'a>) -> Self {
+        let content = match data {
+            ScreenData::Main(Ok(rows)) => Self::project_view(state, timezone, rows),
+            ScreenData::Main(Err(error)) => Self::view_error(
+                if state.view == View::Outline {
+                    " Outline error "
+                } else {
+                    " Calendar error "
+                },
+                error,
+            ),
+            ScreenData::Space(viewport) => Content::Menu {
                 title: " Actions ",
                 viewport,
                 text: shortcuts::space(
@@ -594,13 +582,13 @@ impl<'a> ScreenModel<'a> {
                     state.view.uses_dates() || state.view == View::Outline,
                 ),
             },
-            Overlay::Settings(form) => Content::Settings(SettingsScreenModel::project(form)),
-            Overlay::Views(viewport) => Content::Menu {
+            ScreenData::Settings(form) => Content::Settings(SettingsScreenModel::project(form)),
+            ScreenData::Views(viewport) => Content::Menu {
                 title: " Switch view ",
                 viewport,
                 text: shortcuts::views(&state.keymap, state.view),
             },
-            Overlay::Create(viewport) => {
+            ScreenData::Create(viewport, can_create_task) => {
                 let mut options = vec![
                     "p  Project",
                     "e  All-day event",
@@ -608,7 +596,7 @@ impl<'a> ScreenModel<'a> {
                     "r  Reminder",
                     "b  Time block",
                 ];
-                if state.view == View::Outline && state.selected_project_revision(vault).is_some() {
+                if can_create_task {
                     options.insert(1, "t  Task in selected Project");
                 }
                 Content::Menu {
@@ -617,38 +605,34 @@ impl<'a> ScreenModel<'a> {
                     text: options.join("\n"),
                 }
             }
-            Overlay::CreateForm(form) => Content::CreateForm(CreationScreenModel::from_form(form)),
-            Overlay::Deadline(form) => Content::Deadline(DeadlineScreenModel::from_form(form)),
-            Overlay::TimeBlock(form) => Content::TimeBlock(TimeBlockScreenModel::from_form(
-                form,
-                form.choices(vault),
-                timezone,
-            )),
-            Overlay::GraphEdit { edit, viewport } => {
+            ScreenData::CreateForm(form) => {
+                Content::CreateForm(CreationScreenModel::from_form(form))
+            }
+            ScreenData::Deadline(form) => Content::Deadline(DeadlineScreenModel::from_form(form)),
+            ScreenData::TimeBlock(form, choices) => {
+                Content::TimeBlock(TimeBlockScreenModel::from_form(form, choices, timezone))
+            }
+            ScreenData::GraphEdit(edit, viewport) => {
                 Content::GraphEdit(GraphEditScreenModel::project(edit, viewport))
             }
-            Overlay::Picker { query, row } => {
-                match picker::matches(vault, state.daemon_views.as_ref(), query) {
-                    Ok(matches) => {
-                        Content::Picker(PickerScreenModel::documents(query, *row, matches))
-                    }
-                    Err(error) => Self::view_error(" Picker error ", error),
-                }
+            ScreenData::Picker(query, row, Ok(matches)) => {
+                Content::Picker(PickerScreenModel::documents(query, row, matches))
             }
-            Overlay::InboxProject { row, projects, .. } => {
+            ScreenData::Picker(_, _, Err(error)) => Self::view_error(" Picker error ", error),
+            ScreenData::InboxProject(projects, row) => {
                 Content::InboxProject(ProjectPickerScreenModel {
                     projects: projects
                         .iter()
                         .map(|(_, title)| display_line(title))
                         .collect(),
-                    focused: *row,
+                    focused: row,
                 })
             }
-            Overlay::Proposals => Content::Proposals(ProposalScreenModel::project(
+            ScreenData::Proposals => Content::Proposals(ProposalScreenModel::project(
                 &state.proposals,
                 !state.message.is_empty(),
             )),
-            Overlay::Help(viewport) => Content::Help {
+            ScreenData::Help(viewport) => Content::Help {
                 viewport,
                 text: shortcuts::help(&state.keymap).join("\n"),
             },
@@ -689,57 +673,46 @@ impl<'a> ScreenModel<'a> {
         }
     }
 
-    fn project_view(state: &'a State, vault: &Vault) -> anyhow::Result<Content<'a>> {
-        Ok(match state.view {
-            View::Month => Content::Month(MonthScreenModel::from_entries(
+    fn project_view(state: &'a State, timezone: Tz, rows: ViewRows) -> Content<'a> {
+        match rows {
+            ViewRows::Month(rows) => Content::Month(MonthScreenModel::from_entries(
                 state.day,
                 state.selected_range(),
-                vault.timezone(),
-                &state.calendar_entries(vault, View::Month)?,
+                timezone,
+                &rows,
             )),
-            View::Week => Content::Week(Box::new(WeekScreenModel::from_week(
-                state.week(vault)?,
+            ViewRows::Week(rows) => Content::Week(Box::new(WeekScreenModel::from_week(
+                Week::from_entries(state.day, timezone, rows),
                 state.day,
                 state.selected_range(),
                 state.week_hour,
             ))),
-            View::Day => Content::Day(DayScreenModel::from_entries(
-                state.day,
-                vault.timezone(),
-                state.day_entries(vault)?,
-                state.row,
+            ViewRows::Day(rows) => Content::Day(DayScreenModel::from_entries(
+                state.day, timezone, rows, state.row,
             )),
-            View::Agenda => Content::Agenda(AgendaScreenModel::from_entries(
-                vault.timezone(),
-                state.agenda(vault)?,
-                state.row,
-            )),
-            View::Outline => Content::Outline(OutlineScreenModel::project(
-                &state.outline_rows(vault)?,
-                state.row,
-            )),
-            View::Inbox => Content::Inbox(InboxScreenModel::project(
-                &state.inbox_rows(vault)?,
-                vault.timezone(),
-                state.row,
-            )),
-            View::Graph => Content::Graph(GraphScreenModel::project(
-                state.graph_nodes(vault)?,
+            ViewRows::Agenda(rows) => {
+                Content::Agenda(AgendaScreenModel::from_entries(timezone, rows, state.row))
+            }
+            ViewRows::Outline(rows) => {
+                Content::Outline(OutlineScreenModel::project(&rows, state.row))
+            }
+            ViewRows::Inbox(rows) => {
+                Content::Inbox(InboxScreenModel::project(&rows, timezone, state.row))
+            }
+            ViewRows::Graph(rows) => Content::Graph(GraphScreenModel::project(
+                rows,
                 state.row,
                 state.graph_selection.as_ref(),
             )),
-            View::Timeline => Content::Timeline(TimelineScreenModel::project(
-                state.calendar_entries(vault, View::Timeline)?,
-                state.day,
-                vault.timezone(),
-                state.row,
+            ViewRows::Timeline(rows) => Content::Timeline(TimelineScreenModel::project(
+                rows, state.day, timezone, state.row,
             )),
-            View::Workflow => Content::Workflow(WorkflowScreenModel::project(
+            ViewRows::Workflow => Content::Workflow(WorkflowScreenModel::project(
                 &state.workflow,
-                vault.timezone(),
+                timezone,
                 &state.keymap,
             )),
-        })
+        }
     }
 }
 
@@ -1334,10 +1307,12 @@ mod tests {
         .into();
         let mut state = State::new("2026-11-25".parse().unwrap());
         state.view = View::Graph;
-        let model = ScreenModel {
-            chrome: ScreenChrome::project(&state, chrono_tz::UTC),
-            content: Content::Graph(GraphScreenModel::project(nodes, 1, None)),
-        };
+        state.row = 1;
+        let model = ScreenModel::project(
+            &state,
+            chrono_tz::UTC,
+            ScreenData::Main(Ok(ViewRows::Graph(nodes))),
+        );
 
         let short = projected_screen(&model, 96, 5);
         let selected = short.lines().nth(2).unwrap();

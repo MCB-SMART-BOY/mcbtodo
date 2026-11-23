@@ -1,4 +1,6 @@
 use std::fs;
+#[cfg(target_os = "linux")]
+use std::time::Duration;
 
 use super::{calendar_tests::screen, *};
 
