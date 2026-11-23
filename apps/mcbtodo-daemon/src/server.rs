@@ -207,6 +207,9 @@ impl Server {
             } => query_calendar(self.runtime.paths(), start, through, &timezone),
             Request::Outline { timezone } => query_outline(self.runtime.paths(), &timezone),
             Request::Inbox => query_inbox(self.runtime.paths()),
+            Request::WorkUnitGraph { timezone } => {
+                query_work_unit_graph(self.runtime.paths(), &timezone)
+            }
             Request::TriageInbox {
                 inbox_id,
                 project_id,
@@ -445,6 +448,29 @@ fn query_inbox(paths: &WorkspacePaths) -> Response {
             Response::Error {
                 code: ErrorCode::Internal,
                 message: "could not load the default Vault Inbox; check the daemon log".into(),
+            }
+        }
+    }
+}
+
+fn query_work_unit_graph(paths: &WorkspacePaths, timezone: &str) -> Response {
+    let Ok(timezone) = timezone.parse::<Tz>() else {
+        return Response::Error {
+            code: ErrorCode::InvalidRequest,
+            message: "expected an IANA timezone".into(),
+        };
+    };
+    match VaultQueries::new(paths.vault_root(), timezone).work_unit_graph() {
+        Ok(graph) => Response::WorkUnitGraph {
+            items: graph.nodes,
+            more: false,
+        },
+        Err(error) => {
+            eprintln!("mcbtodo-daemon: loading WorkUnit graph: {error:#}");
+            Response::Error {
+                code: ErrorCode::Internal,
+                message: "could not load the default Vault WorkUnit graph; check the daemon log"
+                    .into(),
             }
         }
     }

@@ -3,9 +3,8 @@ use std::collections::BTreeMap;
 use anyhow::Result;
 use mcbtodo_application::{
     DependencyOperation, WorkUnitDependencyPreview, preview_work_unit_dependency_change,
-    project_work_unit_graph,
 };
-use mcbtodo_domain::Id;
+use mcbtodo_domain::{Id, WorkUnitGraphNode};
 use mcbtodo_vault::{Revision, Vault};
 
 pub(super) struct Node {
@@ -18,16 +17,13 @@ pub(super) struct Node {
 
 pub(super) type Edit = WorkUnitDependencyPreview;
 
-pub(super) fn nodes(vault: &Vault) -> Vec<Node> {
-    let graph = project_work_unit_graph(vault);
-    let indices: BTreeMap<_, _> = graph
-        .nodes
+pub(super) fn nodes(items: Vec<WorkUnitGraphNode>) -> Vec<Node> {
+    let indices: BTreeMap<_, _> = items
         .iter()
         .enumerate()
         .map(|(index, node)| (node.id, index))
         .collect();
-    graph
-        .nodes
+    items
         .into_iter()
         .map(|node| Node {
             id: node.id,

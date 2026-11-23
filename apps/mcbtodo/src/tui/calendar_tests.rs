@@ -1042,6 +1042,7 @@ fn graph_projection_cache_refreshes_with_the_validated_vault_snapshot() {
     assert_eq!(
         state
             .graph_nodes(&vault)
+            .unwrap()
             .iter()
             .find(|node| node.id == translation)
             .unwrap()
@@ -1066,6 +1067,7 @@ fn graph_projection_cache_refreshes_with_the_validated_vault_snapshot() {
     assert!(
         state
             .graph_nodes(&vault)
+            .unwrap()
             .iter()
             .find(|node| node.id == translation)
             .unwrap()
@@ -1099,6 +1101,7 @@ fn narrow_graph_keeps_the_selected_node_in_the_visible_window() {
     state.switch(View::Graph, &vault);
     let selected_row = state
         .graph_nodes(&vault)
+        .unwrap()
         .iter()
         .position(|node| node.title == "Tail unit")
         .unwrap();
@@ -1494,4 +1497,65 @@ fn time_block_confirmation_keeps_the_revision_chosen_before_auto_reload() {
     let text = screen(&state, &vault, 80, 24);
     assert!(text.contains("WorkUnit changed"), "{text}");
     assert!(text.contains("13:30") && text.contains("15:00"), "{text}");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn graph_opens_the_selected_daemon_work_unit_absent_from_local_snapshot() -> Result<()> {
+    use std::{os::unix::net::UnixListener, thread};
+
+    use mcbtodo_protocol::wire;
+    use serde_json::{Value, json};
+
+    let home = tempfile::tempdir()?;
+    let paths = WorkspacePaths::from_home(home.path().to_owned());
+    paths.initialize()?;
+    let vault = Vault::load(&paths.vault_root(), chrono_tz::UTC)?;
+    let listener = UnixListener::bind(paths.socket_path())?;
+    let first = Id::from_u128(21);
+    let second = Id::from_u128(22);
+    let peer = thread::spawn(move || -> Result<()> {
+        let (mut stream, _) = listener.accept()?;
+        assert_eq!(wire::read::<Value>(&mut stream)?["command"], "outline");
+        wire::write(
+            &mut stream,
+            &json!({
+                "result": "outline", "more": false, "items": [{
+                    "id": second, "depth": 2, "title": "Remote dependent",
+                    "source_path": "projects/example/units/remote.md", "project_id": null,
+                    "task_id": null, "blocked": true, "revision": "revision"
+                }]
+            }),
+        )?;
+        let (mut stream, _) = listener.accept()?;
+        assert_eq!(
+            wire::read::<Value>(&mut stream)?["command"],
+            "work_unit_graph"
+        );
+        wire::write(
+            &mut stream,
+            &json!({
+                "result": "work_unit_graph", "more": false, "items": [
+                    {"id": first, "title": "Remote prerequisite", "blocked": false,
+                     "prerequisites": [], "dependents": [second]},
+                    {"id": second, "title": "Remote dependent", "blocked": true,
+                     "prerequisites": [first], "dependents": []}
+                ]
+            }),
+        )?;
+        Ok(())
+    });
+    let mut state = State::new("2026-11-25".parse()?);
+    state.view = View::Outline;
+    state.daemon_views = Some(super::daemon_views::DaemonViews::new(paths));
+    press(&mut state, &vault, "g");
+    assert_eq!(state.view.label(), "Graph", "{}", state.message);
+    assert_eq!(state.selected_document(&vault), Some(second));
+    assert!(screen(&state, &vault, 80, 22).contains("Remote prerequisite"));
+    press(&mut state, &vault, "h");
+    assert_eq!(state.selected_document(&vault), Some(first));
+    press(&mut state, &vault, "l");
+    assert_eq!(state.selected_document(&vault), Some(second));
+    peer.join().unwrap()?;
+    Ok(())
 }

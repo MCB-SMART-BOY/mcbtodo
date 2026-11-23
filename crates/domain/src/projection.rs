@@ -188,3 +188,13 @@ pub struct InboxSummary {
     pub tags: Vec<String>,
     pub revision: String,
 }
+
+/// A node in the ordered WorkUnit dependency graph. Edges use WorkUnit identities.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct WorkUnitGraphNode {
+    pub id: Id,
+    pub title: String,
+    pub blocked: bool,
+    pub prerequisites: Vec<Id>,
+    pub dependents: Vec<Id>,
+}

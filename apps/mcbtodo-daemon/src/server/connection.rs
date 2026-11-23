@@ -134,6 +134,7 @@ fn exchange(
     let result = match response {
         Response::Outline { items, .. } => wire::write_outline(&mut stream, items),
         Response::Inbox { items, .. } => wire::write_inbox(&mut stream, items),
+        Response::WorkUnitGraph { items, .. } => wire::write_work_unit_graph(&mut stream, items),
         // The encoder checks size before writing any bytes.
         response @ Response::Calendar { .. } => match wire::write(&mut stream, &response) {
             Err(ProtocolError::FrameSize(_)) => wire::write(

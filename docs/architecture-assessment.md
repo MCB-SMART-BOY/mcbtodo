@@ -346,10 +346,19 @@ The TUI regression exercises a captured entry and Project absent from its
 local snapshot. The TUI still loads a local Vault for other functionality
 and uses a client-side file watcher for refresh.
 
-The TUI still loads a local snapshot at startup and uses it for Graph, Inbox,
-some form pickers and remaining foreground edits. File watching still takes place
-in the client. Each new calendar or Outline query scans the Vault in the daemon
-and can wait up to the existing IPC deadline. GUI, launcher integration and
+### Shared Graph browsing over local IPC
+
+The Linux default-Vault Graph uses the daemon's ordered WorkUnit projection
+for rendering, selection, and edge navigation. The protocol assembles all
+response frames before publishing the graph. A TUI test opens a WorkUnit
+that is absent from its local snapshot. A real socket test exercises two
+independent clients, a graph larger than one frame, and a subsequent
+Markdown edit.
+
+The TUI still loads a local snapshot at startup for Graph dependency edit
+preview and confirmation, some forms, and external editing. File watching
+still takes place in the client. Each uncached read scans the Vault in the
+daemon and can wait up to the IPC deadline. GUI, launcher integration and
 service-side change notifications remain planned.
 
 ## Latest Review

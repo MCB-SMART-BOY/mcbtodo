@@ -892,14 +892,7 @@ fn work_unit_summary(vault: &Vault, row: OutlineItem) -> WorkUnitSummary {
     }
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
-pub struct WorkUnitGraphNode {
-    pub id: Id,
-    pub title: String,
-    pub blocked: bool,
-    pub prerequisites: Vec<Id>,
-    pub dependents: Vec<Id>,
-}
+pub use mcbtodo_domain::WorkUnitGraphNode;
 
 #[derive(Clone, Debug, Default, Serialize, PartialEq, Eq)]
 pub struct WorkUnitGraph {

@@ -14,6 +14,7 @@ pub(super) struct DaemonViews {
     calendar: QueryCache<(DateSpan, Tz), CalendarItem>,
     outline: QueryCache<Tz, OutlineItem>,
     inbox: QueryCache<(), InboxSummary>,
+    graph: QueryCache<Tz, super::graph::Node>,
 }
 
 type CachedRows<T> = Result<Rc<[T]>, String>;
@@ -52,6 +53,7 @@ impl DaemonViews {
             calendar: QueryCache(RefCell::new(None)),
             outline: QueryCache(RefCell::new(None)),
             inbox: QueryCache(RefCell::new(None)),
+            graph: QueryCache(RefCell::new(None)),
         }
     }
 
@@ -84,9 +86,24 @@ impl DaemonViews {
         })
     }
 
+    pub(super) fn graph(&self, timezone: Tz) -> Result<Rc<[super::graph::Node]>> {
+        self.graph.rows(timezone, || {
+            match crate::daemon_request(
+                &self.paths,
+                Request::WorkUnitGraph {
+                    timezone: timezone.name().into(),
+                },
+            )? {
+                Response::WorkUnitGraph { items, more: false } => Ok(super::graph::nodes(items)),
+                _ => bail!("unexpected response to WorkUnit graph request"),
+            }
+        })
+    }
+
     pub(super) fn invalidate(&mut self) {
         self.calendar.0.get_mut().take();
         self.outline.0.get_mut().take();
         self.inbox.0.get_mut().take();
+        self.graph.0.get_mut().take();
     }
 }

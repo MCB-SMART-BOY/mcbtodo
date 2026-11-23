@@ -12,7 +12,7 @@ pub use mcbtodo_ports::focus::TimerState;
 pub use wire::ProtocolError;
 
 use chrono::{DateTime, FixedOffset, NaiveDate, Utc};
-use mcbtodo_domain::{CalendarItem, InboxSummary, OutlineItem};
+use mcbtodo_domain::{CalendarItem, InboxSummary, OutlineItem, WorkUnitGraphNode};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -45,6 +45,10 @@ pub enum Request {
     },
     /// List captured Inbox entries from one validated default Vault snapshot.
     Inbox,
+    /// Project the dependency graph from one validated default Vault snapshot.
+    WorkUnitGraph {
+        timezone: String,
+    },
     /// Assign an observed Inbox entry to a Project and retain its source document.
     TriageInbox {
         inbox_id: Uuid,
@@ -127,6 +131,11 @@ pub enum Response {
     /// Ordered frames on one Inbox connection, assembled by the typed client.
     Inbox {
         items: Vec<InboxSummary>,
+        more: bool,
+    },
+    /// Ordered graph rows assembled by the typed client before edges can be followed.
+    WorkUnitGraph {
+        items: Vec<WorkUnitGraphNode>,
         more: bool,
     },
     /// The Inbox assignment is visible. `synced` describes its durability.

@@ -76,6 +76,15 @@ fn request_with(
             },
             |items| Response::Inbox { items, more: false },
         ),
+        Request::WorkUnitGraph { .. } => read_rows(
+            response,
+            &mut stream,
+            |response| match response {
+                Response::WorkUnitGraph { items, more } => Some((std::mem::take(items), *more)),
+                _ => None,
+            },
+            |items| Response::WorkUnitGraph { items, more: false },
+        ),
         _ => Ok(response),
     }
 }

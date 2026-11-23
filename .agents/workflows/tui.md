@@ -188,6 +188,12 @@ assigns an entry in one TUI and opens the resulting Task in a second TUI.
 Use a 24×5 fixture to verify the title, selected source, border, and project
 picker controls. Empty Inbox and project lists show only applicable actions.
 
+For the Linux default Vault, open Graph from an Outline WorkUnit that is
+absent from the client snapshot. Draw the service rows and follow edges in
+both directions using the returned UUIDs. Assemble the full result before
+resolving edges between frames. Keep the explicit external Vault path under
+the existing local Graph tests.
+
 Keep Escape first in the timer menu. Check in 24×5 that the calendar shows
 the block shortcut and timer controls, the non-calendar menu shows the timer
 controls, and the calendar row still fits between its borders.

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::value::RawValue;
 use thiserror::Error;
 
-use mcbtodo_domain::{InboxSummary, OutlineItem};
+use mcbtodo_domain::{InboxSummary, OutlineItem, WorkUnitGraphNode};
 
 use crate::{ErrorCode, Response};
 
@@ -74,6 +74,16 @@ pub fn write_outline(
 
 pub fn write_inbox(writer: &mut impl Write, items: Vec<InboxSummary>) -> Result<(), ProtocolError> {
     write_rows(writer, items, |items, more| Response::Inbox { items, more })
+}
+
+pub fn write_work_unit_graph(
+    writer: &mut impl Write,
+    items: Vec<WorkUnitGraphNode>,
+) -> Result<(), ProtocolError> {
+    write_rows(writer, items, |items, more| Response::WorkUnitGraph {
+        items,
+        more,
+    })
 }
 
 /// Write one complete result as ordered frames. The reader only publishes

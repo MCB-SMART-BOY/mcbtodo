@@ -399,6 +399,7 @@ impl State {
             View::Graph => {
                 return self
                     .graph_nodes(vault)
+                    .unwrap_or_default()
                     .iter()
                     .map(|node| FocusIdentity::Document(node.id))
                     .collect();
@@ -884,15 +885,18 @@ impl State {
                 self.message.clear();
             }
             KeyCode::Char('g') if matches!(self.view, View::Day | View::Agenda | View::Outline) => {
-                if let Some(id) = self
-                    .selected_document(vault)
-                    .filter(|&id| vault.is_work_unit(id))
-                {
-                    self.document_id = Some(id);
-                    self.switch(View::Graph, vault);
-                    self.message.clear();
-                } else {
+                let Some(id) = self.selected_document(vault) else {
                     self.message = "Select a WorkUnit to open Graph".into();
+                    return Continue;
+                };
+                match self.graph_nodes(vault) {
+                    Ok(nodes) if nodes.iter().any(|node| node.id == id) => {
+                        self.document_id = Some(id);
+                        self.switch(View::Graph, vault);
+                        self.message.clear();
+                    }
+                    Ok(_) => self.message = "Select a WorkUnit to open Graph".into(),
+                    Err(error) => self.message = format!("Graph unavailable · {error:#}"),
                 }
             }
             KeyCode::Char(' ') => self.overlay = Overlay::Space(Default::default()),
@@ -989,7 +993,7 @@ impl State {
             }
             View::Graph => {
                 let (row, id) = {
-                    let nodes = self.graph_nodes(vault);
+                    let nodes = self.graph_nodes(vault).unwrap_or_default();
                     let row = move_row(self.row, down, nodes.len());
                     (row, nodes.get(row).map(|node| node.id))
                 };
@@ -1077,7 +1081,7 @@ impl State {
 
     fn follow_edge(&mut self, forward: bool, vault: &Vault) {
         let next = {
-            let nodes = self.graph_nodes(vault);
+            let nodes = self.graph_nodes(vault).unwrap_or_default();
             nodes.get(self.row).and_then(|node| {
                 let neighbors = if forward {
                     &node.dependents
@@ -1099,16 +1103,25 @@ impl State {
 
     fn selected_document(&self, vault: &Vault) -> Option<Id> {
         if self.view == View::Graph {
-            return self.graph_nodes(vault).get(self.row).map(|node| node.id);
+            return self
+                .graph_nodes(vault)
+                .ok()?
+                .get(self.row)
+                .map(|node| node.id);
         }
         self.row_ids(vault).get(self.row).copied()
     }
 
-    fn graph_nodes(&self, vault: &Vault) -> Rc<[graph::Node]> {
+    fn graph_nodes(&self, vault: &Vault) -> Result<Rc<[graph::Node]>> {
+        if let Some(service) = &self.daemon_views {
+            return service.graph(vault.timezone());
+        }
         let mut cached = self.graph_nodes.borrow_mut();
-        cached
-            .get_or_insert_with(|| graph::nodes(vault).into())
-            .clone()
+        Ok(cached
+            .get_or_insert_with(|| {
+                graph::nodes(mcbtodo_application::project_work_unit_graph(vault).nodes).into()
+            })
+            .clone())
     }
 
     fn selected_project_revision(&self, vault: &Vault) -> Option<(Id, creation::ProjectRevision)> {
@@ -1178,8 +1191,12 @@ impl State {
         self.invalidate_daemon_views();
         self.document_id = preferred.map(FocusIdentity::document_id);
         self.sync_row(vault, preferred);
-        if let Some(selected) = &mut self.graph_selection {
-            selected.retain(|&id| vault.is_work_unit(id));
+        if self.graph_selection.is_some()
+            && let Ok(nodes) = self.graph_nodes(vault)
+            && let Some(selected) = &mut self.graph_selection
+        {
+            let known: BTreeSet<_> = nodes.iter().map(|node| node.id).collect();
+            selected.retain(|id| known.contains(id));
         }
     }
 

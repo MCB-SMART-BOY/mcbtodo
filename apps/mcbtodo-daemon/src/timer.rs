@@ -81,6 +81,7 @@ impl Timer {
                 | Request::Calendar { .. }
                 | Request::Outline { .. }
                 | Request::Inbox
+                | Request::WorkUnitGraph { .. }
                 | Request::TriageInbox { .. }
                 | Request::ListNotifications { .. }
                 | Request::ListReminderNotifications { .. }

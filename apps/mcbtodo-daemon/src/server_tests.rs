@@ -440,6 +440,79 @@ fn outline_returns_one_snapshot_even_when_rows_exceed_one_frame() -> Result<()> 
 }
 
 #[test]
+fn graph_clients_receive_all_nodes_and_see_subsequent_vault_edits() -> Result<()> {
+    let dir = private_tempdir()?;
+    let paths = WorkspacePaths::from_home(dir.path().to_owned());
+    paths.initialize()?;
+    let root = paths.vault_root();
+    let project = root.join("projects/graph");
+    let project_id = Uuid::new_v4();
+    let task_id = Uuid::new_v4();
+    fs::create_dir_all(project.join("tasks"))?;
+    fs::create_dir_all(project.join("units"))?;
+    fs::write(
+        project.join("project.md"),
+        format!("---\nschema: mcbtodo.project/v1\nid: {project_id}\n---\n# Project\n"),
+    )?;
+    fs::write(
+        project.join("tasks/task.md"),
+        format!(
+            "---\nschema: mcbtodo.task/v1\nid: {task_id}\nproject_id: {project_id}\n---\n# Task\n"
+        ),
+    )?;
+    let unit_ids: Vec<_> = (0..100).map(|_| Uuid::new_v4()).collect();
+    for (index, id) in unit_ids.iter().enumerate() {
+        let dependency = index
+            .checked_sub(1)
+            .map(|index| unit_ids[index].to_string())
+            .unwrap_or_default();
+        fs::write(
+            project.join(format!("units/{index}.md")),
+            format!(
+                "---\nschema: mcbtodo.work-unit/v1\nid: {id}\nproject_id: {project_id}\nparent_task_id: {task_id}\nstatus: todo\ndepends_on: [{dependency}]\n---\n# Unit {index:03} {}\n",
+                "日".repeat(199),
+            ),
+        )?;
+    }
+
+    let socket = paths.socket_path();
+    let mut server = Server::open(paths, crate::DEFAULT_WORKER_SLOTS)?;
+    let query = Request::WorkUnitGraph {
+        timezone: "UTC".into(),
+    };
+    let first = status(&mut server, socket.clone(), query.clone());
+    assert!(matches!(
+        wire::write(&mut Vec::new(), &first),
+        Err(mcbtodo_protocol::ProtocolError::FrameSize(_)),
+    ));
+    assert_eq!(status(&mut server, socket.clone(), query.clone()), first);
+    let Response::WorkUnitGraph { items, more: false } = first else {
+        panic!("expected a complete graph");
+    };
+    assert_eq!(items.len(), unit_ids.len());
+    assert!(
+        items
+            .iter()
+            .map(|node| node.id)
+            .eq(unit_ids.iter().copied())
+    );
+    assert_eq!(items[49].dependents, vec![unit_ids[50]]);
+    assert_eq!(items[50].prerequisites, vec![unit_ids[49]]);
+    assert!(items[50].blocked);
+
+    let source = project.join("units/99.md");
+    fs::write(
+        &source,
+        fs::read_to_string(&source)?.replace("Unit 099", "Edited unit"),
+    )?;
+    let Response::WorkUnitGraph { items, more: false } = status(&mut server, socket, query) else {
+        panic!("expected an updated graph");
+    };
+    assert!(items[99].title.starts_with("Edited unit"));
+    Ok(())
+}
+
+#[test]
 fn planned_project_creation_preserves_calendar_kind_and_checks_the_writer_lock() -> Result<()> {
     use chrono::NaiveDate;
     use mcbtodo_domain::{

@@ -726,7 +726,7 @@ impl<'a> ScreenModel<'a> {
                 state.row,
             )),
             View::Graph => Content::Graph(GraphScreenModel::project(
-                state.graph_nodes(vault),
+                state.graph_nodes(vault)?,
                 state.row,
                 state.graph_selection.as_ref(),
             )),

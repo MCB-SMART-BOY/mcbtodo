@@ -103,7 +103,7 @@ cargo run --locked -- --vault examples/vault outline
 cargo run --locked -- --vault examples/vault graph
 ```
 
-在 Linux 上，默认 Vault 的 TUI 月历、周历、日历、议程、Timeline、大纲和 Inbox 从 `mcbtodo-daemon` 读取。服务离线时会显示启动提示，TUI 菜单仍可使用。服务恢复后按 `r` 重试。议程日期范围最多 366 天，结果过大时请缩小日期范围。通过 `--vault` 打开的外部 Vault 和非 Linux 前台模式从本地读取。
+在 Linux 上，默认 Vault 的 TUI 月历、周历、日历、议程、Timeline、大纲、Inbox 和 Graph 从 `mcbtodo-daemon` 读取。Graph 的依赖编辑预览与保存仍由前台处理。服务离线时会显示启动提示，TUI 菜单仍可使用。服务恢复后按 `r` 重试。议程日期范围最多 366 天，结果过大时请缩小日期范围。通过 `--vault` 打开的外部 Vault 和非 Linux 前台模式从本地读取。
 
 `mcbtodo calendar --daemon --date 2026-11-25 --json` 通过同一接口查询默认 Vault，支持 `--timezone`。普通 `calendar` 命令直接读取 Vault，支持 `--vault`。
 
