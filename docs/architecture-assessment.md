@@ -222,6 +222,15 @@ checkpoint and verified the Markdown and JSON focus reports. The sandbox smoke
 also verified the TUI startup and the service hint with an empty `PATH` and
 no daemon. Workspace verification passed 668 tests.
 
+CI run `45092935586` passed all six jobs for the terminal-client change.
+On the Linux AArch64 development host, `cargo install --path` installed the
+client, Daemon, and Worker under `~/.cargo/bin`. The user unit started the
+installed Daemon and was enabled for login. Two TUI instances opened outside
+the checkout, read the timer status, and quit while the same Daemon PID stayed
+active. `cargo xtask smoke-systemd --bin-dir "$HOME/.cargo/bin"` verified timer
+continuity and forced-restart recovery in an isolated workspace using those
+installed binaries.
+
 ## Latest Review
 
 On 2026-11-22, the Linux AArch64 release packaging follow-up verified all

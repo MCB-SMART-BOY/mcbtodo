@@ -2,6 +2,23 @@
 
 此部署方式面向 Linux 上启用了 systemd 用户管理器的登录用户。仓库发行归档当前为 Linux x86_64 和 AArch64 构建；其他系统服务管理器不在本指南支持范围内。
 
+## 通过 Cargo 安装到当前用户
+
+在仓库根目录运行以下命令。`--root` 将三个程序统一装到 `~/.cargo/bin`，与下面的 systemd 服务路径一致。终端的 `PATH` 需要包含 `~/.cargo/bin`。
+
+```sh
+cargo install --locked --root "$HOME/.cargo" --path apps/mcbtodo-worker
+cargo install --locked --root "$HOME/.cargo" --path apps/mcbtodo-daemon
+cargo install --locked --root "$HOME/.cargo" --path apps/mcbtodo
+mkdir -p "$HOME/.config/systemd/user"
+sed 's|^ExecStart=/usr/bin/mcbtodo-daemon$|ExecStart=%h/.cargo/bin/mcbtodo-daemon|' \
+  deploy/systemd/mcbtodo-daemon.service > "$HOME/.config/systemd/user/mcbtodo-daemon.service"
+```
+
+继续执行下方的“启动和使用”。更新本地安装时重新执行三条 `cargo install` 命令，然后执行 `systemctl --user restart mcbtodo-daemon.service`。
+
+## 从发行包安装到系统目录
+
 发行包是包含 `usr/bin/` 和 `usr/lib/systemd/user/` 路径的 `.tar.gz` 归档，本身不会安装文件。先从仓库根目录构建归档，再将归档内容解包到系统根目录：
 
 ```sh
@@ -10,16 +27,11 @@ cargo xtask package
 sudo tar -xzf target/dist/mcbtodo-linux-$(uname -m).tar.gz -C /
 ```
 
-`uname -m` 应为 `x86_64` 或 `aarch64`。解包会写入 `/usr/bin/` 和 `/usr/lib/systemd/user/`，需要管理员权限。安装后，在登录用户的终端运行：
+`uname -m` 应为 `x86_64` 或 `aarch64`。解包会写入 `/usr/bin/` 和 `/usr/lib/systemd/user/`，需要管理员权限。
 
-归档同时包含 `/usr/bin/mcbtodo-worker`。Daemon 会为每个脚本或 Agent
-执行尝试启动并监督该 Worker，因此该二进制必须与 Daemon 一起安装在
-`/usr/bin/`。Worker 不是独立的 systemd 服务，也不单独常驻。
+两种安装方式都将 `mcbtodo-worker` 放在 Daemon 同一目录。Daemon 在脚本或 Agent 执行期间启动并监督 Worker。
 
-服务默认启动一个 Worker 槽。可以在 TUI 的 Settings → Daemon 中设置 1 到 4
-个槽，保存后运行 `systemctl --user restart mcbtodo-daemon.service`。服务覆盖
-配置中的 `--worker-slots` 启动参数优先。槽位全部占用时，后续工作保持
-`pending`，重启恢复和 `outcome_unknown` 语义不变。
+## 启动和使用
 
 ```sh
 mcbtodo init
@@ -28,7 +40,12 @@ systemctl --user enable --now mcbtodo-daemon.service
 mcbtodo timer status --json
 ```
 
-服务启动后，在任意终端运行 `mcbtodo` 打开 TUI。`:timer status` 查询服务中的计时，`q` 关闭 TUI。再次打开可以继续查看该计时会话。服务生命周期由 systemd 用户管理器负责。
+服务启动后，在任意终端运行 `mcbtodo` 打开 TUI。`:timer status` 查询服务中的计时，`q` 关闭 TUI。再次打开可以继续查看该计时会话。服务跟随 systemd 用户管理器，在用户登录时启动。
+
+服务默认使用一个 Worker 槽。可以在 TUI 的 Settings → Daemon 中设置 1 到 4
+个槽，保存后运行 `systemctl --user restart mcbtodo-daemon.service`。服务覆盖
+配置中的 `--worker-slots` 启动参数优先。槽位全部占用时，后续工作保持
+`pending`，重启后已启动但未确认的尝试按 `outcome_unknown` 处理。
 
 如果服务未启动，先查看服务状态和日志。
 
@@ -38,7 +55,7 @@ journalctl --user-unit mcbtodo-daemon.service -b -n 50
 ```
 
 - `Failed to connect to bus` 表示当前终端无法连接用户管理器。在目标用户的登录会话中运行命令。
-- `203/EXEC` 时检查 `/usr/bin/mcbtodo-daemon` 是否存在、可执行，并与系统架构匹配。
+- `203/EXEC` 时使用 `systemctl --user cat mcbtodo-daemon.service` 查看 `ExecStart`，检查它指向的程序是否存在、可执行，并与系统架构匹配。
 - 若日志提示状态目录缺失，先以服务用户运行 `mcbtodo init`。若提示目录权限错误，检查 `~/.mcbtodo/state` 的属主和权限。该目录应为当前用户所有，权限为 `0700`。
 - 若日志提示已有守护进程持有锁，先停止在终端中手动启动的 `mcbtodo-daemon`，再重启用户服务。
 

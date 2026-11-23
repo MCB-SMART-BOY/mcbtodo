@@ -14,7 +14,7 @@ cargo run
 
 ### 后台服务
 
-`mcbtodo-daemon` 是后台服务。安装发行包后，可按 [systemd 用户服务指南](deploy/systemd/README.md) 在登录时启动服务。服务运行后，在任意终端执行 `mcbtodo` 打开 TUI。按 `q` 退出终端界面后，服务继续保存计时、处理提醒和运行工作流。再次打开 TUI，用 `:timer status` 查看同一计时会话，或打开 Workflow 查看后台运行。
+`mcbtodo-daemon` 是后台服务。可以用 `cargo install` 将程序安装到 `~/.cargo/bin`，并配置为登录时启动的 systemd 用户服务。服务运行后，在任意终端执行 `mcbtodo` 打开 TUI。按 `q` 退出终端界面后，服务继续保存计时、处理提醒和运行工作流。再次打开 TUI，用 `:timer status` 查看同一计时会话，或打开 Workflow 查看后台运行。Cargo 和发行包安装步骤见 [systemd 用户服务指南](deploy/systemd/README.md)。
 
 从源码开发时，可以在一个终端启动 Daemon，在另一个终端运行 `cargo run`：
 

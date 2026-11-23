@@ -95,6 +95,12 @@ Run the systemd smoke only in a Linux user session with a reachable user manager
 It opens the TUI twice against the same service and verifies that the focus
 session advances between clients. It exercises checkpoint recovery after the
 service restarts.
+
+For Cargo installation changes, verify all three binaries in the same Cargo
+`bin` directory, verify the user unit resolves `ExecStart` there, and run
+`cargo xtask smoke-systemd --bin-dir "$HOME/.cargo/bin"` against the installed
+binaries.
+
 The hosted Linux setup probes Bubblewrap's required namespace flags as the
 runner user before compilation. When a hosted runner has AppArmor's user
 namespace restriction enabled and the probe fails, setup loads a profile
