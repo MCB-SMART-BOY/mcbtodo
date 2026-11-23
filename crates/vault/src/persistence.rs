@@ -1373,20 +1373,45 @@ impl VaultStore {
         &self,
         request: CreateTimeBlock,
     ) -> Result<PersistedDocument, WriteError> {
-        let (_lock, vault) = self.locked_snapshot()?;
-        let id = request.work_unit_id;
+        self.create_time_block_with(request.work_unit_id, request.block, lock, |revision| {
+            revision == &request.expected_revision
+        })
+    }
+
+    /// Appends a block without waiting for the writer lock, using a snapshot digest.
+    pub fn try_create_time_block(
+        &self,
+        id: Id,
+        block: TimeBlock,
+        expected_digest: &str,
+    ) -> Result<PersistedDocument, WriteError> {
+        self.create_time_block_with(id, block, try_lock, |revision| {
+            revision.digest() == expected_digest
+        })
+    }
+
+    fn create_time_block_with(
+        &self,
+        id: Id,
+        block: TimeBlock,
+        acquire_lock: fn(&Path) -> Result<File>,
+        matches_revision: impl FnOnce(&Revision) -> bool,
+    ) -> Result<PersistedDocument, WriteError> {
+        let (_lock, vault) = self.locked_snapshot_with(acquire_lock)?;
         let unit = vault
             .units
             .get(&id)
             .ok_or(WriteError::WorkUnitNotFound { id })?;
-        let revision = request.expected_revision;
-        check_revision(&vault, id, &revision)?;
-        let updated = document::append_time_block(&revision.0, &unit.data, &request.block)
+        let revision = vault
+            .revision(id)
+            .filter(|revision| matches_revision(revision))
+            .ok_or(WriteError::StaleRevision { id })?;
+        let updated = document::append_time_block(&revision.0, &unit.data, &block)
             .map_err(WriteError::InvalidDocument)?;
         replace(
             unit.path.clone(),
             id,
-            &revision,
+            revision,
             Revision::from_source(updated),
         )
     }

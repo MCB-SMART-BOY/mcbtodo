@@ -280,6 +280,28 @@ impl Server {
                     synced,
                 },
             ),
+            Request::CreateTimeBlock {
+                work_unit_id,
+                work_unit_revision,
+                start,
+                end,
+            } => create_in_vault(
+                self.runtime.paths(),
+                "Time block",
+                work_unit_id,
+                |commands| {
+                    commands.try_create_busy_time_block(
+                        work_unit_id,
+                        start,
+                        end,
+                        &work_unit_revision,
+                    )
+                },
+                |synced| Response::TimeBlockCreated {
+                    work_unit_id,
+                    synced,
+                },
+            ),
             Request::ListNotifications { before } => {
                 match self.runtime.notifications().workflow_page(before) {
                     Ok(page) => Response::Notifications(page),
@@ -369,9 +391,9 @@ fn create_in_vault(
         Err(error) => error,
     };
     let (code, message) = match &error {
-        WriteError::StaleRevision { .. } | WriteError::ProjectNotFound { .. } => {
-            (ErrorCode::StaleRevision, "Project changed".into())
-        }
+        WriteError::StaleRevision { .. }
+        | WriteError::ProjectNotFound { .. }
+        | WriteError::WorkUnitNotFound { .. } => (ErrorCode::StaleRevision, error.to_string()),
         WriteError::DuplicateId { .. } | WriteError::DestinationExists { .. } => (
             ErrorCode::Conflict,
             format!("{label} ID {id} is already in use"),

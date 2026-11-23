@@ -156,6 +156,32 @@ pub(crate) fn run(root: &Path, bin_dir: &Path) -> Result<()> {
     let timezone = WorkspacePaths::from_home(smoke.workspace.clone())
         .load_config()?
         .timezone;
+    let mut client = smoke.client();
+    client.args(["tui", "--date", "2026-11-20"]);
+    crate::smoke::drive_default_tui(
+        client,
+        &[
+            ("Month", " tb"),
+            ("Find WorkUnit", "页表映射\r13:30\r15:00\r"),
+            ("13:30–15:00", "q"),
+        ],
+    )?;
+    let calendar = smoke.json(&["calendar", "--date", "2026-11-20", "--json"])?;
+    let start = "2026-11-20T13:30:00Z";
+    let end = "2026-11-20T15:00:00Z";
+    ensure!(
+        calendar
+            .as_array()
+            .is_some_and(|rows| rows.iter().any(|item| {
+                item["id"] == WORK_UNIT
+                    && item["kind"] == "time_block"
+                    && item["busy"] == true
+                    && item["occurrence"]["start"] == start
+                    && item["occurrence"]["end"] == end
+            })),
+        "the WorkUnit time block did not appear in the calendar: {calendar}"
+    );
+
     let at = chrono::DateTime::from_timestamp(chrono::Utc::now().timestamp() - 60, 0)
         .context("smoke reminder timestamp out of range")?;
     let input = at.with_timezone(&timezone).to_rfc3339();
@@ -265,7 +291,7 @@ pub(crate) fn run(root: &Path, bin_dir: &Path) -> Result<()> {
     )?;
     service.diagnostics = false;
     println!(
-        "systemd user service smoke passed (TUI reopen, Task, Project, deadline and all-day event creation, reminder Inbox, timer recovery, and focus report)"
+        "systemd user service smoke passed (TUI reopen, Task, Project, deadline, all-day event and time block creation, reminder Inbox, timer recovery, and focus report)"
     );
     Ok(())
 }

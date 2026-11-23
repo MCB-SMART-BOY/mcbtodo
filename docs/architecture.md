@@ -65,7 +65,7 @@ CLI 的 Vault 写命令从已加载快照取得乐观并发控制 token 时使�
 
 焦点报告的 Project 存在性检查、WorkUnit 所属信息和估时现在由 `VaultQueries::focus_report_context` 从同一个已验证快照提供，避免 CLI 在连续查询间读取到不同版本的 Markdown。按日向守护进程读取计时记录、跨日聚合和 Markdown/CSV/JSON 呈现仍属于报告适配器。
 
-Linux 上，TUI 将默认 Vault 的 Task 捕获以及 Project、Deadline、全天事件和单次提醒创建通过同用户 IPC 交给 Daemon。Daemon 从自己的 workspace 选择 Vault，application 校验业务输入，Vault 尝试获取写锁并拒绝重复 UUID。Task 捕获还在锁内校验 Project revision。全天事件和活动期保留包含首尾的日期范围。Deadline 仍保存为仅带日期截止项的 Project。单次提醒按 Daemon 的配置时区校验偏移。其他平台和外部 Vault 继续使用各自支持的前台命令。响应不明确时，TUI 显示提交的 UUID 供核对。
+Linux 上，TUI 将默认 Vault 的 Task 捕获以及 Project、Deadline、全天事件、单次提醒和 WorkUnit 时间块创建通过同用户 IPC 交给 Daemon。Daemon 从自己的 workspace 选择 Vault，application 校验业务输入，Vault 尝试获取写锁并拒绝重复 UUID。Task 捕获在锁内校验 Project revision，时间块写入在锁内校验 WorkUnit revision，保存后使用同一 revision 重发会被拒绝。全天事件和活动期保留包含首尾的日期范围。Deadline 仍保存为仅带日期截止项的 Project。单次提醒与时间块按 Daemon 的配置时区校验偏移。其他平台和外部 Vault 继续使用各自支持的前台命令。响应不明确时，TUI 显示提交的 UUID，创建时间块时还会显示提交的起止时刻供核对。
 
 ## 适配器边界
 

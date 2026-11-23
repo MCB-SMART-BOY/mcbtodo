@@ -333,7 +333,7 @@ fn default_task_capture_does_not_repeat_a_request_without_a_response() {
 }
 
 #[cfg(target_os = "linux")]
-fn disconnect_after_request(
+pub(super) fn disconnect_after_request(
     paths: &WorkspacePaths,
     submit: impl FnOnce(),
 ) -> mcbtodo_protocol::Request {

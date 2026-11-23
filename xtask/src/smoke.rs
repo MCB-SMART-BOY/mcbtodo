@@ -132,6 +132,7 @@ pub(crate) fn run(root: &Path, bin_dir: &Path, sandbox: bool) -> Result<()> {
     let revision = revision.trim();
     ensure!(revision.len() == 64, "publication did not return a SHA-256");
     let mut daemon = smoke.start_daemon()?;
+    smoke.create_time_block_in_tui()?;
     ensure!(
         smoke.json(&["workflow", "runs"])?["runs"]
             .as_array()
@@ -478,20 +479,6 @@ fn exercise_planning(smoke: &Smoke<'_>, rust_os: &Path) -> Result<(String, Strin
         "TUI approval did not publish the reviewed MCP workflow revision"
     );
 
-    smoke.create_time_block_in_tui()?;
-    let planned = calendar("2026-11-20")?;
-    ensure!(
-        planned
-            .as_array()
-            .is_some_and(|entries| entries.iter().any(|entry| {
-                entry["id"] == MAPPING_UNIT
-                    && entry["kind"] == "time_block"
-                    && entry["busy"] == true
-                    && entry["occurrence"]["start"] == "2026-11-20T09:00:00+08:00"
-                    && entry["occurrence"]["end"] == "2026-11-20T11:00:00+08:00"
-            })),
-        "the mapping time block did not appear in the calendar: {planned}"
-    );
     Ok((approved, workflow_revision))
 }
 
@@ -2466,13 +2453,30 @@ impl Smoke<'_> {
     }
 
     fn create_time_block_in_tui(&self) -> Result<()> {
+        // The daemon uses the default UTC config. Later UI checks display
+        // this same interval as 09:00–11:00 in Asia/Shanghai.
         self.drive_tui(
-            "Asia/Shanghai",
+            "UTC",
             &[
                 ("NORMAL", " tb"),
-                ("Find WorkUnit", "Implement page mapping\r09:00\r11:00\rq"),
+                ("Find WorkUnit", "Implement page mapping\r01:00\r03:00\r"),
+                ("Time block saved", "q"),
             ],
-        )
+        )?;
+        let planned = self.json(&["calendar", "--date", "2026-11-20", "--json"])?;
+        ensure!(
+            planned
+                .as_array()
+                .is_some_and(|entries| entries.iter().any(|entry| {
+                    entry["id"] == MAPPING_UNIT
+                        && entry["kind"] == "time_block"
+                        && entry["busy"] == true
+                        && entry["occurrence"]["start"] == "2026-11-20T01:00:00Z"
+                        && entry["occurrence"]["end"] == "2026-11-20T03:00:00Z"
+                })),
+            "the mapping time block did not appear in the calendar: {planned}"
+        );
+        Ok(())
     }
 
     fn terminal(mut command: Command, size: TerminalSize) -> Result<(Daemon, fs::File)> {

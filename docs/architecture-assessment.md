@@ -282,6 +282,15 @@ reports the UUID if the connection is lost after submission. The Linux
 AArch64 systemd smoke exercises the actual form and verifies the scheduled
 instant in the durable reminder Inbox with desktop notifications disabled.
 
+The Linux default-Vault TUI now sends WorkUnit time blocks to the Daemon.
+The IPC regression checks workspace offsets, reversed intervals, writer-lock
+contention, stale revisions, and replay of a successful request. The Vault
+preserves the existing blocks and Markdown body. If the service is offline,
+the form stays open. If the response is lost, the status shows the WorkUnit
+UUID and the submitted time range for manual verification. The Linux AArch64
+workspace and systemd smoke tests save the block in the TUI and verify the
+persisted interval using the calendar command.
+
 ## Latest Review
 
 On 2026-11-22, the Linux AArch64 release packaging follow-up verified all

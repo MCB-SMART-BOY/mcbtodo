@@ -1086,48 +1086,6 @@ impl State {
         self.message = message;
     }
 
-    fn create_time_block(&mut self, root: &Path, vault: &mut Vault, block: time_block::Submission) {
-        let (unit, when) = (block.unit, block.when);
-        let saved = match VaultCommands::new(root, vault.timezone()).create_time_block(
-            unit,
-            when.start(),
-            when.end(),
-            mcbtodo_domain::Availability::Busy,
-            block.revision,
-        ) {
-            Ok(_) => "Time block saved".to_owned(),
-            Err(WriteError::PublishedButNotSynced { source, .. }) => {
-                format!("Time block published · directory sync failed: {source}")
-            }
-            Err(WriteError::StaleRevision { .. }) => {
-                self.message = "WorkUnit changed · Esc twice, r to reload, then retry".into();
-                return;
-            }
-            Err(error) => {
-                self.message = format!("Time block failed · {error:#}");
-                return;
-            }
-        };
-        // A published write must close the form, even if refreshing the snapshot fails.
-        self.overlay = Overlay::None;
-        self.reload(root, vault);
-        self.message = if self.message == "Vault reloaded" {
-            self.switch(View::Day, vault);
-            if let Ok(entries) = calendar::day(vault, self.day)
-                && let Some(row) = entries.iter().position(|entry| {
-                entry.id == unit
-                    && matches!(entry.occurrence, Occurrence::Span(Span::DateTimeSpan(span)) if span == when)
-            })
-            {
-                self.row = row;
-                self.document_id = Some(unit);
-            }
-            saved
-        } else {
-            format!("{saved} · {}", self.message)
-        };
-    }
-
     fn set_graph_dependencies(&mut self, root: &Path, vault: &mut Vault, edit: graph::Submission) {
         match VaultCommands::new(root, vault.timezone()).set_work_unit_dependencies(
             edit.target,
@@ -1468,7 +1426,7 @@ pub(super) fn run(
                     state.create_task(root, &mut vault, paths, request);
                 }
                 Action::CreateTimeBlock(block) => {
-                    state.create_time_block(root, &mut vault, block);
+                    state.create_time_block(root, &mut vault, paths, block);
                 }
                 Action::SetDeadline(request) => {
                     state.set_deadline(root, &mut vault, request);

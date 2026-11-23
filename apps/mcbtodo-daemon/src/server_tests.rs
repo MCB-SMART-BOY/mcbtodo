@@ -363,6 +363,106 @@ fn reminder_creation_validates_the_offset_target_and_writer_lock_over_ipc() -> R
 }
 
 #[test]
+fn time_block_creation_checks_offsets_revision_and_writer_lock_over_ipc() -> Result<()> {
+    use mcbtodo_vault::Vault;
+
+    let dir = private_tempdir()?;
+    let paths = WorkspacePaths::from_home(dir.path().to_owned());
+    paths.initialize()?;
+    let root = paths.vault_root();
+    let timezone = paths.load_config()?.timezone;
+    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/vault/projects/rust-os");
+    let project = root.join("projects/rust-os");
+    for file in [
+        "project.md",
+        "tasks/memory.md",
+        "units/mapping.md",
+        "units/read-spec.md",
+    ] {
+        let target = project.join(file);
+        fs::create_dir_all(target.parent().unwrap())?;
+        fs::copy(source.join(file), target)?;
+    }
+    let work_unit_id = Uuid::parse_str("30000000-0000-4000-8000-000000000002")?;
+    let before = Vault::load(&root, timezone)?;
+    let path = before.source(work_unit_id).unwrap();
+    let old_revision = before.revision(work_unit_id).unwrap().digest();
+    let edited = format!("{}\nConcurrent edit.\n", fs::read_to_string(path)?);
+    fs::write(path, &edited)?;
+    let revision = Vault::load(&root, timezone)?
+        .revision(work_unit_id)
+        .unwrap()
+        .digest();
+    let start = "2026-11-20T13:30:00+00:00";
+    let end = "2026-11-20T15:00:00+00:00";
+    let command = |revision: &str, start: &str, end: &str| Request::CreateTimeBlock {
+        work_unit_id,
+        work_unit_revision: revision.to_owned(),
+        start: start.parse().unwrap(),
+        end: end.parse().unwrap(),
+    };
+    let valid = command(&revision, start, end);
+    let socket = paths.socket_path();
+    let mut server = Server::open(paths, crate::DEFAULT_WORKER_SLOTS)?;
+    for (request, expected) in [
+        (command(&old_revision, start, end), ErrorCode::StaleRevision),
+        (
+            command(&revision, "2026-11-20T13:30:00+08:00", end),
+            ErrorCode::InvalidRequest,
+        ),
+        (command(&revision, end, start), ErrorCode::InvalidRequest),
+    ] {
+        assert!(matches!(
+            status(&mut server, socket.clone(), request),
+            Response::Error { code, .. } if code == expected
+        ));
+    }
+    let lock = fs::File::options()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(root.join(".mcbtodo-vault.lock"))?;
+    lock.lock()?;
+    assert!(matches!(
+        status(&mut server, socket.clone(), valid.clone()),
+        Response::Error {
+            code: ErrorCode::Conflict,
+            ..
+        }
+    ));
+    drop(lock);
+    assert_eq!(fs::read_to_string(path)?, edited);
+    assert_eq!(
+        status(&mut server, socket.clone(), valid.clone()),
+        Response::TimeBlockCreated {
+            work_unit_id,
+            synced: true,
+        }
+    );
+    let saved = fs::read_to_string(path)?;
+    assert!(saved.ends_with("Concurrent edit.\n"));
+    assert!(matches!(
+        status(&mut server, socket, valid),
+        Response::Error {
+            code: ErrorCode::StaleRevision,
+            ..
+        }
+    ));
+    assert_eq!(fs::read_to_string(path)?, saved);
+    let after = Vault::load(&root, timezone)?;
+    let blocks = &after.work_unit(work_unit_id).unwrap().data.time_blocks;
+    assert_eq!(blocks.len(), 2);
+    let original = &before.work_unit(work_unit_id).unwrap().data.time_blocks[0];
+    assert_eq!(blocks[0].when, original.when);
+    assert_eq!(blocks[0].availability, original.availability);
+    assert_eq!(blocks[1].when.start().to_rfc3339(), start);
+    assert_eq!(blocks[1].when.end().to_rfc3339(), end);
+    assert_eq!(blocks[1].availability, mcbtodo_domain::Availability::Busy);
+    Ok(())
+}
+
+#[test]
 fn daemon_answers_commands_and_recovers_running_timer_over_ipc() -> anyhow::Result<()> {
     let dir = private_tempdir()?;
     let socket = dir.path().join("s");

@@ -1199,9 +1199,14 @@ fn graph_dependency_edit_previews_then_confirms_or_cancels() {
 
 fn writable_project() -> (tempfile::TempDir, Vault) {
     let dir = tempfile::tempdir().unwrap();
+    let vault = copy_project(dir.path());
+    (dir, vault)
+}
+
+fn copy_project(root: &Path) -> Vault {
     let source =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/vault/projects/rust-os");
-    let target = dir.path().join("projects/rust-os");
+    let target = root.join("projects/rust-os");
     for relative in [
         "project.md",
         "tasks/memory.md",
@@ -1213,8 +1218,7 @@ fn writable_project() -> (tempfile::TempDir, Vault) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::copy(source.join(relative), path).unwrap();
     }
-    let vault = Vault::load(dir.path(), chrono_tz::Asia::Shanghai).unwrap();
-    (dir, vault)
+    Vault::load(root, chrono_tz::Asia::Shanghai).unwrap()
 }
 
 fn submit_time_block(state: &mut State, vault: &Vault) -> time_block::Submission {
@@ -1290,7 +1294,8 @@ fn month_menu_creates_work_unit_time_block_on_the_selected_date() {
     assert!(!vault.calendar().iter().any(|entry| {
         entry.id == id && matches!(entry.occurrence, Occurrence::Span(Span::DateTimeSpan(span)) if span == when)
     }));
-    state.create_time_block(dir.path(), &mut vault, block);
+    let paths = WorkspacePaths::from_home(dir.path().to_owned());
+    state.create_time_block(dir.path(), &mut vault, &paths, block);
     let text = screen(&state, &vault, 80, 24);
     assert!(text.contains("Day  2026-11-20"), "{text}");
     assert!(text.contains("Time block saved"), "{text}");
@@ -1306,6 +1311,65 @@ fn month_menu_creates_work_unit_time_block_on_the_selected_date() {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
+fn default_time_block_leaves_the_work_unit_unchanged_when_the_daemon_is_absent() {
+    let home = tempfile::tempdir().unwrap();
+    let paths = WorkspacePaths::from_home(home.path().to_owned());
+    paths.initialize().unwrap();
+    let root = paths.vault_root();
+    let mut vault = copy_project(&root);
+    let mut state = State::new("2026-11-20".parse().unwrap());
+    press(&mut state, &vault, " tb映射\n13:30\n15:00");
+    let block = submit_time_block(&mut state, &vault);
+    let path = vault.source(block.unit).unwrap().to_owned();
+    let original = std::fs::read(&path).unwrap();
+
+    state.create_time_block(&root, &mut vault, &paths, block);
+
+    assert!(state.message.contains("Start mcbtodo-daemon"));
+    assert!(matches!(state.overlay, Overlay::TimeBlock(_)));
+    assert_eq!(std::fs::read(path).unwrap(), original);
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn default_time_block_response_loss_reports_the_interval_without_replaying() {
+    use super::creation_tests::disconnect_after_request;
+    use mcbtodo_protocol::Request;
+
+    let home = tempfile::tempdir().unwrap();
+    let paths = WorkspacePaths::from_home(home.path().to_owned());
+    paths.initialize().unwrap();
+    let root = paths.vault_root();
+    let mut vault = copy_project(&root);
+    let mut state = State::new("2026-11-20".parse().unwrap());
+    press(&mut state, &vault, " tb映射\n13:30\n15:00");
+    let block = submit_time_block(&mut state, &vault);
+    let (unit, when, observed) = (block.unit, block.when, block.revision.digest());
+    let path = vault.source(unit).unwrap().to_owned();
+    let original = std::fs::read(&path).unwrap();
+
+    let sent = disconnect_after_request(&paths, || {
+        state.create_time_block(&root, &mut vault, &paths, block);
+    });
+
+    assert_eq!(
+        sent,
+        Request::CreateTimeBlock {
+            work_unit_id: unit,
+            work_unit_revision: observed,
+            start: when.start(),
+            end: when.end(),
+        }
+    );
+    assert!(matches!(state.overlay, Overlay::None));
+    assert!(state.message.contains("outcome unknown"));
+    assert!(state.message.contains(&unit.to_string()));
+    assert!(state.message.contains("13:30–15:00"));
+    assert_eq!(std::fs::read(path).unwrap(), original);
+}
+
+#[test]
 fn a_stale_time_block_write_keeps_the_form_and_preserves_concurrent_edits() {
     let (dir, mut vault) = writable_project();
     let mut state = State::new("2026-11-20".parse().unwrap());
@@ -1317,7 +1381,8 @@ fn a_stale_time_block_write_keeps_the_form_and_preserves_concurrent_edits() {
         std::fs::read_to_string(&path).unwrap()
     );
     std::fs::write(&path, &edited).unwrap();
-    state.create_time_block(dir.path(), &mut vault, block);
+    let paths = WorkspacePaths::from_home(dir.path().to_owned());
+    state.create_time_block(dir.path(), &mut vault, &paths, block);
     assert_eq!(std::fs::read_to_string(&path).unwrap(), edited);
     let text = screen(&state, &vault, 80, 24);
     assert!(text.contains("WorkUnit changed"), "{text}");
@@ -1342,7 +1407,8 @@ fn time_block_confirmation_keeps_the_revision_chosen_before_auto_reload() {
     assert!(state.refresh_external(dir.path(), &mut vault));
 
     let block = submit_time_block(&mut state, &vault);
-    state.create_time_block(dir.path(), &mut vault, block);
+    let paths = WorkspacePaths::from_home(dir.path().to_owned());
+    state.create_time_block(dir.path(), &mut vault, &paths, block);
     assert_eq!(std::fs::read_to_string(&path).unwrap(), edited);
     let text = screen(&state, &vault, 80, 24);
     assert!(text.contains("WorkUnit changed"), "{text}");

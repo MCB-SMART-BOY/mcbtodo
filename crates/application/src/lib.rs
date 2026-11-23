@@ -405,13 +405,37 @@ impl VaultCommands {
         availability: Availability,
         expected_revision: Revision,
     ) -> Result<PersistedDocument, WriteError> {
-        let when = DateTimeSpan::new(start, end, self.timezone)
-            .map_err(|error| WriteError::InvalidDocument(error.into()))?;
         VaultStore::new(&self.root, self.timezone).create_time_block(CreateTimeBlock {
             work_unit_id,
-            block: TimeBlock { when, availability },
+            block: self.time_block(start, end, availability)?,
             expected_revision,
         })
+    }
+
+    /// Validates and appends a busy block without waiting for another writer.
+    pub fn try_create_busy_time_block(
+        &self,
+        work_unit_id: Id,
+        start: DateTime<FixedOffset>,
+        end: DateTime<FixedOffset>,
+        work_unit_revision: &str,
+    ) -> Result<PersistedDocument, WriteError> {
+        VaultStore::new(&self.root, self.timezone).try_create_time_block(
+            work_unit_id,
+            self.time_block(start, end, Availability::Busy)?,
+            work_unit_revision,
+        )
+    }
+
+    fn time_block(
+        &self,
+        start: DateTime<FixedOffset>,
+        end: DateTime<FixedOffset>,
+        availability: Availability,
+    ) -> Result<TimeBlock, WriteError> {
+        let when = DateTimeSpan::new(start, end, self.timezone)
+            .map_err(|error| WriteError::InvalidDocument(error.into()))?;
+        Ok(TimeBlock { when, availability })
     }
 
     /// Creates a reminder after validating the user-authored text.

@@ -67,6 +67,14 @@ pub enum Request {
         title: String,
         at: DateTime<FixedOffset>,
     },
+    /// Append a busy time block to a WorkUnit in the daemon's default Vault.
+    CreateTimeBlock {
+        work_unit_id: Uuid,
+        /// Digest of the WorkUnit revision observed when selecting it.
+        work_unit_revision: String,
+        start: DateTime<FixedOffset>,
+        end: DateTime<FixedOffset>,
+    },
     Workflow(workflow::WorkflowRequest),
 }
 
@@ -107,6 +115,11 @@ pub enum Response {
     /// The reminder is visible. `synced` is false if its durability is uncertain.
     ReminderCreated {
         reminder_id: Uuid,
+        synced: bool,
+    },
+    /// The block is visible. `synced` is false if its durability is uncertain.
+    TimeBlockCreated {
+        work_unit_id: Uuid,
         synced: bool,
     },
     Workflow(workflow::WorkflowResponse),

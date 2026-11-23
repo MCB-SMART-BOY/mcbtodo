@@ -5,15 +5,15 @@ use chrono_tz::Tz;
 use crossterm::event::KeyCode;
 use mcbtodo_application::{ProjectPlan, VaultCommands};
 use mcbtodo_domain::{
-    Id, Task,
+    Availability, Id, Occurrence, Task,
     recurrence::ReminderSchedule,
-    time::{DateSpan, ZonedMoment},
+    time::{DateSpan, Span, ZonedMoment},
 };
 use mcbtodo_platform::WorkspacePaths;
 use mcbtodo_protocol::{ErrorCode, ProjectDates, ProtocolError, Request, Response};
 use mcbtodo_vault::{Revision, Vault, WriteError};
 
-use super::{Action, Overlay, State, View};
+use super::{Action, Overlay, State, View, calendar, time_block};
 
 #[derive(Clone, Copy)]
 pub(super) enum Kind {
@@ -403,6 +403,94 @@ impl State {
         self.overlay = Overlay::None;
         self.reload(root, vault);
         self.message = if self.message == "Vault reloaded" {
+            saved
+        } else {
+            format!("{saved} · {}", self.message)
+        };
+    }
+
+    pub(super) fn create_time_block(
+        &mut self,
+        root: &Path,
+        vault: &mut Vault,
+        paths: &WorkspacePaths,
+        block: time_block::Submission,
+    ) {
+        let (unit, when) = (block.unit, block.when);
+        let use_daemon = match is_daemon_vault(paths, root) {
+            Ok(value) => value,
+            Err(error) => {
+                self.message = format!("Time block failed · {error:#}");
+                return;
+            }
+        };
+        let saved = if use_daemon {
+            create_via_daemon(
+                paths,
+                Request::CreateTimeBlock {
+                    work_unit_id: unit,
+                    work_unit_revision: block.revision.digest(),
+                    start: when.start(),
+                    end: when.end(),
+                },
+                |response| match response {
+                    Response::TimeBlockCreated {
+                        work_unit_id,
+                        synced,
+                    } if work_unit_id == unit => Some(synced),
+                    _ => None,
+                },
+            )
+            .map(|synced| publication_message("Time block", unit, synced))
+        } else {
+            let result = VaultCommands::new(root, vault.timezone()).create_time_block(
+                unit,
+                when.start(),
+                when.end(),
+                Availability::Busy,
+                block.revision,
+            );
+            match result {
+                Err(WriteError::StaleRevision { .. } | WriteError::WorkUnitNotFound { .. }) => {
+                    Err(CreationError::StaleRevision)
+                }
+                result => local_publication("Time block", result),
+            }
+        };
+        let saved = match saved {
+            Ok(message) => message,
+            Err(CreationError::StaleRevision) => {
+                self.message = "WorkUnit changed · Esc twice, r to reload, then retry".into();
+                return;
+            }
+            Err(CreationError::Rejected(message)) => {
+                self.message = format!("Time block failed · {message}");
+                return;
+            }
+            Err(CreationError::Unknown) => {
+                self.overlay = Overlay::None;
+                self.reload(root, vault);
+                self.message = format!(
+                    "Save outcome unknown · Check {}–{} · {unit}",
+                    when.start().format("%H:%M"),
+                    when.end().format("%H:%M"),
+                );
+                return;
+            }
+        };
+        self.overlay = Overlay::None;
+        self.reload(root, vault);
+        self.message = if self.message == "Vault reloaded" {
+            self.switch(View::Day, vault);
+            if let Ok(entries) = calendar::day(vault, self.day)
+                && let Some(row) = entries.iter().position(|entry| {
+                    entry.id == unit
+                    && matches!(entry.occurrence, Occurrence::Span(Span::DateTimeSpan(span)) if span == when)
+                })
+            {
+                self.row = row;
+                self.document_id = Some(unit);
+            }
             saved
         } else {
             format!("{saved} · {}", self.message)
