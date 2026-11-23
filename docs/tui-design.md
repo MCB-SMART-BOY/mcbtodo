@@ -9,6 +9,12 @@ The renderer receives neither the Vault nor the input `State` or `Keymap`.
 It still owns widget layout and some display formatting. The model is private
 to the TUI.
 
+The `:` prompt parses text into a typed terminal command. View, timer,
+settings, and proposal menus invoke the same commands as the prompt.
+The session dispatches the resulting action through the existing client or
+local path. Text entry, resizing, and service responses follow their own
+paths. The daemon receives typed business requests with explicit arguments.
+
 The Month model supplies the month title, grid labels, detail lines, compact
 date labels and focused list row. A busy day keeps its `*` marker in both
 layouts. The tall grid can also display `!` for a deadline on the same day.

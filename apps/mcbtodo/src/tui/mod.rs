@@ -1,4 +1,5 @@
 mod calendar;
+mod command;
 mod creation;
 mod daemon_views;
 mod deadline;
@@ -38,6 +39,8 @@ use mcbtodo_protocol::{Request, workflow::WorkflowRequest};
 use mcbtodo_vault::{Revision, Vault, WriteError};
 #[cfg(test)]
 use ratatui::Terminal;
+
+use self::command::{Command, TimerCommand};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum View {
@@ -455,6 +458,44 @@ impl State {
         }
     }
 
+    fn execute(&mut self, command: Command, vault: &Vault) -> Action {
+        match command {
+            Command::Quit => return Action::Quit,
+            Command::Reload => return Action::Reload,
+            Command::Today => self.set_day(crate::today(vault)),
+            Command::Date(day) => self.set_day(day),
+            Command::Help => self.overlay = Overlay::Help(Default::default()),
+            Command::Settings => return Action::OpenSettings,
+            Command::Search(query) => self.overlay = Overlay::Picker { query, row: 0 },
+            Command::Proposals => {
+                self.overlay = Overlay::Proposals;
+                self.proposals.detail = None;
+                self.message.clear();
+                return Action::Proposals(proposal_review::Request::List);
+            }
+            Command::View(view) => {
+                self.switch(view, vault);
+                self.message.clear();
+                if view == View::Workflow {
+                    return self.workflow.open();
+                }
+            }
+            Command::Timer(operation) => {
+                return Action::Timer(match operation {
+                    TimerCommand::Status => Request::Status,
+                    TimerCommand::Start => Request::Start {
+                        work_unit_id: self
+                            .selected_document(vault)
+                            .filter(|&id| vault.is_work_unit(id)),
+                    },
+                    TimerCommand::Pause => Request::Pause,
+                    TimerCommand::Stop => Request::Stop,
+                });
+            }
+        }
+        Action::Continue
+    }
+
     fn handle(&mut self, mut key: KeyEvent, vault: &Vault) -> Action {
         use Action::*;
         if key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -508,60 +549,9 @@ impl State {
                     KeyCode::Enter => {
                         let input = std::mem::take(input);
                         self.overlay = Overlay::None;
-                        let parts = input.split_whitespace().collect::<Vec<_>>();
-                        match parts.as_slice() {
-                            ["q" | "quit"] => return Quit,
-                            ["reload"] => return Reload,
-                            ["today"] => self.set_day(crate::today(vault)),
-                            ["date", value] => match crate::parse_day(value) {
-                                Ok(day) => self.set_day(day),
-                                Err(error) => self.message = error,
-                            },
-                            ["help" | "?"] => self.overlay = Overlay::Help(Default::default()),
-                            ["settings"] => return OpenSettings,
-                            ["search", query @ ..] if !query.is_empty() => {
-                                self.overlay = Overlay::Picker {
-                                    query: query.join(" "),
-                                    row: 0,
-                                };
-                            }
-                            ["proposals" | "proposal"] => {
-                                self.overlay = Overlay::Proposals;
-                                self.proposals.detail = None;
-                                self.message.clear();
-                                return Proposals(proposal_review::Request::List);
-                            }
-                            ["inbox"] => self.switch(View::Inbox, vault),
-                            ["timer", operation] => {
-                                let request = match *operation {
-                                    "status" => Some(Request::Status),
-                                    "start" => Some(Request::Start {
-                                        work_unit_id: self
-                                            .selected_document(vault)
-                                            .filter(|&id| vault.is_work_unit(id)),
-                                    }),
-                                    "pause" => Some(Request::Pause),
-                                    "stop" => Some(Request::Stop),
-                                    _ => None,
-                                };
-                                if let Some(request) = request {
-                                    return Timer(request);
-                                }
-                                self.message = "Usage: timer status|start|pause|stop".into();
-                            }
-                            ["view", view] | [view] => {
-                                if let Some(view) = View::from_name(view) {
-                                    self.switch(view, vault);
-                                    self.message.clear();
-                                    if view == View::Workflow {
-                                        return self.workflow.open();
-                                    }
-                                } else {
-                                    let names = View::ALL.map(View::saved_name).join("|");
-                                    self.message = format!("Usage: view {names}");
-                                }
-                            }
-                            _ => self.message = "Type :help for available commands".into(),
+                        match Command::parse(&input) {
+                            Ok(command) => return self.execute(command, vault),
+                            Err(error) => self.message = error,
                         }
                     }
                     KeyCode::Backspace => {
@@ -651,7 +641,7 @@ impl State {
             }
             Overlay::Space(viewport) => {
                 match key.code {
-                    KeyCode::Enter => return OpenSettings,
+                    KeyCode::Enter => return self.execute(Command::Settings, vault),
                     KeyCode::Char('u') => self.overlay = Overlay::Views(Default::default()),
                     KeyCode::Char('t') => self.overlay = Overlay::Time,
                     KeyCode::Char('c') if self.view.uses_dates() || self.view == View::Outline => {
@@ -665,16 +655,11 @@ impl State {
                         };
                         return OpenDeadline(id);
                     }
-                    KeyCode::Char('a') => {
-                        self.overlay = Overlay::Proposals;
-                        self.proposals.detail = None;
-                        self.message.clear();
-                        return Proposals(proposal_review::Request::List);
-                    }
-                    KeyCode::Char('?') => self.overlay = Overlay::Help(Default::default()),
+                    KeyCode::Char('a') => return self.execute(Command::Proposals, vault),
+                    KeyCode::Char('?') => return self.execute(Command::Help, vault),
                     KeyCode::Char('r') => {
                         self.overlay = Overlay::None;
-                        return Reload;
+                        return self.execute(Command::Reload, vault);
                     }
                     KeyCode::Esc => self.overlay = Overlay::None,
                     code => viewport.scroll(code),
@@ -700,11 +685,8 @@ impl State {
                                 return Continue;
                             }
                         };
-                        self.switch(view, vault);
                         self.overlay = Overlay::None;
-                        if view == View::Workflow {
-                            return self.workflow.open();
-                        }
+                        return self.execute(Command::View(view), vault);
                     }
                 }
                 return Continue;
@@ -768,20 +750,16 @@ impl State {
                 return Continue;
             }
             Overlay::Time => {
-                let request = match key.code {
+                let operation = match key.code {
                     KeyCode::Char('b') if self.view.uses_dates() => {
                         self.message.clear();
                         self.overlay = Overlay::TimeBlock(time_block::Form::new(self.day));
                         return Continue;
                     }
-                    KeyCode::Char('i') => Request::Status,
-                    KeyCode::Char('s') => Request::Start {
-                        work_unit_id: self
-                            .selected_document(vault)
-                            .filter(|&id| vault.is_work_unit(id)),
-                    },
-                    KeyCode::Char('p') => Request::Pause,
-                    KeyCode::Char('x') => Request::Stop,
+                    KeyCode::Char('i') => TimerCommand::Status,
+                    KeyCode::Char('s') => TimerCommand::Start,
+                    KeyCode::Char('p') => TimerCommand::Pause,
+                    KeyCode::Char('x') => TimerCommand::Stop,
                     KeyCode::Esc => {
                         self.overlay = Overlay::Space(Default::default());
                         return Continue;
@@ -789,7 +767,7 @@ impl State {
                     _ => return Continue,
                 };
                 self.overlay = Overlay::None;
-                return Timer(request);
+                return self.execute(Command::Timer(operation), vault);
             }
             Overlay::TimeBlock(form) => {
                 if let Some(action) = form.handle(key.code, vault, &mut self.message) {
@@ -815,8 +793,8 @@ impl State {
             return action;
         }
         match key.code {
-            KeyCode::Char('q') => return Quit,
-            KeyCode::Char('r') => return Reload,
+            KeyCode::Char('q') => return self.execute(Command::Quit, vault),
+            KeyCode::Char('r') => return self.execute(Command::Reload, vault),
             KeyCode::Char('e') if self.view != View::Workflow => return Edit,
             KeyCode::Char('t') if self.view == View::Inbox => {
                 let entries = match self.inbox_rows(vault) {
@@ -880,13 +858,8 @@ impl State {
             }
             KeyCode::Char(' ') => self.overlay = Overlay::Space(Default::default()),
             KeyCode::Char(':') => self.overlay = Overlay::Command(String::new()),
-            KeyCode::Char('/') => {
-                self.overlay = Overlay::Picker {
-                    query: String::new(),
-                    row: 0,
-                }
-            }
-            KeyCode::Char('?') => self.overlay = Overlay::Help(Default::default()),
+            KeyCode::Char('/') => return self.execute(Command::Search(String::new()), vault),
+            KeyCode::Char('?') => return self.execute(Command::Help, vault),
             KeyCode::Esc if self.view == View::Graph => self.graph_selection = None,
             KeyCode::Esc if self.view.uses_dates() => {
                 self.anchor = None;
@@ -2596,6 +2569,46 @@ mod tests {
         );
         state.handle(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &vault);
         assert_eq!(state.selected_range(), (state.day, state.day));
+    }
+
+    #[test]
+    fn command_line_and_menus_dispatch_the_same_intents() {
+        let vault = fixture();
+        let day = "2026-11-24".parse().unwrap();
+        let press = |state: &mut State, text: &str| {
+            let mut action = Action::Continue;
+            for ch in text.chars() {
+                let code = if ch == '\n' {
+                    KeyCode::Enter
+                } else {
+                    KeyCode::Char(ch)
+                };
+                action = state.handle(KeyEvent::new(code, KeyModifiers::NONE), &vault);
+            }
+            action
+        };
+        for (typed, menu, expected, view) in [
+            (
+                ":view workflow\n",
+                " uf",
+                Action::Workflow(WorkflowRequest::List { before: None }),
+                View::Workflow,
+            ),
+            (
+                ":timer start\n",
+                " ts",
+                Action::Timer(Request::Start { work_unit_id: None }),
+                View::Month,
+            ),
+            (":settings\n", " \n", Action::OpenSettings, View::Month),
+        ] {
+            for input in [typed, menu] {
+                let mut state = State::new(day);
+                assert_eq!(press(&mut state, input), expected, "{input:?}");
+                assert_eq!(state.view, view);
+                assert_eq!(state.day, day);
+            }
+        }
     }
 
     #[test]

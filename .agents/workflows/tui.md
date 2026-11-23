@@ -14,6 +14,11 @@ state. A Ratatui renderer receives that model, theme, and metrics and draws it.
 Use in-memory rows to test the projection and the session's load-and-present
 path to test integration.
 
+When the command prompt and a shortcut or menu expose the same operation,
+dispatch a shared typed command and test both entry points. Resolve the
+active selection into explicit IDs before invoking a business operation.
+Keep the terminal input and the Daemon request independent.
+
 Keep domain identity and occurrence identity distinct. A repeated calendar row
 must retain the selected object and occurrence date/time. Shared screen data may
 serve future GUI or web clients, while terminal coordinates and Ratatui styles
