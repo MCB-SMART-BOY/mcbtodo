@@ -185,7 +185,15 @@ pub fn run(command: Command, paths: &WorkspacePaths) -> Result<()> {
             revision,
             due_at: at,
         },
-        Command::Inspect { run_id } => WorkflowRequest::Inspect { run_id },
+        Command::Inspect { run_id } => {
+            let run = daemon_client::workflow_run(paths, run_id)?;
+            if let Some(review) = run.approval_review() {
+                let mut output = serde_json::to_value(&run)?;
+                output["approval_review"] = review.into();
+                return print_json(&output);
+            }
+            return print_json(&run);
+        }
         Command::Resolve {
             run_id,
             outcome,
@@ -199,25 +207,35 @@ pub fn run(command: Command, paths: &WorkspacePaths) -> Result<()> {
             },
             note,
         },
-        Command::Runs { before } => WorkflowRequest::List { before },
-        Command::Trace { run_id, index } => WorkflowRequest::Step { run_id, index },
+        Command::Runs { before } => {
+            let page = daemon_client::workflow_runs(paths, before)?;
+            return print_json(&WorkflowResponse::Runs {
+                runs: page.runs,
+                next_before: page.next_before,
+            });
+        }
+        Command::Trace { run_id, index } => {
+            return print_json(&daemon_client::workflow_step(paths, run_id, index)?);
+        }
         Command::Artifact { run_id, index } => return read_artifact(paths, run_id, index),
         Command::Approve {
             run_id,
             node,
             review,
-        } => WorkflowRequest::Decide {
-            run_id,
-            node,
-            approved: true,
-            review: Some(review),
-        },
-        Command::Reject { run_id, node } => WorkflowRequest::Decide {
-            run_id,
-            node,
-            approved: false,
-            review: None,
-        },
+        } => {
+            return print_json(&daemon_client::decide_workflow(
+                paths,
+                run_id,
+                node,
+                true,
+                Some(review),
+            )?);
+        }
+        Command::Reject { run_id, node } => {
+            return print_json(&daemon_client::decide_workflow(
+                paths, run_id, node, false, None,
+            )?);
+        }
         Command::Cancel { run_id } => WorkflowRequest::Cancel { run_id },
         Command::AuthorizeScript { revision, node } => WorkflowRequest::AuthorizeScript {
             revision,
@@ -289,31 +307,19 @@ pub fn run(command: Command, paths: &WorkspacePaths) -> Result<()> {
             ScheduleCommand::Disable { id } => WorkflowRequest::DisableSchedule { id },
         },
     };
-    let inspect = matches!(&command, WorkflowRequest::Inspect { .. });
-    let output = daemon_client::workflow(paths, command)?;
-    let stdout = io::stdout().lock();
-    match output {
-        WorkflowResponse::Run(run) => {
-            if let Some(review) = inspect.then(|| run.approval_review()).flatten() {
-                let mut output = serde_json::to_value(&run)?;
-                output["approval_review"] = review.into();
-                serde_json::to_writer_pretty(stdout, &output)?;
-            } else {
-                serde_json::to_writer_pretty(stdout, &run)?;
-            }
-        }
-        WorkflowResponse::Schedule(schedule) => serde_json::to_writer_pretty(stdout, &schedule)?,
-        WorkflowResponse::Resolution(resolution) => {
-            serde_json::to_writer_pretty(stdout, &resolution)?
-        }
-        WorkflowResponse::Step { step } => serde_json::to_writer_pretty(stdout, &step)?,
-        summary
-        @ (WorkflowResponse::ScriptAuthorization { .. } | WorkflowResponse::Runs { .. }) => {
-            serde_json::to_writer_pretty(stdout, &summary)?;
-        }
-        WorkflowResponse::Artifact { .. } => bail!("unexpected artifact response"),
+    match daemon_client::workflow(paths, command)? {
+        WorkflowResponse::Run(run) => print_json(&run),
+        WorkflowResponse::Schedule(schedule) => print_json(&schedule),
+        WorkflowResponse::Resolution(resolution) => print_json(&resolution),
+        summary @ WorkflowResponse::ScriptAuthorization { .. } => print_json(&summary),
+        _ => bail!("unexpected workflow response"),
     }
-    println!();
+}
+
+fn print_json(value: &impl serde::Serialize) -> Result<()> {
+    let mut stdout = io::stdout().lock();
+    serde_json::to_writer_pretty(&mut stdout, value)?;
+    writeln!(stdout)?;
     Ok(())
 }
 

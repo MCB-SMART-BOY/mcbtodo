@@ -2063,3 +2063,8 @@ the approval review token, and a rejected step request.
 On Linux AArch64, `MCBTODO_REQUIRE_SANDBOX=1 cargo xtask check` passed 733 tests.
 Agent registry validation, example Vault validation, and the sandbox workspace
 smoke passed.
+
+The CLI now uses the same typed operations for `workflow runs`, `inspect`,
+`trace`, `approve`, and `reject`. The list keeps its JSON envelope and the
+inspect output still includes `approval_review` for approvable runs. The
+workspace check and sandbox smoke passed again with the shared CLI paths.
