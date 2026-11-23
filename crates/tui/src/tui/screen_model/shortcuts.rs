@@ -199,7 +199,7 @@ pub(in crate::tui) fn help(keys: &Keymap) -> Vec<String> {
         format!("{edit}   Open source in $VISUAL / $EDITOR / hx"),
         format!("{reload}   Reload vault"),
         format!("{command}   view, search, timer, proposals, date, today, reload, quit"),
-        format!("{command}time-block   Add a time block on the current date"),
+        format!("{command}time-block / {command}reminder   Create calendar entries"),
         format!("{command}help   Show this help"),
         format!("{quit}   Quit"),
     ]

@@ -28,8 +28,8 @@ use anyhow::{Context, Result};
 use chrono::{Datelike, Days, NaiveDate};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use mcbtodo_application::{
-    CalendarItem, InboxSummary, OutlineItem, TargetAction, VaultCommands, project_action_targets,
-    project_calendar, project_inbox, project_revision_in_snapshot,
+    CalendarItem, InboxSummary, OutlineItem, VaultCommands, project_calendar, project_inbox,
+    project_revision_in_snapshot,
 };
 use mcbtodo_domain::{CalendarKind, Id, Occurrence, time::Span};
 #[cfg(test)]
@@ -376,43 +376,40 @@ impl State {
     }
 
     fn row_focuses(&self, vault: &Vault) -> Vec<FocusIdentity> {
+        // The presenter displays query errors. Navigation has no rows to move through.
+        self.try_row_focuses(vault).unwrap_or_default()
+    }
+
+    fn try_row_focuses(&self, vault: &Vault) -> Result<Vec<FocusIdentity>> {
         let calendar = match self.view {
-            View::Month | View::Week | View::Workflow => return Vec::new(),
+            View::Month | View::Week | View::Workflow => return Ok(Vec::new()),
             View::Day => self.day_entries(vault),
             View::Agenda => self.agenda(vault),
             View::Timeline => self.calendar_entries(vault, View::Timeline),
             View::Outline => {
-                return self
-                    .outline_rows(vault)
-                    .unwrap_or_default()
+                return Ok(self
+                    .outline_rows(vault)?
                     .iter()
                     .map(|row| FocusIdentity::Document(row.id))
-                    .collect();
+                    .collect());
             }
             View::Graph => {
-                return self
-                    .graph_nodes(vault)
-                    .unwrap_or_default()
+                return Ok(self
+                    .graph_nodes(vault)?
                     .iter()
                     .map(|node| FocusIdentity::Document(node.id))
-                    .collect();
+                    .collect());
             }
             View::Inbox => {
-                return self
-                    .inbox_rows(vault)
-                    .unwrap_or_default()
+                return Ok(self
+                    .inbox_rows(vault)?
                     .iter()
                     .filter(|entry| entry.project_id.is_none())
                     .map(|entry| FocusIdentity::Document(entry.id))
-                    .collect();
+                    .collect());
             }
         };
-        // Projection failures have no actionable rows. The presenter displays the error.
-        calendar
-            .unwrap_or_default()
-            .iter()
-            .map(calendar_focus)
-            .collect()
+        Ok(calendar?.iter().map(calendar_focus).collect())
     }
 
     fn calendar_entries(&self, vault: &Vault, view: View) -> Result<Vec<CalendarItem>> {
@@ -493,6 +490,17 @@ impl State {
                     }
                 }
             }
+            Command::Reminder => {
+                self.overlay = Overlay::None;
+                match self.selected_time_target(vault, true) {
+                    Ok(target) => {
+                        self.message.clear();
+                        self.overlay =
+                            Overlay::CreateForm(creation::Form::reminder(vault.timezone(), target));
+                    }
+                    Err(error) => self.message = format!("Cannot load reminder target · {error:#}"),
+                }
+            }
             Command::View(view) => {
                 self.switch(view, vault);
                 self.message.clear();
@@ -503,10 +511,12 @@ impl State {
             Command::Timer(operation) => {
                 return Action::Timer(match operation {
                     TimerCommand::Status => Request::Status,
-                    TimerCommand::Start => Request::Start {
-                        work_unit_id: self
-                            .selected_document(vault)
-                            .filter(|&id| vault.is_work_unit(id)),
+                    TimerCommand::Start => match self.selected_time_target(vault, false) {
+                        Ok(work_unit_id) => Request::Start { work_unit_id },
+                        Err(error) => {
+                            self.message = format!("Cannot load timer target · {error:#}");
+                            return Action::Continue;
+                        }
                     },
                     TimerCommand::Pause => Request::Pause,
                     TimerCommand::Stop => Request::Stop,
@@ -726,16 +736,7 @@ impl State {
                     }
                     KeyCode::Char('e') => creation::Kind::Event,
                     KeyCode::Char('d') => creation::Kind::Deadline,
-                    KeyCode::Char('r') => {
-                        let target = self.selected_document(vault).filter(|id| {
-                            project_action_targets(vault, TargetAction::CreateReminder)
-                                .iter()
-                                .any(|candidate| candidate.id == *id)
-                        });
-                        self.overlay =
-                            Overlay::CreateForm(creation::Form::reminder(vault.timezone(), target));
-                        return Continue;
-                    }
+                    KeyCode::Char('r') => return self.execute(Command::Reminder, vault),
                     KeyCode::Char('b') => return self.execute(Command::TimeBlock, vault),
                     KeyCode::Esc => {
                         self.overlay = Overlay::Space(Default::default());
@@ -1093,6 +1094,34 @@ impl State {
                 .map(|node| node.id);
         }
         self.row_ids(vault).get(self.row).copied()
+    }
+
+    fn selected_time_target(&self, vault: &Vault, accepts_tasks: bool) -> Result<Option<Id>> {
+        let eligible = |row: &OutlineItem| row.depth == 2 || (accepts_tasks && row.depth == 1);
+        if self.view == View::Outline {
+            return Ok(self
+                .outline_rows(vault)?
+                .get(self.row)
+                .filter(|row| eligible(row))
+                .map(|row| row.id));
+        }
+        let Some(&focus) = self.try_row_focuses(vault)?.get(self.row) else {
+            return Ok(None);
+        };
+        let id = focus.document_id();
+        if let Some(service) = &self.daemon_views {
+            return Ok(service
+                .outline(vault.timezone())?
+                .iter()
+                .any(|row| row.id == id && eligible(row))
+                .then_some(id));
+        }
+        let eligible = if accepts_tasks {
+            vault.is_reminder_target(id)
+        } else {
+            vault.is_work_unit(id)
+        };
+        Ok(eligible.then_some(id))
     }
 
     fn graph_nodes(&self, vault: &Vault) -> Result<Rc<[graph::Node]>> {

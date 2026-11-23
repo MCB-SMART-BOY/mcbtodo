@@ -231,6 +231,92 @@ fn reminder_from_selected_outline_task_keeps_its_target_binding() {
     assert_eq!(target_id, Some(task_id));
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn timer_and_reminder_use_the_selected_daemon_outline_target() -> Result<()> {
+    use std::{os::unix::net::UnixListener, thread};
+
+    use mcbtodo_protocol::wire;
+
+    let home = tempfile::tempdir()?;
+    let paths = WorkspacePaths::from_home(home.path().to_owned());
+    paths.initialize()?;
+    let vault = Vault::load(&paths.vault_root(), ZONE)?;
+    let rows = mcbtodo_application::project_outline(&tests::fixture());
+    let task = rows.iter().position(|row| row.depth == 1).unwrap();
+    let unit = rows.iter().position(|row| row.depth == 2).unwrap();
+    let (task_id, unit_id) = (rows[task].id, rows[unit].id);
+    assert!(vault.revision(task_id).is_none() && vault.revision(unit_id).is_none());
+
+    let listener = UnixListener::bind(paths.socket_path())?;
+    let peer = thread::spawn(move || -> Result<()> {
+        let (mut stream, _) = listener.accept()?;
+        stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+        assert!(matches!(wire::read(&mut stream)?, Request::Outline { .. }));
+        wire::write_outline(&mut stream, rows)?;
+        Ok(())
+    });
+    let mut state = State::new(day("2026-11-25"));
+    state.daemon_views = Some(daemon_views::DaemonViews::new(paths));
+    state.view = View::Outline;
+    state.row = unit;
+    assert_eq!(
+        press(&mut state, &vault, " ts"),
+        Action::Timer(Request::Start {
+            work_unit_id: Some(unit_id),
+        })
+    );
+    state.row = task;
+    assert_eq!(
+        press(&mut state, &vault, ":timer start\n"),
+        Action::Timer(Request::Start { work_unit_id: None })
+    );
+    for entry in [" cr", ":reminder\n"] {
+        press(&mut state, &vault, entry);
+        let Action::CreateReminder(request) = press(
+            &mut state,
+            &vault,
+            "Review notes\t2026-11-25T09:30:00+08:00\n",
+        ) else {
+            panic!("expected reminder creation");
+        };
+        assert!(matches!(
+            request.schedule,
+            Schedule::Reminder { target_id: Some(id), .. } if id == task_id
+        ));
+        press(&mut state, &vault, "\x1b");
+    }
+    peer.join().unwrap()?;
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn unavailable_daemon_outline_does_not_drop_the_timer_or_reminder_binding() -> Result<()> {
+    let home = tempfile::tempdir()?;
+    let paths = WorkspacePaths::from_home(home.path().to_owned());
+    paths.initialize()?;
+    let vault = tests::fixture();
+    let mut state = State::new(day("2026-11-25"));
+    state.view = View::Outline;
+    state.row = vault
+        .outline()
+        .iter()
+        .position(|row| row.depth == 2)
+        .unwrap();
+    state.daemon_views = Some(daemon_views::DaemonViews::new(paths));
+
+    for view in [View::Outline, View::Day] {
+        state.view = view;
+        assert_eq!(press(&mut state, &vault, " ts"), Action::Continue);
+        assert!(state.message.contains("Cannot load timer target"));
+        assert_eq!(press(&mut state, &vault, " cr"), Action::Continue);
+        assert!(state.message.contains("Cannot load reminder target"));
+        assert!(matches!(state.overlay, Overlay::None));
+    }
+    Ok(())
+}
+
 #[test]
 fn outline_project_menu_exposes_task_capture() {
     let vault = tests::fixture();

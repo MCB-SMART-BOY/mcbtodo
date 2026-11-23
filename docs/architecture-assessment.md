@@ -327,7 +327,10 @@ deadline still creates a Project with a date-only deadline. External Vaults
 use the same application command in the foreground.
 
 The Linux default-Vault TUI also saves one-time reminders through the
-Daemon. IPC tests cover offset validation against the configured timezone,
+Daemon. Both the Create menu and `:reminder` use the same form. Timer start
+and reminder setup use the service Outline to resolve the selected target.
+TUI socket tests cover server-only targets and query failures in Outline and
+Day. IPC tests cover offset validation against the configured timezone,
 missing targets, writer-lock contention, and duplicate UUID rejection.
 The TUI keeps the draft if the socket is unavailable before submission and
 reports the UUID if the connection is lost after submission. The Linux
@@ -1830,9 +1833,9 @@ perform use-case work independently for some reads and interactions:
   editing. Calendar, Agenda, and Timeline views now share the application
   calendar projection and keep layout-specific ordering and rendering in TUI.
   Picker path matching resolves paths through Vault without placing storage
-  paths in the application DTO. Reminder targets come from
-  `project_action_targets`. Time-block selection uses the WorkUnit rows from
-  Outline, including their parent labels and revisions. TUI keeps hierarchy
+  paths in the application DTO. Reminder and timer target selection use the
+  service Outline in a connected session. Time-block selection uses its
+  WorkUnit rows, including their parent labels and revisions. TUI keeps hierarchy
   rendering and passes the observed revision to the write command.
   Dependency-change validation,
   readiness impact, and the observed target revision come from the application

@@ -219,6 +219,10 @@ previous menu.
   refresh cannot change the revision the user submits. Short
   layouts prioritize the active field, and the time-block picker reserves
   space for the selected WorkUnit. Narrow footers keep Enter and Esc visible.
+- The Create menu and `:reminder` use the same reminder form. In a connected
+  session, the Daemon Outline identifies the selected Task or WorkUnit for
+  reminders and the selected WorkUnit for timers. A query error is displayed
+  before either command proceeds.
 
 `theme.rs` defines background, surface, active surface, border, focus border,
 primary, secondary and muted text, accent, success, warning, error, selection,

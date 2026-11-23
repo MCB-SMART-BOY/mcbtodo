@@ -144,6 +144,8 @@ Vault 快照。快照比较依据源文件路径和 revision。
 输入焦点、校验反馈和页脚。继续验证原有 revision 与取消路径。
 时间块的两个菜单与 `:time-block` 复用同一表单入口。验证默认工作区从
 Daemon Outline 获取候选，刷新保留已审阅的 revision，断连不切换到本地候选。
+计时和提醒使用 Daemon Outline 判定关联对象。验证选中服务端对象时保留其
+UUID，查询失败时显示错误并停止命令。
 
 ## 7. Phase 5 — Process Plugin Protocol
 
