@@ -2075,3 +2075,8 @@ older page, and the replacement list preserves selection by run UUID. Review
 inspection, step reads, and decision submission still run synchronously.
 Linux AArch64 workspace checks passed 734 tests. Example Vault validation and
 the sandbox workspace smoke passed.
+
+The trace view uses the same typed commands for step navigation and reload
+from the command prompt and keyboard shortcuts. A test verifies the run UUID,
+step index, and the active panel requirements for dispatch. The Linux AArch64
+workspace check passed 735 tests, and the example Vault and sandbox smoke passed.

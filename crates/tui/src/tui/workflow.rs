@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use super::{
     Action,
-    command::WorkflowCommand,
+    command::{TraceStep, WorkflowCommand},
     keymap::Keymap,
     move_row,
     review::{PannableReview, ReviewViewport},
@@ -101,31 +101,48 @@ impl State {
         refresh()
     }
 
-    pub(super) fn runs_command_for_key(&self, code: KeyCode) -> Option<WorkflowCommand> {
-        if !matches!(self.panel, Panel::Runs) {
-            return None;
-        }
-        match code {
-            KeyCode::Char('r') => Some(WorkflowCommand::Refresh),
-            KeyCode::Char('n') => Some(WorkflowCommand::Older),
-            KeyCode::Enter => Some(WorkflowCommand::Trace),
-            KeyCode::Char(key @ ('a' | 'd')) => Some(WorkflowCommand::Review {
+    pub(super) fn command_for_key(&self, code: KeyCode) -> Option<WorkflowCommand> {
+        match (&self.panel, code) {
+            (Panel::Runs, KeyCode::Char('r')) => Some(WorkflowCommand::Refresh),
+            (Panel::Runs, KeyCode::Char('n')) => Some(WorkflowCommand::Older),
+            (Panel::Runs, KeyCode::Enter) => Some(WorkflowCommand::Trace),
+            (Panel::Runs, KeyCode::Char(key @ ('a' | 'd'))) => Some(WorkflowCommand::Review {
                 approved: key == 'a',
             }),
+            (Panel::Trace { .. }, KeyCode::Char('h') | KeyCode::Left) => {
+                Some(WorkflowCommand::Step(TraceStep::Previous))
+            }
+            (Panel::Trace { .. }, KeyCode::Char('l') | KeyCode::Right) => {
+                Some(WorkflowCommand::Step(TraceStep::Next))
+            }
+            (Panel::Trace { .. }, KeyCode::Char('r')) => {
+                Some(WorkflowCommand::Step(TraceStep::Refresh))
+            }
             _ => None,
         }
     }
 
     pub(super) fn run_command(&mut self, command: WorkflowCommand, message: &mut String) -> Action {
-        if self.is_loading_page()
-            && matches!(
-                command,
-                WorkflowCommand::Trace | WorkflowCommand::Review { .. }
-            )
-        {
-            return Action::Continue;
-        }
         match command {
+            WorkflowCommand::Step(direction) => {
+                let Panel::Trace { index, .. } = self.panel else {
+                    *message = "Open a Workflow trace first".into();
+                    return Action::Continue;
+                };
+                let index = match direction {
+                    TraceStep::Previous => index.saturating_sub(1),
+                    TraceStep::Next => index.saturating_add(1),
+                    TraceStep::Refresh => index,
+                };
+                self.step(index, message)
+            }
+            _ if !matches!(self.panel, Panel::Runs) => {
+                *message = "Open the Workflow runs list first".into();
+                Action::Continue
+            }
+            WorkflowCommand::Trace | WorkflowCommand::Review { .. } if self.is_loading_page() => {
+                Action::Continue
+            }
             WorkflowCommand::Refresh => refresh(),
             WorkflowCommand::Older => match self.next_before {
                 Some(before) => Action::Workflow(Operation::List {
@@ -153,12 +170,7 @@ impl State {
         }
     }
 
-    pub(super) fn handle(
-        &mut self,
-        key: KeyEvent,
-        keys: &Keymap,
-        message: &mut String,
-    ) -> Option<Action> {
+    pub(super) fn handle(&mut self, key: KeyEvent, keys: &Keymap) -> Option<Action> {
         if let Panel::Confirm(decision) = &self.panel {
             return Some(match key.code {
                 KeyCode::Esc => {
@@ -184,13 +196,7 @@ impl State {
             });
         }
 
-        if let Panel::Trace {
-            index,
-            text,
-            viewport,
-        } = &mut self.panel
-        {
-            let index = *index;
+        if let Panel::Trace { text, viewport, .. } = &mut self.panel {
             return match key.code {
                 KeyCode::Esc => {
                     self.panel = Panel::Runs;
@@ -220,13 +226,6 @@ impl State {
                     }
                     Some(Action::Continue)
                 }
-                KeyCode::Char('h') | KeyCode::Left => {
-                    Some(self.step(index.saturating_sub(1), message))
-                }
-                KeyCode::Char('l') | KeyCode::Right => {
-                    Some(self.step(index.saturating_add(1), message))
-                }
-                KeyCode::Char('r') => Some(self.step(index, message)),
                 _ => None,
             };
         }

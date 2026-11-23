@@ -10,6 +10,13 @@ fn key(state: &mut State, vault: &Workspace, code: KeyCode) -> Action {
     state.handle(KeyEvent::new(code, KeyModifiers::NONE), vault)
 }
 
+fn prompt(state: &mut State, vault: &Workspace, command: &str) -> Action {
+    for ch in command.chars() {
+        assert_eq!(key(state, vault, KeyCode::Char(ch)), Action::Continue);
+    }
+    key(state, vault, KeyCode::Enter)
+}
+
 fn open(state: &mut State, vault: &Workspace) {
     for ch in [' ', 'u'] {
         key(state, vault, KeyCode::Char(ch));
@@ -187,10 +194,7 @@ fn workflow_prompt_and_keys_share_run_commands() {
             state
         };
         let mut typed = setup();
-        for ch in format!(":workflow {command}").chars() {
-            assert_eq!(key(&mut typed, &vault, KeyCode::Char(ch)), Action::Continue);
-        }
-        let action = key(&mut typed, &vault, KeyCode::Enter);
+        let action = prompt(&mut typed, &vault, &format!(":workflow {command}"));
         assert_eq!(action, Action::Workflow(request.clone()));
         let mut keyed = setup();
         assert_eq!(key(&mut keyed, &vault, shortcut), action);
@@ -210,6 +214,45 @@ fn workflow_prompt_and_keys_share_run_commands() {
             );
         }
     }
+}
+
+#[test]
+fn workflow_trace_commands_follow_the_visible_step() {
+    let vault = fixture();
+    let mut state = State::new("2026-11-25".parse().unwrap());
+    open(&mut state, &vault);
+    let run = run(1, RunState::Succeeded, 3);
+    let run_id = run.id;
+    state.workflow.install_page(
+        None,
+        WorkflowRunPage {
+            runs: vec![run],
+            next_before: None,
+        },
+    );
+    assert_eq!(
+        prompt(&mut state, &vault, ":workflow step next"),
+        Action::Continue
+    );
+    assert_eq!(state.message, "Open a Workflow trace first");
+    state
+        .workflow
+        .show_step(run_id, 1, json!({"output": "the visible trace"}))
+        .unwrap();
+    for (direction, shortcut, index) in [
+        ("previous", KeyCode::Left, 0),
+        ("next", KeyCode::Right, 2),
+        ("refresh", KeyCode::Char('r'), 1),
+    ] {
+        let action = prompt(&mut state, &vault, &format!(":workflow step {direction}"));
+        assert_eq!(action, Action::Workflow(Operation::Step { run_id, index }));
+        assert_eq!(key(&mut state, &vault, shortcut), action);
+    }
+    assert_eq!(
+        prompt(&mut state, &vault, ":workflow approve"),
+        Action::Continue
+    );
+    assert_eq!(state.message, "Open the Workflow runs list first");
 }
 
 #[test]

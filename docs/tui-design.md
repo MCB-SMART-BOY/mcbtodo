@@ -84,6 +84,8 @@ In the Workflow runs list, `:workflow refresh`, `:workflow older`, and
 `:workflow trace` share the actions for `r`, `n`, and Enter.
 `:workflow approve` and `:workflow reject` load the selected run for review
 like `a` and `d`. The confirmation key shown in the review submits the decision.
+In a trace, `:workflow step previous`, `:workflow step next`, and
+`:workflow step refresh` use the same actions as Left, Right, and `r`.
 
 `TimelineScreenModel` projects the two-week date labels, occurrence markers,
 selected row and compact list labels. The renderer switches to the scrollable

@@ -53,8 +53,17 @@ impl Command {
             ["workflow", "reject"] => {
                 Ok(Self::Workflow(WorkflowCommand::Review { approved: false }))
             }
+            ["workflow", "step", direction] => {
+                let step = match *direction {
+                    "previous" => TraceStep::Previous,
+                    "next" => TraceStep::Next,
+                    "refresh" => TraceStep::Refresh,
+                    _ => return Err("Usage: workflow step previous|next|refresh".into()),
+                };
+                Ok(Self::Workflow(WorkflowCommand::Step(step)))
+            }
             ["workflow", ..] if parts.len() > 1 => {
-                Err("Usage: workflow refresh|older|trace|approve|reject".into())
+                Err("Usage: workflow refresh|older|trace|approve|reject|step".into())
             }
             ["time-block"] | ["create", "time-block"] => Ok(Self::TimeBlock),
             ["reminder"] | ["create", "reminder"] => Ok(Self::Create(Kind::Reminder)),
@@ -93,4 +102,11 @@ pub(super) enum WorkflowCommand {
     Older,
     Trace,
     Review { approved: bool },
+    Step(TraceStep),
+}
+
+pub(super) enum TraceStep {
+    Previous,
+    Next,
+    Refresh,
 }
