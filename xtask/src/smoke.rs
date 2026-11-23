@@ -82,7 +82,11 @@ pub(crate) fn run(root: &Path, bin_dir: &Path, sandbox: bool) -> Result<()> {
     first_run.env("PATH", &empty_path);
     drive_default_tui(
         first_run,
-        &[("Month", " ti"), ("Start mcbtodo-daemon", "q")],
+        &[
+            ("Start mcbtodo-daemon", " t"),
+            ("i status", "i"),
+            ("Timer failed", "q"),
+        ],
     )?;
     verify_first_run(&smoke)?;
     let settings_home = temp.path().join("settings-home");
@@ -92,10 +96,14 @@ pub(crate) fn run(root: &Path, bin_dir: &Path, sandbox: bool) -> Result<()> {
         home: settings_home,
     }
     .edit_settings_in_tui()?;
+    let external_vault = temp.path().join("offline-vault");
+    fs::create_dir(&external_vault)?;
     let mut compact_tui = smoke.command("mcbtodo");
     compact_tui
         .env("PATH", empty_path)
         .env("NO_COLOR", "1")
+        .arg("--vault")
+        .arg(external_vault)
         .args(["tui", "--date", "2026-11-20"]);
     Smoke::drive_terminal(
         compact_tui,
@@ -2246,7 +2254,7 @@ impl Smoke<'_> {
                 ("Key bindings saved", "\x1b"),
                 ("Actions", "\x1b"),
                 // The Actions menu also displays Week in its title.
-                ("No timed entries", "Q"),
+                ("Calendar error", "Q"),
             ],
         )?;
         ensure!(
@@ -2278,7 +2286,7 @@ impl Smoke<'_> {
                 ("Codex settings saved", "\x1b"),
                 ("> TZ Asia/Tokyo", "\x1b"),
                 ("Actions", "\x1b"),
-                ("No timed entries", "Q"),
+                ("Calendar error", "Q"),
             ],
         )?;
         let provider_text = fs::read_to_string(paths.codex_provider_path())?;
@@ -2314,7 +2322,7 @@ impl Smoke<'_> {
                 ("Agent endpoint saved", "\x1b"),
                 ("> TZ Asia/Tokyo", "\x1b"),
                 ("Actions", "\x1b"),
-                ("No timed entries", "Q"),
+                ("Calendar error", "Q"),
             ],
         )?;
         let policy: toml::Table = toml::from_str(&fs::read_to_string(paths.agent_policy_path())?)?;
@@ -2350,7 +2358,7 @@ impl Smoke<'_> {
                 ("Enter replace", "Q\r"),
                 ("Key bindings saved", "\x1b"),
                 ("Actions", "\x1b"),
-                ("No timed entries", "Q"),
+                ("Calendar error", "Q"),
             ],
         )?;
         Self::drive_terminal(self.command("mcbtodo"), TERMINAL_SIZE, &[("Week", "Q")])?;

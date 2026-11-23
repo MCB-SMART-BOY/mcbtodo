@@ -229,8 +229,12 @@ Inbox entry without requiring desktop notifications.
 
 Read the saved Project dates, all-day event and WorkUnit block back from a
 separate CLI process with `calendar --daemon`. Query both days of the
-cross-month event and the first day after it. This verifies the shared
-calendar query while the TUI views continue to use their local snapshot.
+cross-month event and the first day after it. Open a new TUI on the
+continuation date and check that Day renders the event through the same
+service. With the service stopped, verify that the calendar shows the start
+hint and navigation works. Exercise an external Vault in the offline
+terminal smoke. Use the same date-window response for drawing and selection.
+On refresh, keep the exact selected occurrence if it is still present.
 
 ## Verification
 

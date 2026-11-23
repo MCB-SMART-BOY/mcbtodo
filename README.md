@@ -24,7 +24,7 @@ cargo build --locked --workspace --bin mcbtodo --bin mcbtodo-daemon --bin mcbtod
 cargo run --locked -p mcbtodo-daemon
 ```
 
-TUI 和 Daemon 使用同一用户的本地 socket。服务停止时，计时和 Workflow 界面会提示启动 Daemon，日历和 Markdown Vault 编辑仍可独立使用。Daemon 按工作流节点启动 `mcbtodo-worker` 处理脚本和 Agent 请求。
+TUI 和 Daemon 使用同一用户的本地 socket。在 Linux 上，服务停止时，默认 Vault 的日历、计时和 Workflow 界面会提示启动 Daemon。TUI 菜单仍可使用，通过 `--vault` 打开的外部 Vault 仍可在前台查看。Daemon 按工作流节点启动 `mcbtodo-worker` 处理脚本和 Agent 请求。
 
 Daemon 默认使用一个 Worker 槽。在 TUI 设置的 Daemon 分组中可以选择
 1 到 4 个槽，重启 Daemon 后生效。启动参数 `--worker-slots` 优先于保存的设置。
@@ -103,11 +103,13 @@ cargo run --locked -- --vault examples/vault outline
 cargo run --locked -- --vault examples/vault graph
 ```
 
-在 Linux 上，`mcbtodo calendar --daemon --date 2026-11-25 --json` 从运行中的 Daemon 查询默认 Vault，支持 `--timezone`。普通 `calendar` 命令和当前 TUI 日历视图仍从本地 Vault 读取。`--vault` 可用于普通 `calendar` 命令，`--daemon` 需要后台服务。
+在 Linux 上，默认 Vault 的 TUI 月历、周历、日历、议程和 Timeline 从 `mcbtodo-daemon` 查询日程。服务离线时会显示启动提示，TUI 菜单仍可使用。服务恢复后按 `r` 重试。议程日期范围最多 366 天，结果过大时请缩小日期范围。通过 `--vault` 打开的外部 Vault 和非 Linux 前台模式从本地读取。
+
+`mcbtodo calendar --daemon --date 2026-11-25 --json` 通过同一接口查询默认 Vault，支持 `--timezone`。普通 `calendar` 命令直接读取 Vault，支持 `--vault`。
 
 `calendar export-ical` 输出选定日期窗内的标准 iCalendar：日期区间用排他式 `DTEND`，精确时段统一输出 UTC，截止日输出为 `VTODO/DUE`。活动期、任务发生项、活动、时间块与期限会保留 `X-MCBTODO-KIND` 和 `X-MCBTODO-ID` 来源属性。省略 `--output` 时写入 stdout。`calendar import-ical <PATH>` 只接受可表达为独立日历活动的 `VEVENT`，支持全天日期、UTC 和 IANA 时区；本项目导出的两个 `X-MCBTODO-*` 来源属性可识别但不影响 UID 身份映射，其它未知扩展属性、嵌入式 `VTIMEZONE`、重复属性、重复规则、浮动时刻、DST 歧义/缺口、VTODO 及其他无法映射的属性会拒绝。导入 UID 映射为稳定 UUID，整批先验证，再以一次目录交换发布；任何校验失败都不会导入部分事件。重复导入相同 UID 会因稳定 UUID 已存在而整体失败，不会创建重复事件。
 
-`hjkl` 或方向键移动，`v` 开启日期范围选择，`Enter` 查看议程。`Space u` 打开视图选择，可从月历切换到周历、日历、议程、大纲、任务图、Timeline 或工作流。Timeline 展示焦点日期所在周起始的 14 天计划；`h/l` 移动日期，`j/k` 选择项目，横条区分计划区间、精确时段、任务实例和期限。在 Graph 中用 `v/x` 选择依赖源节点，移动焦点到目标节点后按 `a` 新增边或按 `d` 移除边；预览会显示边方向和受影响的阻塞状态，按 `y` 确认、`Esc` 取消。依赖边方向为前置节点指向依赖它的目标节点。`e` 编辑当前选中项的源文档，按 `$VISUAL`、`$EDITOR`、`hx` 的顺序选择编辑器可执行文件。`r` 重载 Vault。若编辑后校验失败，TUI 保留上一次有效数据并显示错误。
+`hjkl` 或方向键移动，`v` 开启日期范围选择，`Enter` 查看议程。`Space u` 打开视图选择，可从月历切换到周历、日历、议程、大纲、任务图、Timeline 或工作流。Timeline 展示焦点日期所在周起始的 14 天计划；`h/l` 移动日期，`j/k` 选择项目，横条区分计划区间、精确时段、任务实例和期限。在 Graph 中用 `v/x` 选择依赖源节点，移动焦点到目标节点后按 `a` 新增边或按 `d` 移除边；预览会显示边方向和受影响的阻塞状态，按 `y` 确认、`Esc` 取消。依赖边方向为前置节点指向依赖它的目标节点。`e` 编辑当前选中项的源文档，按 `$VISUAL`、`$EDITOR`、`hx` 的顺序选择编辑器可执行文件。`r` 重载 Vault，并刷新服务端日历。若编辑后校验失败，前台 Vault 视图保留上一次有效数据，服务端日历显示查询错误。
 
 在月历选中日期后按 `Space t b`，为 WorkUnit 安排精确时段。在 Linux 默认 Vault 中，后台服务按工作区设置的时区保存时间块。创建期间若 WorkUnit 有新修订，需重载并重新选择。按 `Space c r` 可创建默认 Vault 的单次提醒，输入带偏移的 RFC 3339 时间戳，例如 `2026-11-21T09:00:00+08:00`。偏移必须与 Vault 时区相符。在 Outline 选中 Task 或 WorkUnit 后创建，提醒会自动关联该对象。周期提醒可通过 `mcbtodo vault create-reminder` 或 MCP 提案创建。
 

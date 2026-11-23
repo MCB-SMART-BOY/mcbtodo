@@ -208,10 +208,11 @@ edited the slot count in a pseudoterminal and verified the saved configuration.
 
 ## Background service and terminal client (2026-11-23)
 
-`mcbtodo-daemon` owns the timer and workflow runtime. The TUI uses the same
+At the initial terminal-client milestone, `mcbtodo-daemon` owned the timer
+and workflow runtime. The TUI used the same
 authenticated workspace socket for timer and workflow requests. A missing
-or refusing socket prompts the user to start the service. Each input action
-sends a single request. Offline calendar and task views continue to read the
+or refusing socket prompted the user to start the service. Each input action
+sent a single request. At that point, calendar and task views still read the
 Markdown Vault using the existing snapshot and revision rules.
 
 On Linux AArch64, `cargo xtask smoke-systemd --bin-dir target/debug` started a
@@ -303,10 +304,20 @@ read after publication, recurring events across local dates, invalid windows,
 an invalid Vault and oversized results. The systemd smoke reads the events,
 Project dates and time blocks saved in the TUI through this route.
 
-TUI calendar rendering, object selection and remaining foreground edits
-still use the local Vault snapshot. Query processing scans the Vault on
-each request. A TUI migration needs a shared refresh path for visible items
-and their selection. The GUI and its launcher entry remain planned.
+The Linux default-Vault TUI uses this query for Month, Week, Day, Agenda
+and Timeline. Rendering and input reuse the latest request result for that
+date window and timezone. Reload and Vault changes invalidate the result.
+The socket regression uses two occurrences with the same document UUID and
+verifies that selection follows the occurrence when a manual refresh reorders
+the rows. A failed query leaves navigation available and the calendar shows
+the service error. The systemd smoke opens a new TUI on the continuation day
+of a saved all-day event and reads it in Day view.
+
+The TUI still loads a local snapshot for task outlines, object pickers and
+remaining foreground edits. File watching still takes place in the client.
+Each new calendar query scans the Vault in the daemon and can wait up to the
+existing IPC deadline. GUI, launcher integration and service-side change
+notifications remain planned.
 
 ## Latest Review
 

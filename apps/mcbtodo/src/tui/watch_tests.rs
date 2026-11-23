@@ -159,7 +159,7 @@ recurrence:
     await_refresh(&mut watch, root, &mut state, &mut vault);
 
     assert_eq!(
-        calendar::day(&vault, state.day).unwrap()[0].title,
+        state.day_entries(&vault).unwrap()[0].title,
         "Revised review"
     );
     assert_eq!(state.source(&vault), Some(path.as_path()));

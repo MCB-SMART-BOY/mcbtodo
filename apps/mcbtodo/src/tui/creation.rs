@@ -13,7 +13,7 @@ use mcbtodo_platform::WorkspacePaths;
 use mcbtodo_protocol::{ErrorCode, ProjectDates, ProtocolError, Request, Response};
 use mcbtodo_vault::{Revision, Vault, WriteError};
 
-use super::{Action, Overlay, State, View, calendar, time_block};
+use super::{Action, Overlay, State, View, time_block};
 
 #[derive(Clone, Copy)]
 pub(super) enum Kind {
@@ -482,7 +482,7 @@ impl State {
         self.reload(root, vault);
         self.message = if self.message == "Vault reloaded" {
             self.switch(View::Day, vault);
-            if let Ok(entries) = calendar::day(vault, self.day)
+            if let Ok(entries) = self.day_entries(vault)
                 && let Some(row) = entries.iter().position(|entry| {
                     entry.id == unit
                     && matches!(entry.occurrence, Occurrence::Span(Span::DateTimeSpan(span)) if span == when)
@@ -588,7 +588,7 @@ enum CreationError {
     Unknown,
 }
 
-fn is_daemon_vault(paths: &WorkspacePaths, root: &Path) -> anyhow::Result<bool> {
+pub(super) fn is_daemon_vault(paths: &WorkspacePaths, root: &Path) -> anyhow::Result<bool> {
     if cfg!(target_os = "linux") {
         paths.is_default_vault(root)
     } else {

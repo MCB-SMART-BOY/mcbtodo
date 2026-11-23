@@ -345,17 +345,11 @@ fn run(cli: Cli) -> Result<()> {
             let (root, timezone) = location.resolve(&paths)?;
             let date = date.unwrap_or_else(|| Utc::now().with_timezone(&timezone).date_naive());
             let entries = if daemon {
-                match daemon_request(
+                daemon_calendar(
                     &paths,
-                    Request::Calendar {
-                        start: date,
-                        through: date,
-                        timezone: timezone.name().into(),
-                    },
-                )? {
-                    Response::Calendar { items } => items,
-                    _ => bail!("unexpected response to calendar request"),
-                }
+                    mcbtodo_domain::time::DateSpan::new(date, date)?,
+                    timezone,
+                )?
             } else {
                 VaultQueries::new(root, timezone).calendar_day(date)?
             };
@@ -447,6 +441,24 @@ pub(crate) fn timer(paths: &WorkspacePaths, operation: Request) -> Result<TimerS
     match daemon_request(paths, operation)? {
         Response::Status(status) => Ok(status),
         _ => bail!("unexpected response to timer request"),
+    }
+}
+
+fn daemon_calendar(
+    paths: &WorkspacePaths,
+    window: mcbtodo_domain::time::DateSpan,
+    timezone: Tz,
+) -> Result<Vec<mcbtodo_domain::CalendarItem>> {
+    match daemon_request(
+        paths,
+        Request::Calendar {
+            start: window.start(),
+            through: window.through(),
+            timezone: timezone.name().into(),
+        },
+    )? {
+        Response::Calendar { items } => Ok(items),
+        _ => bail!("unexpected response to calendar request"),
     }
 }
 

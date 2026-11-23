@@ -1,11 +1,91 @@
+use std::cell::RefCell;
+
 use chrono::{DateTime, Datelike, Days, LocalResult, NaiveDate, TimeZone, Timelike};
 use chrono_tz::Tz;
-use mcbtodo_application::{CalendarItem, project_calendar};
+use mcbtodo_application::CalendarItem;
 use mcbtodo_domain::{
     CalendarKind, Occurrence,
     time::{DateSpan, Span},
 };
-use mcbtodo_vault::Vault;
+use mcbtodo_platform::WorkspacePaths;
+
+use super::{View, timeline};
+
+pub(super) fn window(view: View, day: NaiveDate, selection: (NaiveDate, NaiveDate)) -> DateSpan {
+    let (start, through) = match view {
+        View::Month => {
+            let first = day.with_day(1).expect("valid day of month");
+            let last = first
+                .iter_days()
+                .take_while(|date| date.month() == first.month())
+                .last()
+                .expect("month begins at the first day");
+            (first, last)
+        }
+        View::Week => (monday_of(day), monday_of(day) + Days::new(6)),
+        View::Day => (day, day),
+        View::Agenda => selection,
+        View::Timeline => {
+            let start = timeline::window_start(day);
+            (start, start + Days::new(timeline::WINDOW_DAYS - 1))
+        }
+        _ => unreachable!("only calendar views use a date window"),
+    };
+    DateSpan::new(
+        start.max(NaiveDate::from_ymd_opt(1, 1, 1).unwrap()),
+        through.min(NaiveDate::from_ymd_opt(9999, 12, 31).unwrap()),
+    )
+    .expect("calendar windows contain a day in the display years")
+}
+
+/// The most recently queried service window, including errors. Drawing and
+/// input share it until the window changes or a reload invalidates it.
+pub(super) struct DaemonCalendar {
+    paths: WorkspacePaths,
+    cached: RefCell<Option<WindowResult>>,
+}
+
+struct WindowResult {
+    dates: DateSpan,
+    timezone: Tz,
+    items: Result<Vec<CalendarItem>, String>,
+}
+
+impl DaemonCalendar {
+    pub(super) fn new(paths: WorkspacePaths) -> Self {
+        Self {
+            paths,
+            cached: RefCell::new(None),
+        }
+    }
+
+    pub(super) fn entries(
+        &self,
+        dates: DateSpan,
+        timezone: Tz,
+    ) -> anyhow::Result<Vec<CalendarItem>> {
+        let mut cached = self.cached.borrow_mut();
+        if let Some(result) = cached.as_ref()
+            && result.dates == dates
+            && result.timezone == timezone
+        {
+            return result.items.clone().map_err(anyhow::Error::msg);
+        }
+        let items = crate::daemon_calendar(&self.paths, dates, timezone)
+            .map_err(|error| format!("{error:#}"));
+        let result = items.clone().map_err(anyhow::Error::msg);
+        *cached = Some(WindowResult {
+            dates,
+            timezone,
+            items,
+        });
+        result
+    }
+
+    pub(super) fn invalidate(&mut self) {
+        self.cached.get_mut().take();
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Lane {
@@ -32,12 +112,8 @@ fn start(entry: &CalendarItem, zone: Tz) -> Option<DateTime<Tz>> {
     }
 }
 
-pub(super) fn day(vault: &Vault, date: NaiveDate) -> anyhow::Result<Vec<CalendarItem>> {
-    let zone = vault.timezone();
-    let window = DateSpan::new(date, date).expect("a calendar date is a valid span");
-    let mut entries = project_calendar(vault, window)?;
+pub(super) fn sort_day(entries: &mut [CalendarItem], zone: Tz) {
     entries.sort_by_key(|entry| (lane(entry), start(entry, zone)));
-    Ok(entries)
 }
 
 pub(super) fn day_label(entry: &CalendarItem, date: NaiveDate, zone: Tz) -> String {
@@ -131,15 +207,6 @@ pub(super) fn monday_of(date: NaiveDate) -> NaiveDate {
 }
 
 impl Week {
-    pub(super) fn new(vault: &Vault, date: NaiveDate) -> anyhow::Result<Self> {
-        let monday = monday_of(date);
-        let days: [NaiveDate; 7] = std::array::from_fn(|offset| monday + Days::new(offset as u64));
-        let range = DateSpan::new(monday, days[6]).expect("week in display years");
-        let zone = vault.timezone();
-        let entries = project_calendar(vault, range)?;
-        Ok(Self::from_entries(date, zone, entries))
-    }
-
     pub(super) fn from_entries(date: NaiveDate, zone: Tz, mut entries: Vec<CalendarItem>) -> Self {
         let monday = monday_of(date);
         let days = std::array::from_fn(|offset| monday + Days::new(offset as u64));

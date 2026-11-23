@@ -499,7 +499,9 @@ fn keyboard_creates_a_busy_all_day_event_with_inclusive_date_precision() {
         "vl ceCampus event\n\n\n",
     );
     let persisted = Vault::load(root.path(), ZONE).unwrap();
-    let entries = calendar::day(&persisted, day("2026-11-25")).unwrap();
+    let entries = State::new(day("2026-11-25"))
+        .day_entries(&persisted)
+        .unwrap();
     let entry = entries.iter().find(|entry| entry.id == id).unwrap();
     assert_eq!(entry.title, "Campus event");
     assert_eq!(entry.kind, CalendarKind::Event);
@@ -509,7 +511,8 @@ fn keyboard_creates_a_busy_all_day_event_with_inclusive_date_precision() {
         if span.start() == day("2026-11-24") && span.through() == day("2026-11-25"))
     );
     assert!(
-        calendar::day(&persisted, day("2026-11-26"))
+        State::new(day("2026-11-26"))
+            .day_entries(&persisted)
             .unwrap()
             .is_empty()
     );
@@ -538,7 +541,8 @@ fn month_selection_creates_an_inclusive_all_day_event_across_month_boundary() {
     let persisted = Vault::load(root.path(), ZONE).unwrap();
     for selected_day in ["2026-11-30", "2026-12-01"] {
         assert!(
-            calendar::day(&persisted, day(selected_day))
+            State::new(day(selected_day))
+                .day_entries(&persisted)
                 .unwrap()
                 .iter()
                 .any(|entry| entry.title == "Year-end event" && entry.busy),
@@ -546,7 +550,8 @@ fn month_selection_creates_an_inclusive_all_day_event_across_month_boundary() {
         );
     }
     assert!(
-        calendar::day(&persisted, day("2026-12-02"))
+        State::new(day("2026-12-02"))
+            .day_entries(&persisted)
             .unwrap()
             .iter()
             .all(|entry| entry.title != "Year-end event"),
@@ -636,7 +641,8 @@ fn deadline_creation_publishes_a_project_with_no_busy_period() {
     assert!(matches!(entries[0].occurrence,
         Occurrence::Deadline(mcbtodo_domain::time::Deadline::Date { value }) if value == day("2026-11-25")));
     assert!(
-        calendar::day(&persisted, day("2026-11-24"))
+        State::new(day("2026-11-24"))
+            .day_entries(&persisted)
             .unwrap()
             .is_empty()
     );

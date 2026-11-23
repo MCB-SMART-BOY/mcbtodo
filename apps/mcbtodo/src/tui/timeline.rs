@@ -1,26 +1,10 @@
-use chrono::{Days, NaiveDate};
-use mcbtodo_application::{CalendarItem, project_calendar};
-use mcbtodo_domain::{
-    CalendarKind, Occurrence,
-    time::{DateSpan, Span},
-};
-use mcbtodo_vault::Vault;
+use chrono::NaiveDate;
+use mcbtodo_domain::{CalendarItem, CalendarKind, Occurrence, time::Span};
 
 pub(super) const WINDOW_DAYS: u64 = 14;
 
 pub(super) fn window_start(date: NaiveDate) -> NaiveDate {
     super::calendar::monday_of(date)
-}
-
-pub(super) fn entries(vault: &Vault, date: NaiveDate) -> anyhow::Result<Vec<CalendarItem>> {
-    let start = window_start(date);
-    let through = start
-        .checked_add_days(Days::new(WINDOW_DAYS - 1))
-        .unwrap_or(start);
-    project_calendar(
-        vault,
-        DateSpan::new(start, through).expect("ordered timeline window"),
-    )
 }
 
 pub(super) fn cell(entry: &CalendarItem, date: NaiveDate, timezone: chrono_tz::Tz) -> &'static str {

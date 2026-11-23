@@ -3,9 +3,9 @@ use std::borrow::Cow;
 use chrono::{Datelike, Days, NaiveDate};
 use chrono_tz::Tz;
 use mcbtodo_application::{
-    CalendarItem, InboxSummary, OutlineItem, project_calendar, project_inbox, project_outline,
+    CalendarItem, InboxSummary, OutlineItem, project_inbox, project_outline,
 };
-use mcbtodo_domain::{CalendarKind, time::DateSpan};
+use mcbtodo_domain::CalendarKind;
 use mcbtodo_vault::Vault;
 use ratatui::text::Line;
 
@@ -673,13 +673,14 @@ impl<'a> ScreenModel<'a> {
 
     fn project_view(state: &'a State, vault: &Vault) -> anyhow::Result<Content<'a>> {
         Ok(match state.view {
-            View::Month => Content::Month(MonthScreenModel::from_vault(
-                vault,
+            View::Month => Content::Month(MonthScreenModel::from_entries(
                 state.day,
                 state.selected_range(),
-            )?),
+                vault.timezone(),
+                &state.calendar_entries(vault, View::Month)?,
+            )),
             View::Week => Content::Week(Box::new(WeekScreenModel::from_week(
-                Week::new(vault, state.day)?,
+                state.week(vault)?,
                 state.day,
                 state.selected_range(),
                 state.week_hour,
@@ -687,7 +688,7 @@ impl<'a> ScreenModel<'a> {
             View::Day => Content::Day(DayScreenModel::from_entries(
                 state.day,
                 vault.timezone(),
-                calendar::day(vault, state.day)?,
+                state.day_entries(vault)?,
                 state.row,
             )),
             View::Agenda => Content::Agenda(AgendaScreenModel::from_entries(
@@ -710,7 +711,7 @@ impl<'a> ScreenModel<'a> {
                 state.graph_selection.as_ref(),
             )),
             View::Timeline => Content::Timeline(TimelineScreenModel::project(
-                timeline::entries(vault, state.day)?,
+                state.calendar_entries(vault, View::Timeline)?,
                 state.day,
                 vault.timezone(),
                 state.row,
@@ -1007,26 +1008,6 @@ pub(super) struct MonthScreenModel {
 }
 
 impl MonthScreenModel {
-    pub(super) fn from_vault(
-        vault: &Vault,
-        selected_day: NaiveDate,
-        selection: (NaiveDate, NaiveDate),
-    ) -> anyhow::Result<Self> {
-        let first = selected_day.with_day(1).expect("valid day of month");
-        let last = first
-            .iter_days()
-            .take_while(|day| day.month() == first.month())
-            .last()
-            .expect("month begins at the first day");
-        let entries = project_calendar(vault, DateSpan::new(first, last)?)?;
-        Ok(Self::from_entries(
-            selected_day,
-            selection,
-            vault.timezone(),
-            entries.iter(),
-        ))
-    }
-
     fn from_entries<'a>(
         selected_day: NaiveDate,
         selection: (NaiveDate, NaiveDate),

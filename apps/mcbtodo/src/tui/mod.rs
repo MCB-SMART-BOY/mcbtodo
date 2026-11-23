@@ -38,10 +38,7 @@ use mcbtodo_application::{
     CalendarItem, TargetAction, VaultCommands, deadline_edit_context, project_action_targets,
     project_calendar, project_inbox, project_outline, project_revision_in_snapshot,
 };
-use mcbtodo_domain::{
-    CalendarKind, Id, Occurrence,
-    time::{DateSpan, Span},
-};
+use mcbtodo_domain::{CalendarKind, Id, Occurrence, time::Span};
 use mcbtodo_platform::{AppConfig, AppConfigSnapshot, HomeViewPolicy, TuiTheme, WorkspacePaths};
 use mcbtodo_protocol::{Request, workflow::WorkflowRequest};
 use mcbtodo_vault::{Revision, Vault, WriteError};
@@ -241,6 +238,7 @@ struct State {
     row: usize,
     document_id: Option<Id>,
     calendar_focus: Option<FocusIdentity>,
+    daemon_calendar: Option<calendar::DaemonCalendar>,
     week_hour: usize,
     graph_selection: Option<BTreeSet<Id>>,
     graph_nodes: RefCell<Option<Rc<[graph::Node]>>>,
@@ -264,6 +262,7 @@ impl State {
             row: 0,
             document_id: None,
             calendar_focus: None,
+            daemon_calendar: None,
             week_hour: 0,
             graph_selection: None,
             graph_nodes: RefCell::new(None),
@@ -307,8 +306,14 @@ impl State {
 
     fn switch(&mut self, view: View, vault: &Vault) {
         if self.view != view {
-            let from_week = self.view == View::Week;
-            let selected = self.selected_focus(vault);
+            let selected = if self.view == View::Week && view == View::Day {
+                self.week(vault).ok().and_then(|week| {
+                    week.focused_timed(self.day, self.week_hour, vault.timezone())
+                        .map(calendar_focus)
+                })
+            } else {
+                self.selected_focus(vault)
+            };
             match selected {
                 Some(focus @ FocusIdentity::Calendar { .. }) => {
                     self.calendar_focus = Some(focus);
@@ -334,25 +339,6 @@ impl State {
             self.view = view;
             self.row = 0;
             self.sync_row(vault, preferred);
-            if from_week && view == View::Day {
-                self.focus_week_entry(vault);
-            }
-        }
-    }
-
-    fn focus_week_entry(&mut self, vault: &Vault) {
-        if let Ok(week) = calendar::Week::new(vault, self.day)
-            && let Some(entry) = week.focused_timed(self.day, self.week_hour, vault.timezone())
-            && let Occurrence::Span(span) = entry.occurrence
-            && let Ok(entries) = calendar::day(vault, self.day)
-            && let Some(row) = entries.iter().position(|candidate| {
-                candidate.id == entry.id
-                    && candidate.kind == entry.kind
-                    && matches!(candidate.occurrence, Occurrence::Span(other) if other == span)
-            })
-        {
-            self.row = row;
-            self.document_id = Some(entry.id);
         }
     }
 
@@ -391,9 +377,9 @@ impl State {
     fn row_focuses(&self, vault: &Vault) -> Vec<FocusIdentity> {
         let calendar = match self.view {
             View::Month | View::Week | View::Workflow => return Vec::new(),
-            View::Day => calendar::day(vault, self.day),
+            View::Day => self.day_entries(vault),
             View::Agenda => self.agenda(vault),
-            View::Timeline => timeline::entries(vault, self.day),
+            View::Timeline => self.calendar_entries(vault, View::Timeline),
             View::Outline => {
                 return project_outline(vault)
                     .into_iter()
@@ -423,10 +409,36 @@ impl State {
             .collect()
     }
 
+    fn calendar_entries(&self, vault: &Vault, view: View) -> Result<Vec<CalendarItem>> {
+        let dates = calendar::window(view, self.day, self.selected_range());
+        match &self.daemon_calendar {
+            Some(calendar) => calendar.entries(dates, vault.timezone()),
+            None => project_calendar(vault, dates),
+        }
+    }
+
+    fn day_entries(&self, vault: &Vault) -> Result<Vec<CalendarItem>> {
+        let mut entries = self.calendar_entries(vault, View::Day)?;
+        calendar::sort_day(&mut entries, vault.timezone());
+        Ok(entries)
+    }
+
     fn agenda(&self, vault: &Vault) -> anyhow::Result<Vec<CalendarItem>> {
-        let (start, end) = self.selected_range();
-        let dates = DateSpan::new(start, end).expect("selection is ordered and in display years");
-        project_calendar(vault, dates)
+        self.calendar_entries(vault, View::Agenda)
+    }
+
+    fn week(&self, vault: &Vault) -> Result<calendar::Week> {
+        Ok(calendar::Week::from_entries(
+            self.day,
+            vault.timezone(),
+            self.calendar_entries(vault, View::Week)?,
+        ))
+    }
+
+    fn invalidate_calendar(&mut self) {
+        if let Some(calendar) = &mut self.daemon_calendar {
+            calendar.invalidate();
+        }
     }
 
     fn handle(&mut self, mut key: KeyEvent, vault: &Vault) -> Action {
@@ -911,7 +923,7 @@ impl State {
         match self.view {
             View::Month => self.change_day(if down { 7 } else { -7 }),
             View::Week => {
-                if let Ok(week) = calendar::Week::new(vault, self.day) {
+                if let Ok(week) = self.week(vault) {
                     let hour = self.week_hour.min(week.hours.len().saturating_sub(1));
                     self.week_hour = move_row(hour, down, week.hours.len());
                 }
@@ -1017,7 +1029,10 @@ impl State {
                 self.vault_warning = None;
                 self.message = "Vault reloaded".into();
             }
-            Err(error) => self.message = format!("Reload failed · {error:#}"),
+            Err(error) => {
+                self.invalidate_calendar();
+                self.message = format!("Reload failed · {error:#}");
+            }
         }
     }
 
@@ -1027,6 +1042,9 @@ impl State {
                 let recovered = self.vault_warning.take().is_some();
                 if vault.has_same_documents(&next) {
                     // A local action may already have loaded these exact bytes.
+                    if recovered {
+                        self.invalidate_calendar();
+                    }
                     return recovered;
                 }
                 self.install_vault(vault, next);
@@ -1039,6 +1057,7 @@ impl State {
                     return false;
                 }
                 self.vault_warning = Some(warning);
+                self.invalidate_calendar();
                 true
             }
         }
@@ -1050,6 +1069,7 @@ impl State {
             .or_else(|| self.document_id.map(FocusIdentity::Document));
         *vault = next;
         *self.graph_nodes.get_mut() = None;
+        self.invalidate_calendar();
         self.document_id = preferred.map(FocusIdentity::document_id);
         self.sync_row(vault, preferred);
         if let Some(selected) = &mut self.graph_selection {
@@ -1332,6 +1352,9 @@ pub(super) fn run(
 ) -> Result<()> {
     require_terminal()?;
     let mut state = State::new(day);
+    if creation::is_daemon_vault(paths, root)? {
+        state.daemon_calendar = Some(calendar::DaemonCalendar::new(paths.clone()));
+    }
     state.has_timezone_override = has_timezone_override;
     state.no_color = no_color_requested();
     let mut theme = theme::Theme::for_session(config.tui_theme, state.no_color);

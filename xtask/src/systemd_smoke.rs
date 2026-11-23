@@ -151,6 +151,16 @@ pub(crate) fn run(root: &Path, bin_dir: &Path) -> Result<()> {
             );
         }
     }
+    let mut client = smoke.client();
+    client.args(["tui", "--date", "2026-12-01"]);
+    crate::smoke::drive_default_tui(
+        client,
+        &[
+            ("Month", ":view day\r"),
+            (CAPTURED_EVENT, "\r"),
+            ("Agenda", "q"),
+        ],
+    )?;
 
     const REMINDER_TITLE: &str = "Review notes from systemd smoke";
     let timezone = WorkspacePaths::from_home(smoke.workspace.clone())
@@ -289,9 +299,18 @@ pub(crate) fn run(root: &Path, bin_dir: &Path) -> Result<()> {
         &mut service.systemctl(&["stop"]),
         "stopping the transient service",
     )?;
+    let mut client = smoke.client();
+    client.args(["tui", "--date", "2026-12-01"]);
+    crate::smoke::drive_default_tui(
+        client,
+        &[
+            ("Start mcbtodo-daemon", ":view day\r"),
+            ("Day  2026-12-01", "q"),
+        ],
+    )?;
     service.diagnostics = false;
     println!(
-        "systemd user service smoke passed (TUI reopen, Task, Project, deadline, all-day event and time block creation, reminder Inbox, timer recovery, and focus report)"
+        "systemd user service smoke passed (TUI reopen, calendar reads, Task, Project, deadline, all-day event and time block creation, reminder Inbox, timer recovery, and focus report)"
     );
     Ok(())
 }

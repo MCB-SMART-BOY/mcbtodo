@@ -44,6 +44,85 @@ pub(super) fn projected_screen(
         .join("\n")
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn daemon_calendar_uses_the_same_rows_for_render_selection_and_refresh() -> Result<()> {
+    use std::{os::unix::net::UnixListener, thread};
+
+    use mcbtodo_domain::time::DateSpan;
+    use mcbtodo_protocol::{Response, wire};
+
+    let home = tempfile::tempdir()?;
+    let paths = WorkspacePaths::from_home(home.path().to_path_buf());
+    paths.initialize()?;
+    let root = paths.vault_root();
+    let mut vault = Vault::load(&root, chrono_tz::UTC)?;
+    let start = "2026-11-24".parse()?;
+    let through = "2026-11-25".parse()?;
+    let occurrence = |date, title: &str| -> Result<CalendarItem> {
+        Ok(CalendarItem {
+            id: "40000000-0000-4000-8000-000000000001".parse()?,
+            title: title.into(),
+            kind: CalendarKind::Event,
+            busy: true,
+            occurrence: Occurrence::Span(Span::DateSpan(DateSpan::new(date, date)?)),
+        })
+    };
+    let first = occurrence(start, "Earlier occurrence")?;
+    let second = occurrence(through, "Second occurrence")?;
+    let second_focus = calendar_focus(&second);
+    let listener = UnixListener::bind(paths.socket_path())?;
+    let peer = thread::spawn(move || -> Result<()> {
+        for items in [vec![first.clone(), second.clone()], vec![second, first]] {
+            let (mut stream, _) = listener.accept()?;
+            stream.set_read_timeout(Some(Duration::from_secs(1)))?;
+            assert!(matches!(
+                wire::read(&mut stream)?,
+                Request::Calendar { start: from, through: to, timezone }
+                    if from == start && to == through && timezone == "UTC"
+            ));
+            wire::write(&mut stream, &Response::Calendar { items })?;
+        }
+        Ok(())
+    });
+    let mut state = State::new(through);
+    state.daemon_calendar = Some(calendar::DaemonCalendar::new(paths));
+    state.anchor = Some(start);
+    state.switch(View::Agenda, &vault);
+    assert!(screen(&state, &vault, 80, 16).contains("Earlier occurrence"));
+    press(&mut state, &vault, "j");
+    assert_eq!(state.selected_focus(&vault), Some(second_focus));
+    assert!(screen(&state, &vault, 40, 6).contains("Second occurrence"));
+
+    state.reload(&root, &mut vault);
+    assert_eq!(state.row, 0);
+    assert_eq!(state.selected_focus(&vault), Some(second_focus));
+    peer.join().expect("test calendar peer panicked")?;
+
+    state.reload(&root, &mut vault);
+    assert!(screen(&state, &vault, 80, 16).contains("Start mcbtodo-daemon"));
+    assert_eq!(state.selected_focus(&vault), None);
+    press(&mut state, &vault, "hl");
+    assert_eq!(state.day, through);
+    Ok(())
+}
+
+#[test]
+fn extended_calendar_windows_are_clipped_to_the_display_years() -> Result<()> {
+    let last = "9999-12-31".parse()?;
+    for view in [View::Month, View::Week, View::Timeline] {
+        let window = calendar::window(view, last, (last, last));
+        assert_eq!(window.through(), last, "{view:?}");
+        assert!(window.start() < last, "{view:?}");
+    }
+    let first = "0001-01-01".parse()?;
+    assert_eq!(
+        calendar::window(View::Week, first, (first, first)).start(),
+        first
+    );
+    Ok(())
+}
+
 #[test]
 fn month_shows_the_same_cross_month_recurring_event_as_day() {
     let root = tempfile::tempdir().unwrap();
@@ -324,7 +403,8 @@ availability: free
     assert!(text.contains("校园活动"), "{text}");
     assert!(text.contains("!! deadline"), "{text}");
 
-    let remote = timeline::entries(&vault, state.day)
+    let remote = state
+        .calendar_entries(&vault, View::Timeline)
         .unwrap()
         .iter()
         .position(|entry| entry.title == "远程讨论")
@@ -854,7 +934,8 @@ availability: busy
     let mut state = State::new("2026-11-25".parse().unwrap());
 
     press(&mut state, &vault, " uw");
-    let selected = calendar::Week::new(&vault, state.day)
+    let selected = state
+        .week(&vault)
         .unwrap()
         .focused_timed(state.day, state.week_hour, vault.timezone())
         .map(calendar_focus);
@@ -1300,7 +1381,7 @@ fn month_menu_creates_work_unit_time_block_on_the_selected_date() {
     assert!(text.contains("Day  2026-11-20"), "{text}");
     assert!(text.contains("Time block saved"), "{text}");
     assert!(text.contains("13:30–15:00  实现 Sv39 页表映射"), "{text}");
-    assert_eq!(calendar::day(&vault, state.day).unwrap()[state.row].id, id);
+    assert_eq!(state.day_entries(&vault).unwrap()[state.row].id, id);
 
     let persisted = Vault::load(dir.path(), vault.timezone()).unwrap();
     assert!(persisted.calendar().iter().any(|entry| {
