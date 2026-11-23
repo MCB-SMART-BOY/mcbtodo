@@ -866,7 +866,7 @@ fn time_block_creation_checks_offsets_revision_and_writer_lock_over_ipc() -> Res
     let root = paths.vault_root();
     let timezone = paths.load_config()?.timezone;
     let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../examples/vault/projects/rust-os");
+        .join("../../tests/fixtures/vault/projects/rust-os");
     let project = root.join("projects/rust-os");
     for file in [
         "project.md",

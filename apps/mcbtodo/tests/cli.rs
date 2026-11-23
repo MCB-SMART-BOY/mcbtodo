@@ -5,7 +5,7 @@ use std::{
 };
 
 fn fixture() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/vault")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/vault")
 }
 
 fn cli() -> Command {

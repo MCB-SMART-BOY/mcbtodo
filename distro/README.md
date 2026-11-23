@@ -1,9 +1,9 @@
 # Distribution
 
-Distribution recipes and release helpers live here. The tracked
-`examples/vault/` tree is a synthetic development fixture. Keep real Vaults,
-local configuration, credentials, and runtime state out of version control
-and distribution inputs.
+Distribution recipes and release helpers live here. `examples/` contains
+user walkthroughs and `tests/fixtures/vault/` holds shared test inputs. Keep
+personal Vaults, local configuration, credentials, and runtime state out of
+version control and distribution inputs.
 
 ## Release source
 
@@ -16,10 +16,10 @@ distro/release/create-source-archive.sh 0.1.0
 
 The helper archives the tag's `Cargo.toml`, `Cargo.lock`, `LICENSE`,
 `README.md`, `.cargo/`, `apps/`, `crates/`, and `xtask/` and writes a SHA-256
-sidecar under `target/dist/`. The custom archive omits `examples/` and
-`distro/`. AUR and upstream Nix recipes should pin this exact attached
+sidecar under `target/dist/`. The custom archive omits `examples/`, `tests/`,
+and `distro/`. AUR and upstream Nix recipes should pin this exact attached
 source asset. GitHub generates its automatic archives from the tagged
-tree, which includes the tracked fixture.
+tree, which includes the tracked examples and fixtures.
 
 The release-preparation workflow stages the three Linux executables, the
 systemd user unit, and the Apache-2.0 license in binary archives for x86_64

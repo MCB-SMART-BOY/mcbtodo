@@ -94,31 +94,14 @@ home_view = "restore_last_view"
 
 ## 试用示例 Vault
 
-`examples/vault/` 是供文档和测试共用的合成样例，包含 Rust OS 项目、任务依赖、日历活动和一组重复任务。软件安装后会在用户 home 中初始化空 Vault。日常编辑使用默认 Vault，写入演示使用独立副本。
-
-Git 会忽略该目录中新建的文件，已跟踪的样例仍会随仓库分发，修改它们仍会出现在 `git status` 中。
-
-从仓库根目录进行只读验证：
+`examples/vault/` 用仓库实际的发布检查演示项目、任务和 WorkUnit 依赖。安装后运行 `mcbtodo init` 会在用户 home 初始化空 Vault。示例随源码 checkout 提供，写入演示使用临时副本。
 
 ```sh
 cargo run --locked -- --vault examples/vault --timezone Asia/Shanghai validate
-cargo run --locked -- --vault examples/vault --timezone Asia/Shanghai \
-  calendar --date 2026-11-25 --json
+cargo run --locked -- --vault examples/vault --timezone Asia/Shanghai outline
 ```
 
-在 Linux 上用以下命令打开可编辑的前台演示。`git archive` 从当前提交提取公开样例，示例副本、设置与运行状态都在临时目录内。
-
-```sh
-cargo build --locked -p mcbtodo
-demo_home="$(mktemp -d)"
-git archive HEAD examples/vault | tar -xf - -C "$demo_home"
-demo_vault="$demo_home/examples/vault"
-env HOME="$demo_home" target/debug/mcbtodo init
-env HOME="$demo_home" target/debug/mcbtodo --vault "$demo_vault" \
-  --timezone Asia/Shanghai tui --date 2026-11-20
-```
-
-在同一终端可继续查询 `outline`、`graph`，或将自己的 `.ics` 文件导入 `$demo_vault`。保留 `env HOME="$demo_home"` 和 `--vault "$demo_vault"` 两个参数，分别指定配置及运行状态的工作区和 Markdown 位置。后台场景的隔离验证使用 `cargo xtask smoke --bin-dir target/debug`。
+打开 TUI、完成第一项检查并解锁后续步骤的操作见[可运行示例](examples/README.md)。Git 会忽略 `examples/vault/` 中新建的文件，已跟踪样例的修改仍会出现在 `git status` 中。固定日期、周期任务和其他回归输入位于 `tests/fixtures/vault/`，供自动化测试使用。
 
 ## 日历和任务
 
@@ -163,7 +146,7 @@ view_workflow = "7"
 
 Linux 上，TUI 将默认 Vault 的 Task 捕获以及 Project、Deadline 和全天事件创建交给 `mcbtodo-daemon` 保存。服务未启动时表单会保留，启动服务后可以提交。若请求发出后连接中断，TUI 会提示核对对应的 UUID，再决定是否重试。显式选择其他 Vault 时，这些操作由前台直接保存。macOS 和 Windows 也走前台保存路径。
 
-将 `examples/vault/` 中的 `projects/` 与 `calendar/` 作为编辑参考。每个项目目录包含 `project.md`、`tasks/*.md` 和 `units/*.md`，独立日历活动在 `calendar/*.md`；未分类事项保存在 `inbox/*.md`。使用 `mcbtodo.project/v1`、`mcbtodo.task/v1`、`mcbtodo.work-unit/v1`、`mcbtodo.calendar-event/v1` 和 `mcbtodo.inbox-entry/v1` 作为 `schema`，为每个对象分配唯一 UUID，正文第一条非空行写 `# 标题`。修改文件名后，基于 UUID 的引用保持有效。`mcbtodo validate` 校验 YAML、时间范围、引用和依赖环。
+将 `examples/vault/projects/` 作为项目和任务的编辑参考。每个项目目录包含 `project.md`、`tasks/*.md` 和 `units/*.md`，独立日历活动在 `calendar/*.md`；未分类事项保存在 `inbox/*.md`。使用 `mcbtodo.project/v1`、`mcbtodo.task/v1`、`mcbtodo.work-unit/v1`、`mcbtodo.calendar-event/v1` 和 `mcbtodo.inbox-entry/v1` 作为 `schema`，为每个对象分配唯一 UUID，正文第一条非空行写 `# 标题`。修改文件名后，基于 UUID 的引用保持有效。`mcbtodo validate` 校验 YAML、时间范围、引用和依赖环。
 
 快速捕获无须先选择 Project。`list-inbox` 输出 JSON Lines。在 TUI 的 Inbox 中按 `t` 可选择 Project。Linux 默认 Vault 由服务读取 Inbox 和 Project 列表，并检查打开选择器时看到的 Inbox revision 后执行分流。分流从 Inbox 标题、正文和标签创建 Task，并在原条目写入 `project_id` 保留来源。Task UUID 从 Inbox UUID 稳定派生。若在发布 Task 后中断，重试会验证并复用完全相同的 Task。目标文件与预期不符或 Inbox revision 过期时，服务拒绝覆盖。
 
@@ -230,7 +213,7 @@ cargo run --locked -- workflow validate target/examples/workflow/graph.yaml
 cargo run --locked -- workflow simulate target/examples/workflow/graph.yaml --fixture examples/workflow/fixtures/passed.json
 ```
 
-编译器检查图结构、输入输出类型和权限声明。发布摘要固定图文件、脚本和声明的可执行文件字节。`cargo xtask workflow-example` 构建本机静态 ELF，供示例中的 Nushell 脚本检查 Rust 页表模型。启动 `mcbtodo-daemon` 后可运行发布版本。失败分支提出的后续任务需要默认 Vault 包含示例 Rust OS 项目。
+编译器检查图结构、输入输出类型和权限声明。发布摘要固定图文件、脚本和声明的可执行文件字节。`cargo xtask workflow-example` 构建本机静态 ELF，供示例中的 Nushell 脚本检查 Rust 页表模型。启动 `mcbtodo-daemon` 后可运行发布版本。实际运行失败分支前，在生成的图中将 `followup` 的 `project_id` 改为默认 Vault 中用于接收后续任务的项目 UUID。完整的隔离验证见[工作流示例](examples/workflow/README.md)。
 
 ```sh
 revision="$(./target/debug/mcbtodo workflow publish target/examples/workflow/graph.yaml)"

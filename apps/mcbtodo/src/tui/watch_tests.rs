@@ -7,8 +7,8 @@ use std::{
 
 use super::{watch::Watcher, *};
 
-const PROJECT: &str = include_str!("../../../../examples/vault/projects/rust-os/project.md");
-const EVENT: &str = include_str!("../../../../examples/vault/calendar/review.md");
+const PROJECT: &str = include_str!("../../../../tests/fixtures/vault/projects/rust-os/project.md");
+const EVENT: &str = include_str!("../../../../tests/fixtures/vault/calendar/review.md");
 
 fn session(root: &Path) -> (Watcher, State, Vault) {
     let vault = Vault::load(root, "Asia/Shanghai".parse().unwrap()).unwrap();

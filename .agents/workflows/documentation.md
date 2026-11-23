@@ -14,9 +14,10 @@ records, examples, agent instructions, or AI workflows.
    when reviewing repository intake and security-reporting documentation.
    For a repository-wide documentation request, inspect every project document
    in that inventory; do not treat an index update as a substitute for
-   updating or verifying its sources. The tracked example Vault contains
-   synthetic test records. Review changes there as fixture changes. Keep
-   writable demos in temporary workspaces as shown in the root README.
+   updating or verifying its sources. Keep the example Vault tied to a
+   runnable walkthrough. Use `tests/fixtures/vault/` for fixed regression
+   data. Run writable demos in temporary workspaces as shown in
+   `examples/README.md`.
    Inspect `git status` first and preserve existing user files and edits.
 2. Separate product intent, implemented behavior, and verified acceptance.
    Use `docs/design.md` for goals, source and tests for implementation facts,

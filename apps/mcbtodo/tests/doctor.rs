@@ -155,7 +155,7 @@ fn uninitialized_home_and_invalid_vault_produce_complete_error_reports() {
 #[test]
 fn external_vault_uses_default_or_explicit_timezone_without_creating_config() {
     let home = tempfile::tempdir().unwrap();
-    let vault = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/vault");
+    let vault = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/vault");
     let output = doctor(home.path())
         .arg("--vault")
         .arg(&vault)

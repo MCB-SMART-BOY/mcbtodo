@@ -42,7 +42,7 @@ pub(crate) fn run(root: &Path, bin_dir: &Path) -> Result<()> {
     };
     smoke.cli(&["init"])?;
     crate::smoke::copy_fixture(
-        &root.join("examples/vault"),
+        &root.join("tests/fixtures/vault"),
         &WorkspacePaths::from_home(smoke.workspace.clone()).vault_root(),
     )?;
 

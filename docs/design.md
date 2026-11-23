@@ -396,7 +396,7 @@ Space
 
 ### 7.1 Vault 结构
 
-下面是便于说明领域关系的目标布局示意，不是当前文件布局或文件名承诺。当前实际 schema、目录与命令以 `README.md` 和 `examples/vault/` 为准；现有 fixture 使用 UUID 命名的 Task 文件，WorkUnit 示例位于 `units/`。可执行工作流源快照由提案/发布流程管理，并非下面所示的 Vault 子树。
+下面的目标布局用于说明领域关系。实际 schema、目录与命令见 `README.md` 和 `examples/vault/`。CLI 创建的 Task 文件使用 UUID 命名，WorkUnit 示例位于 `units/`。可执行工作流源快照由提案和发布流程管理。
 
 ```text
 ~/.mcbtodo/vault/
@@ -1102,7 +1102,7 @@ xtask/                     # mcbtodo-xtask package; cargo xtask check/smoke/pack
 
 ## 23. 一个贯穿全系统的端到端验收案例
 
-以“完成 Rust OS 页表管理模块”为场景：
+以“完成 Rust OS 页表管理模块”为场景。自动化验收使用 `tests/fixtures/vault/` 中的固定输入。
 
 1. 在 `projects/rust-os/project.md` 建立长期项目，活动期 2026-11-20 至 2027-03-01，截止日是 2027-03-01；日历只显示长期条带，不占用整天。
 2. AI 通过 MCP 读取项目，提出四个 WorkUnit：阅读 Sv39、实现映射、地址转换、测试；分别给出预计时间和验收标准。

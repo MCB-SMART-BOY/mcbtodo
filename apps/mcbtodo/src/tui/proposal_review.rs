@@ -296,7 +296,7 @@ mod tests {
     use mcbtodo_vault::Vault;
     use serde_json::json;
 
-    const ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/vault");
+    const ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/vault");
     const ZONE: Tz = chrono_tz::Asia::Shanghai;
 
     fn review(state: &mut State, vault: &Vault, paths: &WorkspacePaths, code: KeyCode) -> Action {

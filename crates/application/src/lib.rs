@@ -1336,7 +1336,7 @@ mod tests {
     const CAPTURED_TASK_ID: Id = Id::from_u128(0x2000_0000_0000_4000_8000_0000_0002);
 
     fn copy_example_vault(root: &Path) {
-        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/vault");
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/vault");
         for relative in [
             "projects/rust-os/project.md",
             "projects/rust-os/tasks/memory.md",
@@ -1566,7 +1566,7 @@ mod tests {
 
     fn queries() -> VaultQueries {
         VaultQueries::new(
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/vault"),
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/vault"),
             chrono_tz::Asia::Shanghai,
         )
     }
@@ -1957,7 +1957,7 @@ mod tests {
 
     #[test]
     fn work_unit_completion_context_rejects_non_work_units_and_unknown_ids() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/vault");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/vault");
         let vault = Vault::load(&root, chrono_tz::Asia::Shanghai).unwrap();
 
         assert!(work_unit_completion_context(&vault, PROJECT_ID).is_none());
@@ -1966,7 +1966,7 @@ mod tests {
 
     #[test]
     fn deadline_edit_context_distinguishes_unset_from_unsupported_deadlines() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/vault");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/vault");
         let vault = Vault::load(&root, chrono_tz::Asia::Shanghai).unwrap();
         let context = deadline_edit_context(&vault, TASK_ID).unwrap();
 
@@ -1977,7 +1977,7 @@ mod tests {
 
     #[test]
     fn snapshot_revision_projections_distinguish_generic_documents_from_projects() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/vault");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/vault");
         let vault = Vault::load(&root, chrono_tz::Asia::Shanghai).unwrap();
 
         assert_eq!(
@@ -2401,7 +2401,7 @@ mod tests {
 
     #[test]
     fn revision_set_validation_uses_action_rules_and_one_snapshot() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/vault");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/vault");
         let queries = VaultQueries::new(&root, chrono_tz::Asia::Shanghai);
         let targets = queries.targets(&[UNIT_ID, PROJECT_ID]).unwrap();
         let related_expected =
@@ -2469,7 +2469,7 @@ mod tests {
 
     #[test]
     fn action_target_projection_matches_shared_action_constraints() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/vault");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/vault");
         let vault = Vault::load(&root, chrono_tz::Asia::Shanghai).unwrap();
 
         let reminders = project_action_targets(&vault, TargetAction::CreateReminder);
@@ -2529,7 +2529,7 @@ mod tests {
 
     #[test]
     fn calendar_projection_is_owned_and_uses_display_timezone() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/vault");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/vault");
         let timezone = chrono_tz::Asia::Shanghai;
         let date = NaiveDate::from_ymd_opt(2026, 11, 25).unwrap();
         let window = DateSpan::new(date, date).unwrap();
@@ -2570,7 +2570,7 @@ mod tests {
     fn serialized_vault_calendar_projects_business_objects_across_display_zones() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("vault");
-        let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/vault");
+        let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/vault");
         for relative in [
             "projects/rust-os/project.md",
             "projects/rust-os/tasks/memory.md",

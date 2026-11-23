@@ -1722,7 +1722,7 @@ mod tests {
 
     pub(super) fn fixture() -> Vault {
         Vault::load(
-            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/vault"),
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/vault"),
             "Asia/Shanghai".parse().unwrap(),
         )
         .unwrap()

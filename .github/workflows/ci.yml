@@ -76,9 +76,9 @@ jobs:
           test -x "$package_dir/usr/bin/mcbtodo-worker"
           cargo xtask smoke --bin-dir "$package_dir/usr/bin" --sandbox
 
-      - name: Verify tests leave the example Vault clean
+      - name: Verify tests leave the Vault sources clean
         run: |
-          changes="$(git status --porcelain --untracked-files=all --ignored -- examples/vault)"
+          changes="$(git status --porcelain --untracked-files=all --ignored -- examples/vault tests/fixtures/vault)"
           if [ -n "$changes" ]; then
             printf '%s\n' "$changes"
             exit 1

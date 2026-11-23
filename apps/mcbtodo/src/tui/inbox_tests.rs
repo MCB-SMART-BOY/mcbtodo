@@ -2,7 +2,7 @@ use std::fs;
 
 use super::{calendar_tests::screen, *};
 
-const PROJECT: &str = include_str!("../../../../examples/vault/projects/rust-os/project.md");
+const PROJECT: &str = include_str!("../../../../tests/fixtures/vault/projects/rust-os/project.md");
 const TITLE: &str = "整理笔记 Review ideas";
 
 fn vault_with_inbox() -> (tempfile::TempDir, Vault, Id) {

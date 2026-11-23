@@ -1289,7 +1289,7 @@ fn writable_project() -> (tempfile::TempDir, Vault) {
 
 fn copy_project(root: &Path) -> Vault {
     let source =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/vault/projects/rust-os");
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/vault/projects/rust-os");
     let target = root.join("projects/rust-os");
     for relative in [
         "project.md",

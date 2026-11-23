@@ -10,7 +10,10 @@ const TASK: &str = "20000000-0000-4000-8000-000000000001";
 const BLOCKED_UNIT: &str = "30000000-0000-4000-8000-000000000003";
 
 fn fixture() -> &'static Path {
-    Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/vault"))
+    Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/vault"
+    ))
 }
 
 fn exchange(messages: &[Value]) -> Vec<Value> {

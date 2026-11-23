@@ -1104,7 +1104,10 @@ mod tests {
     impl Fixture {
         fn new() -> Self {
             let temp = tempfile::tempdir().unwrap();
-            let fixture = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/vault"));
+            let fixture = Path::new(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tests/fixtures/vault"
+            ));
             let root = temp.path().join("vault");
             for relative_path in [
                 "projects/rust-os/project.md",

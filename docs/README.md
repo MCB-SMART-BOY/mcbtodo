@@ -35,8 +35,8 @@ implementation and its tests, then update the affected documents together.
   publication order, and Linux distribution package locations.
 - [Dependency maintenance](dependency-maintenance.md): Dependabot cadence and
   review expectations for Cargo and GitHub Actions updates.
-- [Workflow example](../examples/workflow/README.md): fixture graph and smoke
-  coverage.
+- [Runnable examples](../examples/README.md): release checks in a Vault and
+  the page-table check workflow.
 - [Documentation workflow](../.agents/workflows/documentation.md):
   documentation ownership, evidence, and synchronization rules.
 - [Architecture workflow](../.agents/workflows/architecture.md): scenario-led

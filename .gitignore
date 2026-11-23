@@ -1,6 +1,6 @@
 /target/
 
-# Keep local additions out of the tracked synthetic Vault fixture.
+# Ignore local additions to the tracked example Vault.
 /examples/vault/
 
 # Local workspace when the checkout is used as a temporary home.

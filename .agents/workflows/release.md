@@ -14,8 +14,8 @@ see the root `LICENSE`.
    license compatibility, attribution, and notice obligations. Exclude
    unresolved or incompatible third-party material. Review the tagged tree
    for public disclosure because GitHub uses it to generate automatic source
-   archives. The tracked `examples/vault/` fixture must remain synthetic. Keep
-   real Vault data, credentials, local configuration, backups, and runtime
+   archives. Review both the user examples and regression fixtures. Keep
+   personal Vault data, credentials, local configuration, backups, and runtime
    state out of the tag and all artifacts.
 3. Run `cargo xtask check`, example Vault validation,
    `cargo package --workspace --exclude mcbtodo-xtask --locked`,
@@ -34,7 +34,7 @@ see the root `LICENSE`.
    generated `.crate` archive from the release checkout. Confirm accurate
    descriptions, canonical repository metadata, required build inputs,
    Apache-2.0 license text, third-party notices, and the absence of local
-   data. The root Vault fixture sits outside the publishable Cargo members.
+   data. Examples and shared Vault fixtures sit outside the publishable Cargo members.
    Review additions within `apps/` and `crates/` for unintended inputs.
 5. Inspect the custom source tarball produced by
    `distro/release/create-source-archive.sh` and both CI-built Linux binary

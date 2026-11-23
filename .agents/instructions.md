@@ -1,12 +1,12 @@
 # mcbtodo engineering instructions
 
-- The design is in `docs/design.md`. The implemented Vault format and commands are documented in `README.md` and demonstrated in `examples/vault/`. Keep that fixture small and synthetic. Run any write scenario against a separate workspace or temporary fixture copy.
+- The design is in `docs/design.md`. User walkthroughs live in `examples/`. Keep the release-check Vault small and grounded in repository commands. Use `tests/fixtures/vault/` for regression inputs. Run write scenarios against temporary copies or separate workspaces.
 - Use `docs/README.md` as the documentation index. Update user docs, architecture evidence, and the applicable `.agents/workflows/` file with behavior changes; keep goals distinct from verified implementation.
 - For documentation-only changes, follow `.agents/workflows/documentation.md`. Treat source and executable tests as evidence for implementation claims; date and scope any assessment rather than implying unverified completeness.
 - Preserve project naming: Cargo crates and packages use the `mcbtodo-` prefix (except the root workspace if it is not a package); user-facing executables are `mcbtodo` and `mcbtodo-daemon`. See `docs/naming.md`.
 - Preserve the dependency direction from the application to Vault to domain. Keep calendar semantics and graph invariants in the domain. Keep raw Markdown loading in Vault.
 - A business object is identified by its UUID. An activity period, an event, a time block and a deadline have distinct calendar semantics. Task Graph edges point from prerequisite to dependent WorkUnit.
-- Use `cargo xtask check` before delivering code. Use `cargo run --locked -- --vault examples/vault --timezone Asia/Shanghai validate` to verify the fixture.
+- Use `cargo xtask check` before delivering code. Use `cargo run --locked -- --vault examples/vault --timezone Asia/Shanghai validate` to verify the user example.
 - Use `uv run` and `uvx` for Python. Manage Python dependencies through `uv add` or `uv sync`. Prefer Bun for JavaScript and TypeScript, honoring an explicitly required package manager.
 - The project is licensed under Apache-2.0; see the root `LICENSE` and Cargo workspace metadata. Do not invent copyright notices, authorship, or repository URLs.
 - The maintainer identifies the project as original software they authored; no ownership certificate, rights attestation, or private ownership evidence is required.

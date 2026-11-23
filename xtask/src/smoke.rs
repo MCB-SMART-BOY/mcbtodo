@@ -126,7 +126,7 @@ pub(crate) fn run(root: &Path, bin_dir: &Path, sandbox: bool) -> Result<()> {
     exercise_packaged_worker_rejects_malformed_prepare(bin_dir)?;
     let paths = smoke.paths();
     let vault = paths.vault_root();
-    copy_fixture(&root.join("examples/vault"), &vault)?;
+    copy_fixture(&root.join("tests/fixtures/vault"), &vault)?;
     let rust_os = vault.join("projects/rust-os");
     fs::remove_dir_all(rust_os.join("units"))?;
     smoke.cli(&["validate"])?;
@@ -975,7 +975,10 @@ fn exercise_packaged_supervisor_rejects_malformed_worker(
         home,
     };
     smoke.cli(&["init"])?;
-    copy_fixture(&root.join("examples/vault"), &smoke.paths().vault_root())?;
+    copy_fixture(
+        &root.join("tests/fixtures/vault"),
+        &smoke.paths().vault_root(),
+    )?;
 
     let graph_dir = fixture_dir.join("graph");
     fs::create_dir(&graph_dir)?;
@@ -1078,7 +1081,10 @@ fn exercise_packaged_supervisor_rejects_malformed_result(
         home,
     };
     smoke.cli(&["init"])?;
-    copy_fixture(&root.join("examples/vault"), &smoke.paths().vault_root())?;
+    copy_fixture(
+        &root.join("tests/fixtures/vault"),
+        &smoke.paths().vault_root(),
+    )?;
 
     let graph_dir = fixture_dir.join("graph");
     fs::create_dir(&graph_dir)?;

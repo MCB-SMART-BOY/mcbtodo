@@ -14,9 +14,9 @@ certificate, rights attestation, or private ownership evidence is required.
 4. Review technical quality independently. Apache-2.0 applies to project
    material distributed under the project license and does not replace the
    separate terms of third-party material.
-5. Keep changes to the tracked `examples/vault/` fixture synthetic and suitable
-   for public use. Use a disposable synthetic copy for write tests and public
-   reproductions. Exclude real Vault records, backups, credentials, local
+5. Keep user examples and automated test fixtures suitable for public use.
+   Run write tests and public reproductions with disposable copies of the
+   example or fixture. Exclude personal Vault records, backups, credentials, local
    configuration, and runtime state from commits, PRs, and attachments.
 6. Before a public release, follow `.agents/workflows/release.md` to review
    package contents, third-party notices, and publication readiness.

@@ -262,7 +262,7 @@ fn proposal_queue_restores_across_homes_with_its_idempotency_key() -> Result<()>
     fs::create_dir_all(&project)?;
     fs::write(
         project.join("project.md"),
-        include_str!("../../../examples/vault/projects/rust-os/project.md"),
+        include_str!("../../../tests/fixtures/vault/projects/rust-os/project.md"),
     )?;
     let request_id = Id::new_v4();
     let timezone = paths.load_config()?.timezone;
@@ -368,7 +368,7 @@ fn symlinked_default_vault_is_backed_up_from_its_canonical_directory() -> Result
     fs::create_dir_all(project.parent().unwrap())?;
     fs::write(
         &project,
-        include_str!("../../../examples/vault/projects/rust-os/project.md"),
+        include_str!("../../../tests/fixtures/vault/projects/rust-os/project.md"),
     )?;
     fs::write(actual_vault.join("note.md"), "default Vault data")?;
     symlink(&actual_vault, &vault)?;
@@ -804,19 +804,19 @@ fn completion_event_round_trips_and_malformed_event_blocks_restore() -> Result<(
     for (name, contents) in [
         (
             "project.md",
-            include_str!("../../../examples/vault/projects/rust-os/project.md"),
+            include_str!("../../../tests/fixtures/vault/projects/rust-os/project.md"),
         ),
         (
             "tasks/memory.md",
-            include_str!("../../../examples/vault/projects/rust-os/tasks/memory.md"),
+            include_str!("../../../tests/fixtures/vault/projects/rust-os/tasks/memory.md"),
         ),
         (
             "units/read-spec.md",
-            include_str!("../../../examples/vault/projects/rust-os/units/read-spec.md"),
+            include_str!("../../../tests/fixtures/vault/projects/rust-os/units/read-spec.md"),
         ),
         (
             "units/mapping.md",
-            include_str!("../../../examples/vault/projects/rust-os/units/mapping.md"),
+            include_str!("../../../tests/fixtures/vault/projects/rust-os/units/mapping.md"),
         ),
     ] {
         fs::write(project.join(name), contents)?;
@@ -915,7 +915,7 @@ fn backup_excludes_only_graph_staging_directories_under_projects() -> Result<()>
     }
     fs::write(
         vault.join("projects/rust-os/project.md"),
-        include_str!("../../../examples/vault/projects/rust-os/project.md"),
+        include_str!("../../../tests/fixtures/vault/projects/rust-os/project.md"),
     )?;
 
     let archive = root.path().join("archive");
