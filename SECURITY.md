@@ -2,8 +2,9 @@
 
 ## Supported Versions
 
-There are no tagged releases yet. Security fixes, when available, are made on
-the `main` branch; no older revision is promised support.
+Security fixes land on `main`. The project does not promise backports to
+released versions. See the [distribution guide](distro/README.md) for release
+records.
 
 ## Reporting a Vulnerability
 

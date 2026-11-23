@@ -14,10 +14,10 @@ records, examples, agent instructions, or AI workflows.
    when reviewing repository intake and security-reporting documentation.
    For a repository-wide documentation request, inspect every project document
    in that inventory; do not treat an index update as a substitute for
-   updating or verifying its sources. Example Vault records are user data,
-   not project documentation, and should only be changed when fixture content
-   itself needs to change. Inspect `git status` first and preserve all existing
-   files and changes.
+   updating or verifying its sources. The tracked example Vault contains
+   synthetic test records. Review changes there as fixture changes. Keep
+   writable demos in temporary workspaces as shown in the root README.
+   Inspect `git status` first and preserve existing user files and edits.
 2. Separate product intent, implemented behavior, and verified acceptance.
    Use `docs/design.md` for goals, source and tests for implementation facts,
    and `docs/architecture-assessment.md` for dated verification evidence.
@@ -32,26 +32,9 @@ records, examples, agent instructions, or AI workflows.
    preserves default proposal binding and backup inclusion, while symlinks
    within its contents remain rejected. Document and test that distinction.
    For execution architecture, distinguish Daemon coordination, in-process
-   scheduling, sandboxed child processes, and a separately supervised Worker.
-   The frozen target is a single-host Daemon plus independent local Worker;
-   distributed Worker clusters are deferred. The Daemon now starts and
-   supervises the local Worker in production. The process-group termination
-   helper has a real parent/descendant test, full Daemon cancellation with a
-   live workload and Worker SIGKILL after Started pass with no-replay recovery,
-   and sandbox smoke verifies state recovery/no replay after force-killing a
-   Daemon with a live script. It samples the observable `/proc` descendant
-   tree before Daemon termination and waits for those sampled processes to exit
-   or become zombies. This does not establish containment of processes that
-   were not sampled, nor undo or reconcile external side effects. Malformed
-   readiness output has a production child-process test, and a mismatched
-   Result frame emitted by a fixture subprocess through a pipe and passed
-   through the production protocol reader and Started `poll_worker` path
-   verifies `outcome_unknown` and restart no-replay. The fixture is not the
-   packaged Worker binary. The extracted release archive sandbox smoke covers
-   a packaged Worker's nonzero script exit and durable failed-step trace;
-   malformed-frame and combined-fault acceptance for the packaged binary
-   remain gaps.
-   Keep design targets, current behavior, and acceptance evidence separate.
+   scheduling, sandboxed child processes, and separately supervised Workers.
+   Check the current execution paths against `docs/architecture.md` and keep
+   scenarios, observed results, and gaps in `docs/architecture-assessment.md`.
 
 ## Make and Synchronize Changes
 

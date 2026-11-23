@@ -1,8 +1,8 @@
 # Documentation Index
 
-This index distinguishes product intent from current behavior and points to
-the operational source of truth. When documents disagree, use the order below
-and update the affected documents together.
+Use this index to find the document that owns a command, component boundary,
+design goal, or acceptance result. Resolve discrepancies against the
+implementation and its tests, then update the affected documents together.
 
 ## Start Here
 
@@ -10,12 +10,12 @@ and update the affected documents together.
   configuration locations, operating-system scope, and release status.
 - [Contribution guide](../CONTRIBUTING.md): change scope, testing, and
   third-party material handling.
-- [Architecture](architecture.md): crate ownership, data authority, paths,
-  runtime boundaries, and current integration behavior.
+- [Architecture](architecture.md): crate ownership, CLI/TUI/MCP routes,
+  Daemon and Worker responsibilities, and platform capability gates.
 - [Design](design.md): product goals and acceptance requirements. Goals are
   not implementation claims.
-- [Architecture acceptance assessment](architecture-assessment.md): dated
-  evidence, milestone status, and gaps that remain unverified.
+- [Architecture acceptance assessment](architecture-assessment.md): source
+  audit, dated CI and smoke evidence, and outstanding acceptance gaps.
 - [Naming and publication](naming.md): Cargo package names, binaries, and
   crates.io readiness.
 - [License and third-party material](licensing.md): the project's
@@ -25,8 +25,9 @@ and update the affected documents together.
   socket contract.
 - [TUI design system](tui-design.md): presentation boundaries, theme,
   responsive layout, and visual tests.
-- [Storage and sync model](storage-and-sync.md): data authority, backup and
-  migration behavior, and cross-device event requirements.
+- [Storage and sync model](storage-and-sync.md): data authority,
+  transaction and recovery rules, private backup, and manual completion-event
+  exchange.
 - [Focus reports](focus-reports.md): timer report semantics and output formats.
 - [Systemd deployment](../deploy/systemd/README.md): Linux user-service
   installation and diagnostics.
@@ -94,9 +95,10 @@ These executable CI workflows are separate from the AI workflow registry:
 - [Code owners](../.github/CODEOWNERS): review requests for repository
   control-plane files. Required approval still depends on GitHub branch rules.
 - [CI](../.github/workflows/ci.yml) runs on push, pull request and manual
-  dispatch. Linux jobs check both release architectures, validate the
-  example Vault and retain binary artifacts. Additional jobs cover
-  cross-target Rust checks and native macOS and Windows CLI checks.
+  dispatch. The jobs cover both Linux release architectures, native macOS
+  and Windows foreground behavior, and separate cross-target Rust checks.
+  Linux jobs test the extracted binary archives. Dated results are recorded
+  in the assessment.
 - [Release preparation](../.github/workflows/release-preparation.yml):
   version-tag push or manual dispatch; validates packages and staged Linux
   binaries and checks that publishable crate archives carry the Apache
@@ -111,20 +113,20 @@ These executable CI workflows are separate from the AI workflow registry:
 
 ## Source of Truth
 
-Use the implementation and its tests to establish what the software currently
-does. `README.md` owns user-facing commands and configuration behavior;
-`architecture.md` owns current component, data, and path boundaries;
-`design.md` owns product intent and constraints; and
-`architecture-assessment.md` owns dated acceptance evidence and remaining
-gaps. Examples demonstrate only the behavior they actually exercise. Agent
-workflow behavior is defined by `.agents/registry.toml` and the referenced
-workflow files.
+Use the implementation and its tests to establish what the software
+currently does. The user guide owns commands and configuration behavior.
+Architecture owns component boundaries and runtime paths. Storage and sync
+owns persistence, recovery and exchange behavior. Design owns product
+intent and constraints. The assessment owns dated verification evidence.
+Agent workflow behavior is defined by `.agents/registry.toml` and its
+referenced files.
 
 ## Change Documentation Together
 
 For a user-visible behavior change, update the README and the owning detailed
-document. For a crate boundary, data-path, or recovery change, update
-`architecture.md` and reassess `architecture-assessment.md`. For a product
+document. For a crate or runtime boundary change, update `architecture.md`.
+For a persistence or recovery change, update `storage-and-sync.md`. Record
+any new acceptance evidence in `architecture-assessment.md`. For a product
 goal or acceptance change, update `design.md` without presenting the goal as
 implemented. For release, naming, or licensing changes, update `naming.md`,
 `licensing.md`, the `.agents/workflows/release.md` workflow, Cargo

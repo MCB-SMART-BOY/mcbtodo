@@ -40,30 +40,21 @@ Rust library imports use the corresponding underscore form, for example
 remain short role-based paths (`crates/domain`, `crates/vault`, and so on);
 they are not package names.
 
-## crates.io publication status
+## crates.io package rules
 
 Workspace library and application crates are configured for publication,
 except `mcbtodo-xtask`, which is repository-only. Each publishable member
 inherits `Apache-2.0` and the canonical repository URL from the workspace and
 declares a package-specific description; the complete license text is in the
-root `LICENSE`. Publication preparation is not publication: every crate must
-still pass package-content review.
+root `LICENSE`. Review the contents of each crate before publication.
 
 Before publishing, follow the [license and third-party material guidance](licensing.md) and
 [release workflow](../.agents/workflows/release.md): review third-party
 licenses and notices, verify package descriptions, repository metadata, and
 docs.rs targets, then run
 `cargo xtask verify-crate-packages` and inspect each publishable crate with
-`cargo package --list`. The xtask checks Apache-2.0 package metadata and
-confirms the Cargo archive listing contains `LICENSE`; it does not replace
-review of package contents, third-party notices, or metadata accuracy. The
-release-preparation workflow uses `--no-verify` for Cargo package and publish
-dry-runs because first-release workspace dependencies are not yet available
-from crates.io; the full workspace check compiles and tests local sources, but
-does not establish standalone builds against published dependencies. The
-workspace repository URL is
-`https://github.com/MCB-SMART-BOY/mcbtodo`. As of 2026-11-23, all thirteen
-publishable packages passed local archive creation, Apache-2.0 archive checks,
-and the workspace `cargo publish --dry-run`. Publish dependencies in an order
-accepted by crates.io, and exclude `mcbtodo-xtask`. This preparation does not
-publish any package.
+`cargo package --list`. The xtask checks Apache-2.0 package metadata, license
+consistency and the `LICENSE` archive entry. Release preparation builds the
+extracted crate archives with `cargo package` and separately runs a publish dry
+run. Publish dependencies before their dependents and exclude `mcbtodo-xtask`.
+See the [distribution guide](../distro/README.md) for publication records.

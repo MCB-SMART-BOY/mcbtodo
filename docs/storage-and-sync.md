@@ -2,10 +2,16 @@
 
 | Data | Authority and lifecycle |
 | --- | --- |
-| Markdown Vault | User-editable projects, tasks, WorkUnits and calendar data. Vault validates observed revisions under the write lock before publishing changes. |
-| SQLite state | Local focus checkpoints, workflow attempts, schedules, outbox and other durable runtime state. The Daemon owns its workflow and focus connections through `mcbtodo-storage-sqlite`. |
-| Completion event journal | Durable completion facts with UUID identity and a journal-scoped integer cursor. The Vault coordinates a pending SQL intent with the Markdown digest. |
-| Runtime files | Sockets, locks, cache, temporary sandbox data and journals used for local recovery. A private backup may include a SQLite rollback journal needed to validate a captured database. |
+| Default or external Markdown Vault | User-editable projects, tasks, WorkUnits, Inbox captures and calendar documents. CLI, TUI and Daemon writes ultimately use the Vault writer, which checks the observed revision under its write lock. Calendar, Outline and Graph are derived views. |
+| `.mcbtodo-events.sqlite3` inside a Vault | Vault-scoped completion facts and recovery intents. Vault owns the publication and recovery decisions. The SQLite adapter implements intent storage and cursor reads. |
+| `~/.mcbtodo/state/focus.sqlite3` | Daemon-owned focus checkpoints and recovery state. The timer uses a separate `FocusSessionStore`. |
+| `~/.mcbtodo/state/workflow.sqlite3` | Daemon-owned run queue, attempts, approvals, script grants, schedules, delivery cursors, traces, artifacts and notification outbox. The reminder notification Inbox is stored here, while the capture Inbox lives in Markdown. |
+| `~/.mcbtodo/state/workflows/revisions/` and `state/proposals/` under `~/.mcbtodo/` | The revision store holds immutable published workflow snapshots. The private proposal queue holds review state and captured draft bytes. Publication, authorization and execution are separate operations. |
+| Device-local files | Sockets, locks, caches and sandbox scratch are recreated as needed. `state/last-view` and `state/device-id` are local to the home. A private Vault backup may contain a SQLite rollback journal needed for recovery. |
+
+Storage entry points are in the [Vault writer](../crates/vault/src/persistence.rs),
+the [SQLite adapter](../crates/storage-sqlite/src/lib.rs) and the
+[Daemon startup](../apps/mcbtodo-daemon/src/server.rs).
 
 ## Transactions and compatibility
 
@@ -27,6 +33,12 @@ lock, Markdown publication, revision comparison and recovery decision. The
 journal provides durable intent preparation, commit or abort, snapshot
 validation and bounded reads. Markdown and the journal recover through the
 intent protocol across their separate writes.
+
+Inbox triage also spans separate writes. Vault publishes a Task with a stable
+UUID before marking the retained Inbox entry as assigned. A retry after Task
+publication checks the exact Task bytes before updating the Inbox entry.
+Conflicting edits stop recovery. This applies to foreground, Daemon and
+approved proposal writes through the shared Vault path.
 
 `WorkflowHistoryStore` returns typed traversal traces and artifact metadata.
 The adapter decodes committed trace JSON in step order. The Daemon still
@@ -74,10 +86,23 @@ and validate it before use.
 
 ## Backup versus multi-device exchange
 
-`mcbtodo backup` captures the default Vault, necessary SQLite state, revisions,
-configuration and default-bound proposals. Restore validates a private staged
-copy before publishing it. The CLI owns workspace locks, file permissions,
-inventory checks and publication. `mcbtodo-storage-sqlite` copies the focus and
+With the Daemon stopped, `mcbtodo backup` captures the default Vault, its
+completion journal, any focus and workflow databases, published revisions,
+default-bound proposals, `config.toml` and `agents.toml` if present. `codex.toml`
+and `keymap.toml` are outside that inventory. Restore validates a private
+staged copy before publishing it into a fresh home. The CLI owns workspace
+locks, file permissions, inventory checks and publication. See the
+[backup and restore implementation](../apps/mcbtodo/src/backup.rs).
+
+The selected Vault is the default when its canonical path exactly matches
+the configured default root. A symlink alias to that root keeps default
+proposal binding. Backup copies the real directory and verifies its device
+and inode against the opened directory. Restore produces ordinary directory
+contents. Backup excludes external Vaults and rejects symlinks inside the
+default Vault. The case is covered by the
+[backup regressions](../apps/mcbtodo/src/backup_tests.rs).
+
+`mcbtodo-storage-sqlite` copies the focus and
 workflow stores with committed WAL data into standalone snapshots. Its
 read-only validator checks the SQLite header before opening the file, verifies
 structural integrity and declared foreign keys, checks for the expected store
@@ -159,7 +184,11 @@ interrupted publication against the pre- and post-completion digests. The
 Daemon triggers workflows only for local completion actions. Imported facts
 still appear in exports and backups.
 
-Device authentication, transport, and merging divergent edits remain
-planned. Timestamps record observation time. The sequence belongs to one
-journal, and an origin UUID is provenance supplied by the input.
-Database files are suitable for private backup and restore.
+The available exchange is manual and limited to WorkUnit completion facts.
+Device authentication, transport and merging divergent edits remain planned.
+Timestamps record observation time. The sequence belongs to one journal,
+and an origin UUID is provenance supplied by the input. Use database files
+for private backup and restore, and use the logical envelope for event
+exchange. Import eligibility and local trigger filtering are implemented in
+the [Vault writer](../crates/vault/src/persistence.rs) and
+[completion journal](../crates/storage-sqlite/src/completion_journal.rs).

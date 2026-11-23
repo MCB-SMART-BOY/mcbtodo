@@ -23,57 +23,15 @@ For the staged workspace evolution, also follow
    application merely to make the dependency graph look uniform.
    For execution changes, distinguish an in-process coordinator, a spawned
    restricted child process, and an independently supervised Worker process.
-   The frozen first-release target is one local Daemon plus one independently
-   supervised Worker; distributed and remote Worker clusters are deferred.
-   The production path now launches and supervises the local Worker. Linux
-   tests cover the process-group helper, production Daemon cancellation of a
-   live sandbox script, and SIGKILL of a Worker after Started, including
-   `outcome_unknown`, no step commit, Worker reaping, stopped descendants, and
-   no replay after reopening the RunStore. Worker startup arms Linux
-   `PDEATHSIG` and checks the expected Daemon PID. The sandbox smoke force-kills
-   the Daemon after a script side effect, verifies sampled Worker descendants
-   exit, then checks restart state/no replay. This does not reverse or reconcile
-   external side effects. Process tests and Linux smoke also send malformed
-   Prepare input to the actual Worker executable and assert rejection before
-   readiness. Production tests cover a malformed readiness frame
-   from a child process. The sandbox smoke also runs the Daemon binary from
-   its supplied `--bin-dir` with a fault-injection Worker substitute, checking
-   fail-closed behavior, zero step commits, handshake diagnostics, and process
-   reaping; it does not test malformed output from the packaged Worker binary.
-   A mismatched Result frame emitted by a fixture subprocess through a pipe is
-   passed through the production
-   `read_worker_messages` decoder and Started `poll_worker` state path. The
-   fixture is not the packaged Worker binary. The extracted release archive
-   sandbox smoke covers a packaged Worker's nonzero script exit and durable
-   failed-step trace. A development-only `xtask` fixture now also completes
-   Prepare/Ready/Start with the extracted packaged Daemon, emits a malformed
-   Result, and verifies `outcome_unknown`, no step commit, and process reaping.
-   This tests packaged Daemon supervision, not output emitted by the packaged
-   Worker. Packaged-Worker outbound fault combinations and external-side-effect
-   reconciliation remain implementation gaps, not product decisions to defer.
-   Preserve one
-   authoritative queue/run state in Daemon;
-   use the v1 attempt envelope and process/failure contract in
-   `docs/design.md` section 11.3 as the protocol baseline. Any change to that
-   contract must update design and acceptance tests together. Verify revision
-   and policy binding, cancellation and process-tree reaping, independent
-   process failures, stale-result fencing, daemon-owned result persistence,
-   and `outcome_unknown` behavior before claiming the target is implemented.
-   Persisted RunStore attempt records and epoch checks may strengthen the
-   current Daemon boundary, but do not count as independent Worker leases,
-   IPC fencing, process supervision, or cross-process failure recovery. When
-   changing attempt persistence, wire its claim/start/result APIs through the
-   real runtime path and test exact binding, stale-result fencing, restart
-   invalidation, and transaction rollback together.
-   `mcbtodo-protocol::worker` defines the wire contract, and
-   `mcbtodo-worker` implements the worker-side process entry point. The
-   Daemon connects this protocol to production and passes revision-bound bytes;
-   do not claim the full failure contract is accepted until the remaining
-   process-level cases pass. The shared Agent and sandbox implementations live in
-   `mcbtodo-execution`; do not duplicate them in the Daemon or Worker. Do not
-   report Worker execution as implemented until a packaged `mcbtodo-worker`
-   process is supervised by the Daemon and the cross-process acceptance cases
-   pass.
+   Keep one queue and authoritative run state in the local Daemon. Use the
+   attempt envelope and failure contract in `docs/design.md` §11.3 as the
+   protocol baseline. Update both the design and acceptance tests when changing
+   that contract. Separate tests of the packaged Worker from tests that use a
+   subprocess substitute. Consult `docs/architecture-assessment.md` for dated
+   evidence and outstanding failure cases.
+   `mcbtodo-protocol::worker` defines the wire contract, `mcbtodo-worker`
+   provides the worker entry point, and `mcbtodo-execution` provides the
+   shared Agent and sandbox implementations.
 4. Keep dependencies directed inward: apps may depend on application and
    infrastructure; application may compose domain and infrastructure APIs;
    domain must not depend on adapters, filesystem paths, or transport types.

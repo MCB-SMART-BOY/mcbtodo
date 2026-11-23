@@ -1,6 +1,6 @@
 # mcbtodo
 
-以 Markdown Vault 为基础的个人工作台。默认打开月历，使用 Helix 风格的键位管理日期选择，在同一工作台查看任务层级、依赖和日程。后台守护进程保存专注计时。当前发行构建目标为 Linux x86_64 和 AArch64。macOS ARM64 和 Windows x64 的前台 CLI、TUI 渲染和 Vault 已在原生 CI 测试。后台服务目前在 Linux 上运行。
+以 Markdown Vault 为基础的个人工作台。终端打开 TUI 后，可以用 Helix 风格的键位查看月历、任务层级和依赖。Linux 上的后台服务 `mcbtodo-daemon` 负责计时、提醒和工作流。安装与平台范围见[发行说明](distro/README.md)和[平台验证范围](docs/architecture.md#平台验证范围)。
 
 ## 开始使用
 
@@ -10,7 +10,7 @@
 cargo run
 ```
 
-根 `Cargo.toml` 将 `apps/mcbtodo` 设为唯一 `default-member`，所以在仓库根目录直接运行 `cargo run` 会启动 TUI。首次启动会安全创建默认配置、状态目录和空 Vault；现有配置不会被覆盖。`mcbtodo init` 仍可用于提前初始化。Cargo 参数与程序参数用 `--` 分隔，例如 `cargo run -- --help` 或 `cargo run -- init`。要启动另一个 workspace binary，明确选择包：
+根 `Cargo.toml` 将 `apps/mcbtodo` 设为唯一 `default-member`，所以在仓库根目录直接运行 `cargo run` 会启动 TUI。首次启动会创建默认配置、状态目录和空 Vault，并保留已有配置。`mcbtodo init` 可以提前初始化。Cargo 参数与程序参数用 `--` 分隔，例如 `cargo run -- --help` 或 `cargo run -- init`。
 
 ### 后台服务
 
@@ -43,6 +43,8 @@ mcbtodo-daemon --worker-slots 2
 可以在 TUI 设置中选择默认、高对比度或单色主题。非空 `NO_COLOR` 强制使用
 单色主题。更完整的操作提示可在 TUI 中按 `?` 查看。
 终端太窄或太矮时，月历会用日期列表保持选中日期可见。详见 [TUI 设计系统](docs/tui-design.md)。
+
+### 数据位置与设置
 
 | 位置 | 用途 |
 | --- | --- |
@@ -90,20 +92,35 @@ home_view = "restore_last_view"
 
 在 Unix 上，配置读取逐层打开 `.config`、`mcbtodo` 和配置文件，拒绝符号链接、非当前用户属主以及允许组或其他用户写入的权限。普通偏好和键位文件有 1 MiB 上限，Agent 策略和 Codex 配置有 64 KiB 上限。普通偏好还要求应用配置目录为私有目录。
 
-## 日历和任务
+## 试用示例 Vault
+
+`examples/vault/` 是供文档和测试共用的合成样例，包含 Rust OS 项目、任务依赖、日历活动和一组重复任务。软件安装后会在用户 home 中初始化空 Vault。日常编辑使用默认 Vault，写入演示使用独立副本。
+
+从仓库根目录进行只读验证：
 
 ```sh
-cargo run --locked -- --vault examples/vault --timezone Asia/Shanghai tui --date 2026-11-20
-cargo run --locked -- --vault examples/vault --timezone Asia/Shanghai calendar --date 2026-11-25 --json
+cargo run --locked -- --vault examples/vault --timezone Asia/Shanghai validate
 cargo run --locked -- --vault examples/vault --timezone Asia/Shanghai \
-  calendar export-ical --from 2026-11-20 --through 2026-12-01 --output week.ics
-cargo run --locked -- --vault examples/vault \
-  calendar import-ical calendar.ics
-cargo run --locked -- --vault examples/vault outline
-cargo run --locked -- --vault examples/vault graph
+  calendar --date 2026-11-25 --json
 ```
 
-在 Linux 上，默认 Vault 的 TUI 月历、周历、日历、议程、Timeline、大纲、Inbox 和 Graph 从 `mcbtodo-daemon` 读取。Graph 的依赖编辑预览与保存仍由前台处理。服务离线时会显示启动提示，TUI 菜单仍可使用。服务恢复后按 `r` 重试。议程日期范围最多 366 天，结果过大时请缩小日期范围。通过 `--vault` 打开的外部 Vault 和非 Linux 前台模式从本地读取。
+在 Linux 上用以下命令打开可编辑的前台演示。`git archive` 从当前提交提取公开样例，示例副本、设置与运行状态都在临时目录内。
+
+```sh
+cargo build --locked -p mcbtodo
+demo_home="$(mktemp -d)"
+git archive HEAD examples/vault | tar -xf - -C "$demo_home"
+demo_vault="$demo_home/examples/vault"
+env HOME="$demo_home" target/debug/mcbtodo init
+env HOME="$demo_home" target/debug/mcbtodo --vault "$demo_vault" \
+  --timezone Asia/Shanghai tui --date 2026-11-20
+```
+
+在同一终端可继续查询 `outline`、`graph`，或将自己的 `.ics` 文件导入 `$demo_vault`。保留 `env HOME="$demo_home"` 和 `--vault "$demo_vault"` 两个参数，分别指定配置及运行状态的工作区和 Markdown 位置。后台场景的隔离验证使用 `cargo xtask smoke --bin-dir target/debug`。
+
+## 日历和任务
+
+在 Linux 上，默认 Vault 的 TUI 月历、周历、日历、议程、Timeline、大纲、Inbox 和 Graph 从 `mcbtodo-daemon` 读取。Graph 的依赖编辑预览与确认也经由服务。服务离线时会显示启动提示，TUI 菜单仍可使用。服务恢复后按 `r` 重试。议程日期范围最多 366 天，结果过大时请缩小日期范围。通过 `--vault` 打开的外部 Vault 和非 Linux 前台模式从本地读取。
 
 `mcbtodo calendar --daemon --date 2026-11-25 --json` 通过同一接口查询默认 Vault，支持 `--timezone`。普通 `calendar` 命令直接读取 Vault，支持 `--vault`。
 
@@ -273,10 +290,10 @@ cargo xtask agent prepare --harness codex --workflow review --offline
 
 当前受支持的发行目标是 Linux x86_64 和 AArch64。仓库 CI 在对应原生 Linux runner 上运行 workspace 检查、release 构建和打包二进制 smoke；systemd 用户服务仅适用于提供 systemd user manager 的 Linux 环境。此验证不代表已在所有发行版、桌面环境或其他操作系统上验收。
 
-macOS ARM64 和 Windows x64 的前台应用正在验证。CI 已配置原生 CLI 和 Agent 工作流准备门禁。两者的 `mcbtodo doctor --json` 将 Linux 专用的 Daemon 传输、Workflow Agent、沙箱、桌面通知适配器和 systemd 报告为 `unsupported`。Windows 上的备份、恢复及私有提案队列会明确拒绝。各平台的实测范围见[平台能力矩阵](docs/architecture.md#平台验证范围)。
+macOS ARM64 和 Windows x64 的 CI 门禁覆盖原生前台 CLI 与 Agent 开发工作流准备。两者的 `mcbtodo doctor --json` 将 Linux 专用的 Daemon 传输、Workflow Agent、沙箱、桌面通知适配器和 systemd 报告为 `unsupported`。Windows 上的备份、恢复及私有提案队列会明确拒绝。各平台的实测范围见[平台能力矩阵](docs/architecture.md#平台验证范围)。
 
 Linux 的 `mcbtodo doctor --json` 通过 `notification_desktop` 报告当前进程的桌面通知环境。未配置会话总线时为 `skipped`，已配置总线但 `PATH` 中缺少可执行的 `notify-send` 时为 `warning`。检查只读取环境和文件状态。若 Daemon 由 systemd 启动，请以服务进程的环境为准。
 
-当前项目具备端到端可演示的规划、计时、提案审批、工作流执行及备份恢复基础，但还未达到可靠日用级别。生产 Daemon 已为脚本和 Agent attempt 启动并监督独立 `mcbtodo-worker` 进程，使用绑定 workflow revision 的输入、attempt 身份校验、取消回收和 `outcome_unknown` 重启恢复；测试也覆盖 Daemon/Worker 中断后的本地进程回收及不重放。新解压的 Linux 发行归档已通过 sandbox smoke，其中用归档内 Worker 运行 `exit 23` 脚本并验证失败步骤与错误原因被持久化；打包 Worker 的畸形协议帧及组合故障仍未验收。数据库 epoch 不是可过期租约，也不能撤销或核对外部副作用。桌面提醒已采用持久 outbox、最多五次有界退避及重启恢复，但 helper 副作用与成功落盘之间仍存在可能重复的 at-least-once 窗口，停机超过 24 小时的 occurrence 不会补发；`outcome_unknown` 已支持一次性人工核对审计，但持续运行恢复与全副作用边界故障注入仍不完整。首页月历/恢复上次视图策略已有配置及持久化实现，但完整跨日历视图交互、干净系统安装和持续运行可靠性也尚未验收。详细证据与架构差距见[架构验收评估](docs/architecture-assessment.md)。
+规划、计时、提案审批、工作流执行与备份恢复已有端到端演示。干净系统安装、长期运行可靠性和打包 Worker 的组合故障仍待完整验收。当前 TUI 使用本地 Daemon 与 Vault 两条路径，GUI 客户端仍在规划中。详细的验收证据与架构差距见[架构验收评估](docs/architecture-assessment.md)。
 
-仓库包含 GitHub Actions 构建与归档验证流程，但目前流程不会创建 GitHub Release，也不会发布到 crates.io。2026 年 11 月 23 日在 Linux AArch64 上已完成首发包准备检查，13 个可发布包均通过归档生成、Apache-2.0 元数据、归档许可证文件和 `cargo publish --dry-run` 检查。该结果仍不代表已经上架，首次发布还需要按依赖顺序执行并确认 crates.io 中的包名和版本可用。`mcbtodo-xtask` 是仓库专用工具，不发布。项目许可证及第三方材料规则见[许可与第三方材料](docs/licensing.md)。
+各渠道的安装命令、发布记录和归档内容见[发行说明](distro/README.md)。`mcbtodo-xtask` 随源码提供。项目许可证及第三方材料规则见[许可与第三方材料](docs/licensing.md)。

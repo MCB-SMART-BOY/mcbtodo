@@ -1,10 +1,9 @@
 # mcbtodo 架构
 
-mcbtodo 的后台服务运行于 Linux AArch64 和 x86_64。macOS ARM64 和 Windows x64 的前台应用有原生 CI 测试。
-
-`mcbtodo-daemon` 常驻并拥有专注计时、提醒、调度和工作流运行状态。终端运行 `mcbtodo` 默认打开 TUI，可独立打开和关闭。脚本和 Agent 由 Daemon 按节点派发给临时 `mcbtodo-worker`。Linux 默认 Vault 的五种 TUI 日历视图、大纲、全局搜索、`mcbtodo calendar --daemon` 和部分创建操作使用同用户的 Unix socket。TUI 启动仍加载本地快照，Graph、Inbox、部分表单的对象选择和编辑操作仍直接访问 Markdown Vault。写入共用 Vault 写锁和 revision 校验。
-
-日历和大纲分别使用共享的 `CalendarItem` 和 `OutlineItem`，未来 GUI 可以通过 `mcbtodo-protocol` 消费同一投影。Daemon 每次查询读取一个有效 Vault 快照。TUI 的显示和选择共用最近一次查询的响应，新 Task 表单使用大纲中的 Project revision。手动重载、写入后重载及客户端监听到文件变更都会使缓存失效。外部 Vault 与非 Linux 前台路径仍使用本地投影。日历查询最多覆盖 366 个日期，超过 64 KiB IPC 帧上限时返回错误。大纲可在同一连接返回多个有序帧，客户端收齐后才更新视图。查询索引、服务端变更订阅、GUI 和桌面启动器入口仍待实现。
+`mcbtodo` 默认打开 TUI，也提供 CLI 和 stdio MCP。Linux 上，
+`mcbtodo-daemon` 独立运行，管理专注计时、提醒、调度和工作流运行状态。
+TUI 退出后后台任务继续运行。Daemon 委派脚本和 Agent 节点给本机
+`mcbtodo-worker`，Markdown Vault 仍是业务文档的权威来源。
 
 ## Cargo workspace
 
@@ -13,7 +12,8 @@ mcbtodo 的后台服务运行于 Linux AArch64 和 x86_64。macOS ARM64 和 Wind
 | `mcbtodo-domain` (`crates/domain`) | UUID、Inbox entry、任务状态、时间语义、日历投影和 WorkUnit DAG。边从前置单元指向依赖它的单元。 |
 | `mcbtodo-vault` (`crates/vault`) | Markdown 与 YAML front matter、Inbox/任务等引用校验、预览和带修订条件的写入。Vault 持有写锁并协调 Markdown 发布与完成事件恢复。 |
 | `mcbtodo-workflow` (`crates/workflow`) | 类型化图编译、发布快照、确定性轨迹重放和模拟。文件发布后由摘要标识。 |
-| `mcbtodo-execution` (`crates/execution`) | Linux Agent socket、Bubblewrap 脚本沙箱和 `notify-send` 适配器。执行代码与 Daemon 的状态所有权分离。 |
+| `mcbtodo-execution` (`crates/execution`) | Linux Agent 适配器装配、Bubblewrap 脚本沙箱和 `notify-send` 适配器。 |
+| `mcbtodo-agent-codex` (`crates/agent-codex`) | Codex app-server 协议、Linux 隔离进程及模型请求转发。 |
 | `mcbtodo-ports` (`crates/ports`) | Agent、本地传输、进程控制、脚本隔离、工作流 Attempt 持久化、完成事件读取、桌面通知和 Provider 选择的业务契约。 |
 | `mcbtodo-platform` (`crates/platform`) | 用户路径和配置、Linux Unix socket 客户端及 peer 身份验证。 |
 | `mcbtodo-protocol` (`crates/protocol`) | 本机 Unix socket 的计时、日历查询和工作流等请求与响应，以及 Daemon 与单次 Worker 之间有界、带 attempt 身份的消息契约。 |
@@ -26,12 +26,6 @@ mcbtodo 的后台服务运行于 Linux AArch64 和 x86_64。macOS ARM64 和 Wind
 
 crate 的完整命名规则见[命名规范](naming.md)。
 所有文档的用途和变更同步规则见[文档索引](README.md)。
-
-执行隔离实现位于 `mcbtodo-execution`。该 crate 提供 Agent 协议和脚本
-沙箱；它不拥有运行队列、RunStore 或工作流结果提交。Daemon 已通过 Worker
-协议启动并监督独立子进程；Worker 复用这些执行 API，Daemon 仍是唯一的状态
-与结果权威。Daemon RunStore 会核验 attempt 身份并原子提交结果，但它不是独立
-租约服务；Worker 外部副作用无法由数据库 epoch 单独 fencing。
 
 定时规则定义和编译由 `mcbtodo-workflow` 持有。Daemon 注册时与 SQLite
 恢复调度时共用 `Trigger::clock_schedule`，协议使用同一套可序列化类型。
@@ -53,13 +47,28 @@ socket 和对端身份。
 对所有祖先目录竞态、硬链接、任意外部 Vault 或所有运行时文件读写提供完整隔离；
 相关限制与后续验收项见[架构验收评估](architecture-assessment.md)。
 
-CLI 在命令入口解析一次 `WorkspacePaths`，将同一实例传给 Vault、工作流、提案、备份及运行时命令处理器；工作流 revision 存储、完成证据校验和 IPC socket 因此都由同一用户 home 派生，不在下游重新发现 home。TUI 与 Daemon 也在启动边界创建 `WorkspacePaths`，并向其组件传递路径所有权。CLI、TUI 和 MCP 共用 application 层的 Vault 查询与业务命令。application 从同一套 `TargetAction` 约束投影可选业务目标；TUI 的提醒与时间块选择器消费当前已验证快照的投影，Vault 在写锁下核对时间块目标的 revision，并校验提醒的可选关联目标。CLI 的工作流校验、模拟、发布和 revision 读取，以及提案批准时对已审核快照的发布，也经 application 的工作流用例进入 `crates/workflow`。`doctor` 的 Vault 完整性检查与 `validate` 命令也共用 `VaultQueries::validate`；doctor 额外负责环境与运行目录诊断，不直接打开 Vault 快照。MCP 的 Vault 写入请求进入待人工检查的提案队列。Inbox 可由 MCP 查询并以 expected revision 提议分流到 Project；审批通过后 Vault 发布稳定 UUID 的 Task，再更新 Inbox 来源条目。两文件操作不伪装成原子事务：中断后重试会验证已发布 Task 的精确内容，发现冲突时失败关闭。MCP 也可提交冻结的工作流图与源码字节快照；TUI 审阅该快照后，批准只将其发布为内容寻址 revision，不授予脚本授权或触发运行。已发布工作流也能创建任务，Agent 影响的写入由运行时审批控制。时间和工作流请求经 IPC 交给守护进程。守护进程与 TUI 共用 Vault 层的去抖文件监听；外部变更通过完整 Vault 加载校验，错误时保留最后有效快照。提醒 occurrence 扫描消费该快照投影出的 owned 定义，不另行读取 Vault；配置变更时丢弃旧快照扫描结果。生产 Daemon 仅从一个 `WorkspacePaths` 实例派生 state、socket、计时数据库及 Runtime 路径，避免组件意外分属不同 home。显式 `--vault` 选择只作用于前台 CLI/TUI；后台 Daemon 的 watcher、提醒和 WorkUnit 完成事件触发器绑定默认 Vault，不为外部 Vault 提供独立后台服务。工作流 `task.create` 动作在 Daemon 事件循环内执行，使用同一个 `WorkspacePaths` 查询 Project revision 并写入 Task，不授予执行 Worker Vault 写入能力；临时 workspace 集成测试覆盖该路径。
+CLI、TUI 和 Daemon 在入口解析 `WorkspacePaths` 并传给下游组件。
+Daemon 的 watcher、提醒和 WorkUnit 完成事件触发器绑定默认 Vault。
+Daemon 与 TUI 共用 Vault 的去抖文件监听，但各自校验并保留最后有效快照。
+Daemon 的提醒扫描从其监听快照取得定义，每次客户端投影查询则单独加载
+当前 Markdown。工作流的 `task.create` 由 Daemon 事件循环通过共享应用
+用例写入默认 Vault。
 
-Linux 上，TUI 默认 Vault 的 Task 捕获经同用户 IPC 提交 Project UUID、已观察的 revision 摘要、Task UUID 和标题。Daemon 从自身的 `WorkspacePaths` 定位 Vault，经 application 校验标题。Vault 尝试取得写锁，在锁内校验 revision 摘要，并在发布前再次比对 Project 原始字节。写锁占用时返回冲突，已发布但未确认落盘时返回可区分的状态。连接中断后，TUI 提示核对同一个 Task UUID。外部 Vault 与 macOS、Windows 的 Task 捕获使用前台写入路径。
+## 执行进程边界
 
-**执行架构目标与现状：**冻结目标是单机 `Daemon + 按节点启动的独立 Worker`。Daemon 是队列、授权、调度和运行状态的唯一权威；Worker 每个节点尝试启动一个进程，只执行绑定不可变 workflow revision 的工作，不自行调度、写 Vault/运行数据库或成为第二个状态库。生产路径已接通 revision 字节信封、Ready/持久化 Started/Start 门、结果身份校验、Daemon 结果提交、取消消息和 Linux 进程组终止/回收。Linux 测试覆盖终止 helper 对真实父子进程的回收、生产 Daemon 取消运行中的 sandbox 脚本，以及 Started 后 SIGKILL Worker：运行进入 `outcome_unknown`、不提交新步骤、Worker 被回收，重开 RunStore 后不重放。生产 `spawn_worker_at` 有畸形 readiness 帧测试。错身份 Result 回归测试由 fixture 子进程通过 stdout pipe 发出协议帧，再经 `read_worker_messages` 解码并交给生产 `poll_worker` 状态路径；它验证进程组回收、`outcome_unknown`、不提交步骤和重启不重放。该 fixture 并非打包 Worker 二进制。发行 smoke 还会从提取目录启动真实发行 Daemon，并用仅存在于开发 `xtask` 中的协议替身完成 Prepare/Ready/Start 后发送畸形 Result；它验证运行变为 `outcome_unknown`、没有步骤 trace 且 Worker 被终止回收。这覆盖发行 Daemon 的已启动后协议故障路径，但替身不是发行 Worker，不能证明发行 Worker 自身会产生畸形输出。另一个归档验收验证归档内 packaged Worker 执行 `exit 23` 脚本后，RunStore 保存失败运行、一个步骤和含退出状态的 trace 原因；这仅覆盖普通脚本非零退出，不覆盖 Worker 自身畸形输出或多故障组合。Daemon 在启动 Worker 时传入自身 PID；Worker 启动早期通过 `mcbtodo-platform` 的 Linux API 安装父进程死亡信号，并检查父 PID 竞态。Sandbox smoke 在脚本副作用出现后强制终止 Daemon，检查当时采样到的 Worker 后代均退出，再验证重启后运行进入 `outcome_unknown` 且不重放。这只证明本机采样进程树的退出，不撤销已发生的外部副作用，也不证明 Agent 所连接外部服务的状态。协议、故障边界和未完成验收见[设计第 11.3 节](design.md#113-首发-worker-协议与故障边界)。M5 仍为 Partial：发行 Worker 输出故障的组合验收，以及外部副作用结果核对仍未全部覆盖。分布式 Worker 集群、远程 Worker 和团队执行仍延期。
+Daemon 为每个 Script 或 Agent 节点的 attempt 启动独立的本机 Worker。
+Daemon 负责排队、授权、预算、状态推进和结果提交。它通过有界协议提供绑定
+不可变 workflow revision 的源码字节。RunStore 持久化 Started 后，Daemon
+才发送 Start。结果须匹配 attempt 的 run、revision、node、步骤与 epoch，
+由 Daemon 持久化。Worker 通过共享执行适配器执行节点，队列、Vault 写入与
+运行数据库由宿主或 Vault 自身管理。
 
-Daemon 的 `RunStore` 已为当前执行路径持久化 attempt：领取时分配单调 epoch，并绑定 run、revision、node 和预期步骤；启动转换只允许一次；结果事务在同一事务内校验完整绑定、提交 attempt 状态和运行结果。Daemon 启动时会使未决 attempt 失效，并将活动运行置为 `outcome_unknown`。attempt 身份也经 IPC 传给 Worker，并在回包时由 Daemon 核验；RunStore 的提交事务继续保证单写入状态权威。这不是可续期或自动过期的 Worker 租约，也不能阻止已发生的外部副作用。当前 supervisor 对已知子进程退出、协议失败和取消执行 fail-closed 处理；生产取消路径已有 Linux 真实工作负载、进程树停止和 Worker 回收测试。Started 后 Worker SIGKILL 的生产 supervisor 测试确认运行转为 `outcome_unknown`、不提交步骤且重新打开 RunStore 不会重放。Daemon 死亡 smoke 现验证 Worker 后代退出及运行状态恢复，但不构成外部系统副作用撤销或结果核对的证据。错身份 Result 测试由 fixture 子进程向 stdout pipe 输出帧，经真实协议 reader 和 supervisor 状态路径验证。Worker 进程测试和 `xtask smoke` 还会直接向所选 binary directory 中的真实 Worker 发送畸形 Prepare 帧，确认它以非零状态退出且拒绝输入前没有输出 Ready。发行归档 sandbox smoke 另验证 packaged Worker 的脚本非零退出和失败 trace 持久化；Daemon 收到畸形 Worker readiness 的归档验收仍使用故障注入替身，打包 Worker 的恶意/畸形输出及组合故障仍未覆盖，不能据此声称任意 Worker 故障已恢复。
+Daemon 监督子进程、取消并回收 Linux 进程组。Worker 启动时安装父进程死亡
+信号并核验 Daemon PID。未决 attempt 会在启动恢复时失效，已释放的工作若
+结果不明则记录 `outcome_unknown` 并禁止自动重放。epoch 只约束状态提交，
+已发生的外部副作用仍需核对。进程故障的本机测试、打包二进制与替身的覆盖范围
+见[架构验收评估](architecture-assessment.md#milestones)。协议与单机目标
+见[设计第 11.3 节](design.md#113-首发-worker-协议与故障边界)。
 
 WorkUnit 完成时，`mcbtodo` CLI 会先核对每条工作流步骤引用的 revision 绑定和已持久化 trace；仅 `trace.status = "succeeded"` 可作为完成证据。失败、跳过、缺失或畸形 trace 在调用应用层写入命令前拒绝，因此不会改变 WorkUnit 状态。
 
@@ -67,18 +76,41 @@ CLI 的 Vault 写命令从已加载快照取得乐观并发控制 token 时使�
 
 焦点报告的 Project 存在性检查、WorkUnit 所属信息和估时现在由 `VaultQueries::focus_report_context` 从同一个已验证快照提供，避免 CLI 在连续查询间读取到不同版本的 Markdown。按日向守护进程读取计时记录、跨日聚合和 Markdown/CSV/JSON 呈现仍属于报告适配器。
 
-Linux 上，TUI 将默认 Vault 的 Task 捕获以及 Project、Deadline、全天事件、单次提醒和 WorkUnit 时间块创建通过同用户 IPC 交给 Daemon。Daemon 从自己的 workspace 选择 Vault，application 校验业务输入，Vault 尝试获取写锁并拒绝重复 UUID。Task 捕获在锁内校验 Project revision，时间块写入在锁内校验 WorkUnit revision，保存后使用同一 revision 重发会被拒绝。全天事件和活动期保留包含首尾的日期范围。Deadline 仍保存为仅带日期截止项的 Project。单次提醒与时间块按 Daemon 的配置时区校验偏移。其他平台和外部 Vault 继续使用各自支持的前台命令。响应不明确时，TUI 显示提交的 UUID，创建时间块时还会显示提交的起止时刻供核对。
-
 ## 适配器边界
 
-适配器共用领域语义和应用用例，不要求每个入口提供完全相同的命令集合或交互流程：
+| 入口 | Vault 访问路径 |
+| --- | --- |
+| CLI | `validate`、`outline`、`graph`、`vault` 和默认的 `calendar` 使用本地 Vault。`calendar --daemon` 只查询默认 Vault 的单日投影，并拒绝与 `--vault` 或 iCalendar 导入导出组合。计时、通知和工作流运行命令使用 IPC，工作流校验、模拟和发布通过本地应用用例。 |
+| Linux TUI，默认 Vault | Month、Week、Day、Agenda、Timeline、大纲、全局搜索、Inbox 列表及分流、Graph 浏览及依赖预览和确认走 IPC。Task 捕获、Project、Deadline 快速创建、全天事件、单次提醒和 WorkUnit 时间块也走 IPC。启动时仍校验本地快照，部分表单的对象选择与其他编辑（如修改现有截止日期）继续使用本地 Vault。 |
+| Linux TUI，外部 Vault，以及非 Linux TUI | 使用本地 Vault 投影和可用的前台编辑功能。外部 Vault 没有独立后台服务。 |
+| MCP | stdio 服务通过共享用例读取选定 Vault。在支持私有队列的平台，业务写入提案需人工批准。批准工作流快照只发布内容寻址 revision，执行授权与入队各有独立入口。 |
+
+Vault 路由与同用户 socket 客户端见 [CLI 入口](../apps/mcbtodo/src/main.rs)、
+[TUI 的查询缓存](../apps/mcbtodo/src/tui/daemon_views.rs)、
+[TUI 的 Vault 路由](../apps/mcbtodo/src/tui/creation.rs)与
+[Daemon 的请求分派](../apps/mcbtodo-daemon/src/server.rs)。
+
+服务端每个投影查询重新加载一次有效 Vault 快照。TUI 按查询参数缓存行或错误，
+供渲染与选择共用。手动重载、写入后重载或 watcher 安装新快照会清除缓存；
+服务不可用时这些视图报告错误。日历查询最多覆盖 366 个含首尾日期，结果
+超出单个 64 KiB 帧时返回错误。大纲、Inbox 和 Graph 可在同一连接传送
+有序多帧，客户端收齐后才交付结果。查询索引、服务端变更订阅、GUI 和
+桌面启动器入口仍待实现。帧契约见 [IPC 编解码](../crates/protocol/src/wire.rs)
+与[客户端](../crates/protocol/src/client.rs)。
+
+本地写入和 IPC 写入共用 `VaultCommands` 与 Vault 的写锁及 revision 校验。
+例如 Task 捕获使用大纲行里的 Project revision，Graph 确认与时间块写入
+使用所观察的 WorkUnit revision。Daemon 写入尝试遇到锁争用时报告冲突。
+单次提醒和时间块以 Daemon 配置时区检查偏移。提交结果不明时，TUI 提示
+核对 UUID 或时间范围。Inbox 分流的两文件发布和中断恢复见
+[存储与同步](storage-and-sync.md#transactions-and-compatibility)。
+
+其余入口按实际场景共享用例：
 
 | 场景 | 共享边界 | 入口差异 |
 | --- | --- | --- |
-| 项目、任务、WorkUnit、Inbox 和日历查询 | CLI 与 MCP 使用 `VaultQueries` 的拥有型投影；TUI 从其正在展示的已验证 Vault snapshot 调用同一组投影函数，避免重复读取。 | 各入口自行选择过滤参数、交互方式和输出格式。 |
-| 创建、完成、依赖、日期与提醒等 Vault 修改 | 共享 `VaultCommands` 的验证、revision 约束和 Vault 发布语义。 | MCP 修改请求先进入提案队列并由用户审批；CLI/TUI 可在本地用户明确操作后直接调用命令。 |
+| Vault 查询 | CLI、MCP 和 Daemon 使用 `VaultQueries` 的拥有型投影。本地 TUI 使用快照投影函数。 | 各入口选择过滤参数、交互方式和输出格式。`doctor` 与 `validate` 共用 `VaultQueries::validate`。 |
 | Graph Diff | application 负责候选 DAG、预览及发布前验证；Vault 在锁内再次验证并发布。 | MCP 可预览并提交提案；TUI 展示和审批；CLI 暴露相应命令。 |
-| 工作流发布与执行授权 | application/workflow 负责类型化校验、内容寻址 revision；授权和执行由独立运行时策略控制。 | MCP 捕获精确快照并请求审批，审批只发布、不授权或执行；CLI/TUI 提供本地操作。 |
 | iCalendar 导入 | application 对传输无关的事件草稿执行文本约束，Vault 原子发布整批事件。 | RFC 5545 解析和文件读写仅属于 CLI 导入/导出适配器。 |
 | 专注报告 | application 从同一 Vault snapshot 提供并校验 Project/WorkUnit 元数据。 | CLI 读取 daemon 计时记录、聚合日期范围并渲染报告。 |
 
@@ -186,48 +218,28 @@ Worker 槽集合的占用状态计算队列唤醒时间，并在读取下一条�
 SQLite 负责持久排队，`WorkflowRunStore` 原子预留和结算 Agent 预算。
 独立进程插件协议仍需验证实际的进程扩展需求。
 
-### SQLite 能力与迁移
+### SQLite 仓储能力
 
 Daemon 启动时要求 `WorkflowRepository` 保证同一操作内的多记录原子提交，
 以及完成事件游标随对应运行和收据持久化。缺少任一保证时，启动错误会指出
 后端与缺失能力。SQLite 是目前接入该门禁的后端。
 
-| 能力 | 当前约定 |
-| --- | --- |
-| 事务与原子批次 | Agent 预算预留与 Attempt 领取共同提交。工作流结果与 Attempt、预算结算和轨迹共同提交。完成事件消费与游标共同提交。提醒和 outbox 共同写入。跨数据库原子批次暂无契约。 |
-| 持久游标 | 工作流完成事件消费游标随 `workflow.sqlite3` 保留。桌面弹窗的水位只在 Daemon 进程内使用。 |
-| 并发 | Daemon 单写者顺序调用。其他进程不可同时作为写入权威。读写并存受到 SQLite 锁限制，宿主可见存储错误。 |
-| 快照 | 由现有备份流程在工作区锁保护下保存和校验。仓储本身没有面向同步的导出接口。 |
-| Watch | 仓储未声明该能力。Vault 文件监听独立于其事务。 |
-
-旧版 `workflow.sqlite3` 的 `user_version` 为 0，首次打开时在同一初始化与恢复
-事务中登记为 1。沿用原表、状态、游标和路径。失败时该事务回滚，保留原库供
-检查或从现有备份恢复。无法识别的版本会被拒绝。`focus.sqlite3` 保留原有
-版本 1 与 `needs_review` 恢复规则。
+Daemon 作为单写者顺序调用运行仓储。仓储不提供 Watch 或同步导出接口。
+事务、数据库版本和备份快照规则见[存储与同步](storage-and-sync.md)。
 
 ### 平台验证范围
 
-下表按能力记录验证层级。类型检查覆盖目标 Rust 代码，原生测试覆盖该平台的链接与所列操作，
-运行时集成测试才可作为进程、权限和隔离的证据。`待验证` 表示存在相应实现或 CI 流程，
-`待提供适配器` 表示能力尚在规划，`不支持` 表示现有实现拒绝该调用。
-静态支持与运行时可用性分别判断。工具缺失、配置无效或健康检查失败均不能授予能力。
+| 能力 | Linux AArch64 / x86_64 | macOS ARM64 | Windows x64 |
+| --- | --- | --- | --- |
+| 前台 CLI、Vault 和 TUI | 本地路径和默认 Vault IPC 路径 | 离线前台路径 | 离线前台路径 |
+| 私有提案与备份、恢复 | Unix 实现 | Unix 实现 | 明确拒绝。MCP 工具发现仅提供只读工具 |
+| Daemon、Worker、IPC 与 systemd 用户服务 | Linux 实现 | 不支持 | 不支持 |
+| 工作流 Agent、Bubblewrap 与桌面通知 | Unix socket、Codex app-server、Bubblewrap 与 `notify-send`，可用性取决于本地配置及环境 | 不支持这些 Linux 后端 | 不支持这些 Linux 后端 |
 
-| 能力 | Linux AArch64 | Linux x86_64 | macOS | Windows |
-| --- | --- | --- | --- | --- |
-| Domain、Ports、Platform、Protocol | 本地工作区测试通过 | `cargo check --tests` 通过，有原生 CI 配置 | ARM64 `cargo check --tests` 通过 | x64 MSVC `cargo check --tests` 通过 |
-| 前台应用与 Vault | 本地 CLI、默认 TUI 和 Vault 验证通过 | CI 配置目标 | ARM64 前台应用及测试通过 Rust 类型检查。已配置原生 CLI 与 Vault 门禁 | x64 MSVC 前台应用及测试通过 Rust 类型检查。已配置原生离线查询、诊断与拒绝路径门禁 |
-| xtask 注册表与工作流准备 | 本地测试覆盖全部内置组合 | CI 配置目标 | ARM64 类型检查通过，已配置原生测试 | x64 MSVC 类型检查通过，已配置原生测试 |
-| Daemon、Worker 与本机 IPC | 本地进程和真实 sandbox smoke | CI 配置目标 | 不支持 Linux Daemon、Worker 与本机 IPC。`doctor` 返回 `unsupported` | 不支持 Linux Daemon、Worker 与本机 IPC。`doctor` 返回 `unsupported` |
-| SQLite 工作流事务及完成事件游标 | 回滚、重启、幂等测试通过 | CI 配置目标 | 待验证 | 待验证 |
-| Bubblewrap 隔离与取消 | 真实沙箱验收 | CI 配置目标 | 不支持 Bubblewrap | 不支持 Bubblewrap |
-| 桌面通知 | helper 与 outbox 集成测试 | CI 配置目标 | 待提供适配器 | 待提供适配器 |
-| Codex app-server | 实测离线握手、中断、流式结果、生产 Workflow 和进程回收 | 适配器通过交叉检查，原生运行待验证 | 不支持此 Linux 适配器 | 不支持此 Linux 适配器 |
-| 私有提案队列及工作区备份、恢复 | 队列、快照验证和恢复测试通过 | CI 配置目标 | Unix 实现通过 Rust 类型检查。运行及权限验收待完成 | 不支持。CLI 明确拒绝，MCP 工具发现只公布可用工具 |
-
-当前工作树的验证结果以[架构验收评估](architecture-assessment.md)为准。
-前台应用的交叉检查使用 `LIBSQLITE3_SYS_USE_PKG_CONFIG=1` 跳过 bundled SQLite
-的目标 C 构建。macOS 和 Windows 的原生链接、运行和平台安全门禁仍待取得结果。
-`notify-send` 的集成测试不覆盖实际桌面通知中心的显示效果。
+[CI 配置](../.github/workflows/ci.yml)包含两种原生 Linux 发行架构、macOS 与
+Windows 原生前台测试，以及独立的交叉类型检查。各测试实际覆盖范围与运行记录见
+[架构验收评估](architecture-assessment.md#native-ci-verification-follow-up-2026-11-23)。
+`notify-send` 的 helper 测试覆盖提交行为。实际桌面通知显示需要桌面会话验收。
 Linux Daemon 和 `doctor` 共用通知适配器的会话检测。`doctor` 被动检查当前进程的
 会话总线配置和 `PATH` 中的可执行 helper。Daemon 继续在后台队列中按需启动
 `notify-send`，提醒 outbox 负责重试及重启恢复。
@@ -249,13 +261,9 @@ Linux Daemon 每次接纳一条本机 IPC 连接。该连接的线程负责同 U
 | `~/.config/mcbtodo/agents.toml` | 本机 Agent 适配器的能力、发布摘要、调用时限和可选的结果字节额度。 |
 | `~/.config/mcbtodo/codex.toml` | 可选 Codex 后端的可执行路径、单一能力、指令与输出 schema。备份恢复后单独配置。 |
 | `~/.config/mcbtodo/keymap.toml` | TUI 全局导航和视图切换键位覆盖。 |
-| `~/.mcbtodo/vault/` | 默认 Vault。`inbox/` 保存待分类捕获；项目、任务、工作单元、时间块和证据引用以 Markdown 为准。 |
-| `~/.mcbtodo/vault/.mcbtodo-events.sqlite3` | WorkUnit 完成事件及中断恢复所需的写入意图，跟随 Vault 备份。 |
-| `~/.mcbtodo/state/focus.sqlite3` | 专注会话、最后保存的工时和恢复状态。 |
+| `~/.mcbtodo/vault/` | 默认 Markdown Vault 与该 Vault 的完成事件日志。 |
+| `~/.mcbtodo/state/` | 专注与工作流 SQLite 库、已发布 revision、私有提案和本机运行文件。Daemon socket 与进程锁也在此目录。 |
 | `~/.mcbtodo/state/last-view` | 仅在 `home_view = "restore_last_view"` 时使用的最近一次正常 TUI 视图。缺失或值未知时从 Month 启动。 |
-| `~/.mcbtodo/state/workflow.sqlite3` | 计划、工作流运行、轨迹、审批、脚本授权和按摘要存储的产物。 |
-| `~/.mcbtodo/state/workflows/revisions/` | 不可变的工作流定义、脚本和声明的可执行文件快照。 |
-| `~/.mcbtodo/state/proposals/` | 尚待审核或已处理的 Vault 提案。 |
 | `~/.mcbtodo/cache/agents/` | `cargo xtask agent` 生成的上下文和经过摘要验证的文档下载缓存。Unix 平台 API 使用目录文件描述符逐级验证并相对已打开目录读写，拒绝静态符号链接、非普通文件、多硬链接和不安全权限；非 Unix fallback 仍使用路径检查。 |
 
 上述配置与应用数据路径固定相对于用户 home；当前实现不读取 `XDG_CONFIG_HOME` 或 `XDG_DATA_HOME` 来重定位。
@@ -272,16 +280,12 @@ Linux 上从 Agents 按 `F4` 可编辑 `codex.toml`。编辑器与 Worker 共用
 `config.toml` 时，仅偏好页不可编辑，
 Keyboard 和 Agents 会独立读取各自的文件。启动修复直接使用偏好编辑器。
 
-由 Vault 重建 Inbox 列表、日历、大纲和任务图。CLI `vault capture-inbox` 无需 Project 即可捕获，`vault triage-inbox` 以 revision 条件将条目转换为 Task，保留来源条目及其原始内容。备份前停止守护进程，从默认 Vault 和 SQLite 快照生成私有目录备份。发布暂存目录前校验 Vault、事件日志、提案和文件完整性。恢复到新的家目录，默认 Vault 提案继续绑定默认 Vault，包含待审工作流的图和源码快照。默认 Vault 通过 canonical 路径识别：当 `~/.mcbtodo/vault` 是指向实际目录的符号链接时，默认路径与该目标相同；提案按两者的 canonical 路径是否精确匹配来绑定，备份将该目标作为 Vault 数据复制到实目录。备份会比较解析时记录的目录设备号/inode 与后续打开的目录文件描述符，若目录在准备期间被替换则失败关闭。外部 Vault 仍不会进入默认 Vault 备份，且备份拒绝 Vault 内部的符号链接。尚未提交到提案队列的外部工作流草稿仍由用户自行保存。运行 socket、进程锁、沙箱临时目录和缓存随运行重新创建。
+由 Vault 重建 Inbox 列表、日历、大纲和任务图。CLI `vault capture-inbox` 无需 Project 即可捕获，`vault triage-inbox` 以 revision 条件将条目转换为 Task，保留来源条目及其原始内容。备份范围、恢复与设备间交换见[存储与同步](storage-and-sync.md#backup-versus-multi-device-exchange)。
 
 守护进程重启时，未完成的计时会话保留最后一次检查点并进入 `needs_review`。正在执行的工作节点进入 `outcome_unknown`，等待用户核对可能已经发生的副作用；`mcbtodo workflow resolve <run-id> --outcome completed|failed|not-started --note <说明>` 会向独立审计表写入一次性人工观察，运行生命周期仍保持 `outcome_unknown`。核对不是机器验证，不补造步骤轨迹、不重放任务，也不触发 Dependency 调度；确认未启动时，操作者可另行创建新运行。运行摘要含核对结果、说明与记录时间。运行中的取消请求会尝试中止执行；若取消与活动工作竞争，无论执行端没有返回还是迟到返回结果，Daemon 都不提交该结果、不继续后续节点，而将运行置为 `outcome_unknown`，因为取消请求和进程停止都不能证明外部副作用已撤销。结果写入事务失败时，attempt、产物、轨迹及运行推进一并回滚；运行时随即将仍为 Running 的运行转为 `outcome_unknown`，重启后也不会重放。待定计划与等待人工决策的节点可继续。Dependency 调度只在运行真实进入成功终态的事务内写入下游队列，并按规则和上游运行去重。
 
-完成事件调度在注册时记录 Vault 事件水位。守护进程有界读取后续事件，在同一个 SQLite 事务内入队并推进游标，按规则和事件去重。Vault 和守护进程分别持久化，中途停止时可从已提交的游标继续。
-
-完成事件使用持久 UUID 表示事件身份，SQLite sequence 负责本地读取位置。
-跨设备层还需要设备身份、可导出的事件信封、逻辑导入、去重及 revision
-冲突规则。私有备份包含恢复所需的 SQLite 内容。跨设备同步会使用逻辑事实，
-运行 socket、锁、恢复日志和缓存属于设备本地。
+完成事件调度在注册时记录默认 Vault 的事件水位。游标交付、事件导入导出
+及各库的事务边界见[存储与同步](storage-and-sync.md)。
 
 ## 执行与部署
 
@@ -289,6 +293,10 @@ Keyboard 和 Agents 会独立读取各自的文件。启动修复直接使用偏
 
 GitHub Actions 为两种架构配置原生 Linux runner，执行 `cargo xtask check`、示例 Vault 校验和锁定依赖的发行构建。CI 安装 Bubblewrap 和 Nushell，以覆盖脚本沙箱及其受支持的解释器；从发行包解出应用和守护进程后运行 `cargo xtask smoke --sandbox`，并核对打包的 [systemd 用户服务](../deploy/systemd/README.md)。可选的 `cargo xtask smoke-systemd` 使用 Bubblewrap 和可访问的 systemd 用户管理器，JSON 校验由 `xtask` 完成。Sandbox smoke 覆盖隔离、Agent 决策和进程中断恢复；它仍是确定性 fixture，不替代真实桌面环境和长期使用验收。
 
-CI 当前验证构建、包归档和 smoke，不负责创建 GitHub Release 或向 crates.io 发布。项目使用 Apache-2.0，完整许可证文本位于仓库根目录；第三方材料审查规则见[许可与第三方材料](licensing.md)。发布包仍需准确的 description 和 canonical repository 元数据，并须逐个检查归档内容；见[命名规范](naming.md)。
+构建与验收由 CI 执行，发布由独立流程授权。发布版本及各渠道状态见
+[发行说明](../distro/README.md#release-status)。第三方材料审查及包元数据
+要求见[许可与第三方材料](licensing.md)和[命名规范](naming.md)。
 
-[设计文档](design.md) 给出完整目标与验收条件。单次提醒可从 TUI、CLI 或经审批的 MCP 提案创建；周期提醒可从 CLI 或 MCP 提案创建。TUI `/` Picker 搜索 Project、Task 和 WorkUnit 并聚焦到 Outline。TUI `:` 命令支持退出、重载、跳转今天/日期、视图切换、对象搜索、计时操作、提案审阅和帮助；workflow 命令复用既有守护进程查询。`keymap.toml` 可覆盖主视图常用导航与 `Space u` 视图选择键，表单和确认键保持固定；Graph 的 `x/a/d` 操作与 `v` 选择键不可被其他动作覆盖。首页配置可选择每次从 Month 启动，或从私有运行状态恢复最近一次正常退出的视图；TUI 将九个稳定视图名保存到 `state/last-view`。Graph 通过 `v/x` 选择源节点、焦点作为目标，使用 `a`/`d` 预览新增或移除的依赖边及阻塞变化，确认后以目标文档 revision 写入。Graph 投影按已验证 Vault 快照缓存，在成功安装新快照时失效；列表只为当前终端可见窗口构造行，避免重复重建 DAG 和为全图分配文本。该优化不构成大规模 Vault 的延迟或内存验收。Timeline 将同一 Vault 日历投影呈现为两周甘特视图，以 `h/l` 移动日期、`j/k` 选择计划项，并以不同标记显示活动期、任务 occurrence、事件、时间块和期限。TUI 日历行的内部焦点身份包含对象 UUID、日历类型和具体 occurrence；跨视图或 Vault reload 时优先恢复精确 occurrence，目标视图无此行时再回退至同一对象。现有测试覆盖九个 Space 视图目标、Agenda/Day 切换与 reload，以及三日重复全天事件在 Month/Week/Day/Agenda 四种视图之间的 16 种有向切换并保留 occurrence 和日期范围；完整 Month/Week/Day/Agenda/Outline 交互矩阵仍未整体验收，多日定时、时区边界、窄终端和真实交互会话仍需验证。日历支持全天与定时事件重复。定时实例使用模板时区的本地开始时刻锚定，按规则处理夏令时跳时与回拨，并保留实际经过时长。48×8 测试验证 Day 与 Agenda 在重复小时切换和重载时仍定位到同一实例与源文档。重复人工任务可从规则模板按有界窗口物化为独立 Markdown Task，使用稳定 UUID v5 身份并保留各实例状态。`calendar export-ical` 按最多 367 个含首尾日期的窗口输出 RFC 5545 `VEVENT`/`VTODO`；`calendar import-ical` 严格接受支持的非重复 VEVENT，并通过 Vault 原子批量接口一次发布。
+TUI 的呈现、导航和焦点规则见 [TUI 设计系统](tui-design.md)。日历与任务
+操作见[用户指南](../README.md#日历和任务)，交互测试与剩余验收见
+[架构验收评估](architecture-assessment.md#milestones)。

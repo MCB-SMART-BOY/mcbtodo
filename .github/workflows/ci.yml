@@ -76,6 +76,14 @@ jobs:
           test -x "$package_dir/usr/bin/mcbtodo-worker"
           cargo xtask smoke --bin-dir "$package_dir/usr/bin" --sandbox
 
+      - name: Verify tests leave the example Vault clean
+        run: |
+          changes="$(git status --porcelain --untracked-files=all --ignored -- examples/vault)"
+          if [ -n "$changes" ]; then
+            printf '%s\n' "$changes"
+            exit 1
+          fi
+
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: mcbtodo-linux-${{ matrix.arch }}

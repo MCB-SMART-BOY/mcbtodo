@@ -130,6 +130,9 @@
 
 11. Run `cargo xtask agent validate`, `cargo xtask check`, and
     `cargo run --locked -- --vault examples/vault --timezone Asia/Shanghai validate`.
+    Use `examples/vault` only as an input fixture. Copy it into an isolated
+    temporary workspace for tests that write. Linux CI checks that the example
+    tree remains clean, including files normally ignored by Git.
     If a test fails with an intermittent process/lock collision, rerun that
     exact test in isolation and rerun its full test target with normal
     parallelism. A passing retry shows only that the failure did not

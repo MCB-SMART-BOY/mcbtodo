@@ -1,6 +1,6 @@
 # Contribution Workflow
 
-Use this workflow when a change introduces material from outside the project.
+Use this workflow when a change introduces external material or fixture data.
 The maintainer identifies the software as their original work; no ownership
 certificate, rights attestation, or private ownership evidence is required.
 
@@ -14,7 +14,11 @@ certificate, rights attestation, or private ownership evidence is required.
 4. Review technical quality independently. Apache-2.0 applies to project
    material distributed under the project license and does not replace the
    separate terms of third-party material.
-5. Before a public release, follow `.agents/workflows/release.md` to review
+5. Keep changes to the tracked `examples/vault/` fixture synthetic and suitable
+   for public use. Use a disposable synthetic copy for write tests and public
+   reproductions. Exclude real Vault records, backups, credentials, local
+   configuration, and runtime state from commits, PRs, and attachments.
+6. Before a public release, follow `.agents/workflows/release.md` to review
    package contents, third-party notices, and publication readiness.
 
 Do not request ownership certificates, private contracts, or identity

@@ -25,6 +25,11 @@ These checks apply to third-party material; they are not a request for the
 maintainer to prove ownership of their original work. Release checks are
 described in the [release preparation workflow](../.agents/workflows/release.md).
 
+Keep the tracked `examples/vault/` fixture synthetic and suitable for public
+use. The same source and license review applies to any external material used
+in a fixture. Keep personal Vault data, backups, credentials, local
+configuration, and runtime state out of the repository and release inputs.
+
 The development-only `xtask` uses `vt100` (MIT) from the `vt100-rust`
 repository for its PTY smoke tests. Cargo records `vte` (Apache-2.0 OR MIT)
 and `arrayvec` (MIT OR Apache-2.0) as transitive dependencies. The distributed

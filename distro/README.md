@@ -1,21 +1,31 @@
 # Distribution
 
-Distribution recipes and release helpers live here. Package recipes must point
-to the same tagged source release and must not include local Vault data.
+Distribution recipes and release helpers live here. The tracked
+`examples/vault/` tree is a synthetic development fixture. Keep real Vaults,
+local configuration, credentials, and runtime state out of version control
+and distribution inputs.
 
 ## Release source
 
-After committing and pushing a release commit, create and push its version tag.
-Then run:
+From a checkout at an approved release tag with no tracked changes, run the
+source archive helper with the matching version:
 
 ```sh
 distro/release/create-source-archive.sh 0.1.0
 ```
 
-The script archives only tracked Cargo build inputs from the exact tag, writes a
-SHA-256 sidecar, and places both under `target/dist/`. Upload the archive and
-sidecar to the matching GitHub Release. The generated source archive excludes
-`distro/`, so its digest does not depend on package recipes that embed it.
+The helper archives the tag's `Cargo.toml`, `Cargo.lock`, `LICENSE`,
+`README.md`, `.cargo/`, `apps/`, `crates/`, and `xtask/` and writes a SHA-256
+sidecar under `target/dist/`. The custom archive omits `examples/` and
+`distro/`. AUR and upstream Nix recipes should pin this exact attached
+source asset. GitHub generates its automatic archives from the tagged
+tree, which includes the tracked fixture.
+
+The release-preparation workflow stages the three Linux executables, the
+systemd user unit, and the Apache-2.0 license in binary archives for x86_64
+and aarch64. It retains them and their checksums as CI artifacts. Uploading
+the reviewed source and binary assets to the matching GitHub Release is a
+separate, authorized step.
 
 ## crates.io
 
@@ -62,8 +72,11 @@ package-content review is complete.
   identity. `--build` also requires an Arch environment with `makepkg`.
 - [Nix](nix/): shared Nix expression plus NUR and nixpkgs entry points. NUR
   requires a dedicated package repository and a submission to the NUR
-  registry; nixpkgs requires a package pull request. Both need the verified
-  hash of the source archive attached to the same GitHub Release.
+  registry. nixpkgs requires a package pull request. The local entry points
+  filter the checkout to the same top-level paths as the custom archive.
+  They can still pick up local additions within those paths. Upstream
+  recipes need the verified hash of the custom source archive attached to
+  the matching GitHub Release.
 
 Never invent or reuse a checksum from a different archive. Publish or submit
 only after the matching release exists. A nixpkgs pull request is a submission
@@ -71,20 +84,19 @@ for review, not evidence that the package has been accepted or merged.
 
 ## Release status
 
-`v0.1.0` is released at
-https://github.com/MCB-SMART-BOY/mcbtodo/releases/tag/v0.1.0. The release
-contains the tracked-source archive, checksum sidecar, and CI-built Linux
-x86_64 and aarch64 archives. The source archive SHA-256 is
+`v0.1.0` was published on 2026-11-23 with the custom source archive and
+CI-built Linux x86_64 and aarch64 archives, each with a checksum sidecar.
+The custom source archive SHA-256 is
 `fb15e9fae29a69b8b6852bb2c05926e718ac01195833ee65be52e8e2fc2ef037`.
+See the [v0.1.0 GitHub Release](https://github.com/MCB-SMART-BOY/mcbtodo/releases/tag/v0.1.0).
 
-- AUR: `mcbtodo 0.1.0-1` published at https://aur.archlinux.org/packages/mcbtodo.
-  The source checksum and AArch64 package build were verified.
-- crates.io: all 13 workspace packages are published at `0.1.0`. The exact
-  version API returned HTTP 200 for every package, including `mcbtodo` and
-  `mcbtodo-daemon`.
-- NUR and nixpkgs: not submitted. The real build currently fails because
-  nixpkgs unstable's Rust compiler is older than the package's declared
-  `rust-version`; see [Nix status](nix/README.md#v010-status).
+Distribution channel checks for `v0.1.0` are dated 2026-11-23.
 
-The release-preparation workflow validates packages and builds artifacts; it
-does not publish crates or create a GitHub Release.
+- The AUR package record lists `mcbtodo 0.1.0-1`. The recorded build
+  verification covers AArch64. See the [AUR package](https://aur.archlinux.org/packages/mcbtodo)
+  and [build record](aur/README.md#v010-status).
+- The crates.io index lists `0.1.0` for all 13 publishable workspace
+  packages, including `mcbtodo` and `mcbtodo-daemon`.
+- The recorded Nix evaluation passed and the build failed Cargo's
+  `rust-version` check. NUR and nixpkgs remained pending before submission.
+  See [Nix status](nix/README.md#v010-status).

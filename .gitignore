@@ -1,2 +1,11 @@
 /target/
+
+# Local workspace when the checkout is used as a temporary home.
+/.mcbtodo/
+/.config/mcbtodo/
+
+# Runtime files in a Vault opened outside the default workspace.
 **/.mcbtodo-vault.lock
+**/.mcbtodo-events.sqlite3
+**/.mcbtodo-events.sqlite3-journal
+**/.mcbtodo-graph-*/

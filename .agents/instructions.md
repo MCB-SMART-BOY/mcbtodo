@@ -1,6 +1,6 @@
 # mcbtodo engineering instructions
 
-- The design is in `docs/design.md`. The implemented Vault format and commands are documented in `README.md` and demonstrated in `examples/vault/`.
+- The design is in `docs/design.md`. The implemented Vault format and commands are documented in `README.md` and demonstrated in `examples/vault/`. Keep that fixture small and synthetic. Run any write scenario against a separate workspace or temporary fixture copy.
 - Use `docs/README.md` as the documentation index. Update user docs, architecture evidence, and the applicable `.agents/workflows/` file with behavior changes; keep goals distinct from verified implementation.
 - For documentation-only changes, follow `.agents/workflows/documentation.md`. Treat source and executable tests as evidence for implementation claims; date and scope any assessment rather than implying unverified completeness.
 - Preserve project naming: Cargo crates and packages use the `mcbtodo-` prefix (except the root workspace if it is not a package); user-facing executables are `mcbtodo` and `mcbtodo-daemon`. See `docs/naming.md`.
