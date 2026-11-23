@@ -74,7 +74,7 @@ mcbtodo-daemon --worker-slots 2
 
 设置中按 `F3` 打开 Agents，查看已配置的 Provider、默认路由和授权条数。在 Linux 上，如果已配置多个 Provider，用 `↑` / `↓` 选择，按 `Enter` 保存为默认路由。页面会提示此操作将重定向的授权条数。没有指定 Provider 的授权会跟随默认路由，带有 Provider 的授权继续使用指定路由。
 
-选中已配置的 Provider 后按 `F6` 可编辑其 socket 路径。路径相对于 `~/.mcbtodo/`，例如 `state/agent.sock`。`Delete` 清空，`Enter` 保存，`F5` 重读，`Esc` 取消。新增 Provider、移除 Provider 和增删 revision 授权仍通过 `agents.toml` 完成。
+选中已配置的 Provider 后按 `F6` 可编辑其端点。路径相对于 `~/.mcbtodo/`，例如 Unix socket 的 `state/agent.sock` 或 stdio Agent 插件的 `bin/my-agent`。`Delete` 清空，`Enter` 保存，`F5` 重读，`Esc` 取消。在 `agents.toml` 中增删 Provider 和 revision 授权。参见 [Agent 适配器](docs/agent-adapter.md)。
 
 在 Linux 上，从 Agents 页按 `F4` 可编辑 `codex.toml` 中的可执行路径、能力名、指令和输出字段。用 `Tab` 或方向键切换字段，`Delete` 清空当前字段，`Enter` 保存，`F5` 重读当前页，`Esc` 取消编辑。输出字段可写成 `title=string, count=integer`。新路由、端点和 Codex 参数在下一次执行尝试中读取。本地安装诊断由 `mcbtodo doctor --json` 提供。
 

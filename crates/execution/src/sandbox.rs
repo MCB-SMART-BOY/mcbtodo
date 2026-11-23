@@ -31,7 +31,7 @@ const MAX_EXECUTABLE: usize = 2 * 1024 * 1024;
 const MAX_JSON: usize = 1024 * 1024;
 const MAX_LOG: usize = 64 * 1024;
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
-const READY: &[u8] = b"mcbtodo-ready\n";
+pub(crate) const READY: &[u8] = b"mcbtodo-ready\n";
 
 /// Fixed system executables used by the Linux sandbox adapter.
 #[derive(Clone, Copy, Debug)]
@@ -182,6 +182,107 @@ pub(crate) fn codex_command(
             "mcbtodo-codex",
         ])
         .arg(timeout.as_millis().max(1).to_string());
+    Ok(command)
+}
+
+const PLUGIN_SANDBOX_LAUNCHER: &str = r#"
+    umask 077
+    ulimit -c 0 && ulimit -n 64 && ulimit -u 32 && ulimit -v 262144 &&
+        ulimit -f 16384 && ulimit -t 10 || exit 125
+    printf 'mcbtodo-ready\n' || exit 125
+    IFS= read -r token && [[ $token == start ]] || exit 125
+    exec /bin/plugin
+"#;
+
+/// Build an isolated launch for a protected absolute path from `protected_executable`.
+///
+/// A self-contained native executable needs no additional runtime mounts.
+/// Only the trusted launcher runtime is mounted. The plugin first runs inside
+/// the sandbox, where it must be able to load with the files available there.
+///
+/// Keep `filter` in a caller-owned private directory until the child exits. Wait
+/// for `READY` and check that the monitor is alive before sending `start\n`
+/// followed by the request. EOF before release aborts startup. The caller
+/// enforces the wall-clock deadline and bounds the output after the marker.
+pub(crate) fn plugin_command(filter: &Path, executable: &Path) -> anyhow::Result<Command> {
+    ensure!(
+        geteuid() == getuid() && !geteuid().is_root(),
+        "plugin sandbox requires an unprivileged Worker"
+    );
+    ensure!(
+        executable.is_absolute() && filter.is_absolute(),
+        "plugin executable and seccomp filter paths must be absolute"
+    );
+    let bash = trusted_runtime_executable(SandboxExecutable::Bash.path())?;
+    let bwrap = trusted_runtime_executable(SandboxExecutable::Bubblewrap.path())?;
+    fs::write(filter, seccomp_filter(false)?).context("stage plugin syscall filter")?;
+
+    let mut command = Command::new(&bash);
+    command
+        .env_clear()
+        .current_dir("/")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .args([
+            "--noprofile",
+            "--norc",
+            "-c",
+            HOST_LAUNCHER,
+            "mcbtodo-launcher",
+        ])
+        .arg(filter)
+        .arg(bwrap)
+        .args([
+            "--unshare-user",
+            "--disable-userns",
+            "--unshare-pid",
+            "--unshare-net",
+            "--unshare-ipc",
+            "--unshare-uts",
+            "--unshare-cgroup",
+            "--cap-drop",
+            "ALL",
+            "--as-pid-1",
+            "--die-with-parent",
+            "--new-session",
+            "--seccomp",
+            "3",
+            "--clearenv",
+            "--setenv",
+            "LC_ALL",
+            "C",
+            "--setenv",
+            "LD_LIBRARY_PATH",
+            "/runtime",
+            "--setenv",
+            "TMPDIR",
+            "/scratch",
+            "--size",
+            "16777216",
+            "--tmpfs",
+            "/scratch",
+            "--dev-bind",
+            "/dev/null",
+            "/dev/null",
+            "--ro-bind",
+        ])
+        .arg(executable)
+        .arg("/bin/plugin");
+    mount_runtime_files(&mut command, [(&*bash, BASH.as_ref())])?;
+    command.args([
+        "--remount-ro",
+        "/",
+        "--chdir",
+        "/scratch",
+        "--",
+        BASH,
+        "--noprofile",
+        "--norc",
+        "-c",
+        PLUGIN_SANDBOX_LAUNCHER,
+        "mcbtodo-plugin",
+    ]);
     Ok(command)
 }
 
@@ -686,7 +787,7 @@ fn seccomp_filter(codex_loopback: bool) -> anyhow::Result<Vec<u8>> {
 
 // The direct child is the Bubblewrap monitor. Killing it kills namespace PID 1 via
 // PDEATHSIG, and the kernel then tears down the whole PID namespace, including any setsid jobs.
-struct Running(Child);
+pub(crate) struct Running(pub(crate) Child);
 
 impl Drop for Running {
     fn drop(&mut self) {
@@ -925,6 +1026,65 @@ mod tests {
                 false
             }
             Err(err) => panic!("sandbox probe failed: {err:#}"),
+        }
+    }
+
+    #[test]
+    fn plugin_round_trip_leaves_the_payload_on_stdin() {
+        let state = tempfile::tempdir().unwrap();
+        if !available(state.path()) {
+            return;
+        }
+        let plugin = protected_executable(Path::new("/usr/bin/cat")).unwrap();
+        let mut child = Running(
+            plugin_command(&state.path().join("plugin.bpf"), &plugin)
+                .unwrap()
+                .spawn()
+                .unwrap(),
+        );
+        let mut output = child.0.stdout.take().unwrap();
+        assert_eq!(
+            poll(
+                &mut [PollFd::new(&output, PollFlags::IN)],
+                Some(&Timespec {
+                    tv_sec: 5,
+                    tv_nsec: 0,
+                }),
+            )
+            .unwrap(),
+            1,
+            "plugin launcher did not report readiness"
+        );
+        let mut ready = [0; READY.len()];
+        output.read_exact(&mut ready).unwrap();
+        assert_eq!(ready, READY);
+        assert!(child.0.try_wait().unwrap().is_none());
+        assert!(child.0.stderr.is_none());
+        let mut input = child.0.stdin.take().unwrap();
+        input.write_all(b"start\n{\"request\":42}\n").unwrap();
+        drop(input);
+        let mut payload = Vec::new();
+        output.read_to_end(&mut payload).unwrap();
+        assert!(child.0.wait().unwrap().success());
+        assert_eq!(payload, b"{\"request\":42}\n");
+    }
+
+    #[test]
+    fn plugin_gate_rejects_eof_and_an_invalid_token() {
+        let state = tempfile::tempdir().unwrap();
+        if !available(state.path()) {
+            return;
+        }
+        let plugin = protected_executable(Path::new("/usr/bin/cat")).unwrap();
+        for token in [b"".as_slice(), b"stop\nunreleased payload"] {
+            let mut child = plugin_command(&state.path().join("plugin.bpf"), &plugin)
+                .unwrap()
+                .spawn()
+                .unwrap();
+            child.stdin.take().unwrap().write_all(token).unwrap();
+            let output = child.wait_with_output().unwrap();
+            assert_eq!(output.status.code(), Some(125));
+            assert_eq!(output.stdout, READY);
         }
     }
 

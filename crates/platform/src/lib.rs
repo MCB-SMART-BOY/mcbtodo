@@ -1,6 +1,7 @@
 //! Home-relative paths and application configuration for mcbtodo.
 
 pub mod agent_policy;
+#[cfg(target_os = "linux")]
 pub mod codex_config;
 mod device_identity;
 #[cfg(target_os = "linux")]

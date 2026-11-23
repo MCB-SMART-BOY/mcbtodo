@@ -51,6 +51,7 @@ pub enum AgentBackend {
     #[default]
     UnixSocket,
     Codex,
+    StdioPlugin,
 }
 
 impl AgentBackend {
@@ -58,6 +59,7 @@ impl AgentBackend {
         match self {
             Self::UnixSocket => "unix_socket",
             Self::Codex => "codex",
+            Self::StdioPlugin => "stdio_plugin",
         }
     }
 }
@@ -65,7 +67,7 @@ impl AgentBackend {
 /// An exact grant's resolved provider and endpoint relative to the app home.
 pub struct AgentRoute<'a> {
     pub backend: AgentBackend,
-    pub socket: &'a Path,
+    pub endpoint: &'a Path,
 }
 
 #[derive(Deserialize)]
@@ -120,16 +122,21 @@ impl AgentPolicy {
         );
         let providers = providers
             .into_iter()
-            .map(|(backend, socket)| {
+            .map(|(backend, endpoint)| {
                 ensure!(
-                    !socket.is_empty()
-                        && !socket.contains('\0')
-                        && Path::new(&socket)
+                    !endpoint.is_empty()
+                        && !endpoint.contains('\0')
+                        && Path::new(&endpoint)
                             .components()
                             .all(|component| matches!(component, Component::Normal(_))),
-                    "Agent socket must be a relative path beneath the app home"
+                    "Agent {} must be a relative path beneath the app home",
+                    if backend == AgentBackend::StdioPlugin {
+                        "plugin executable"
+                    } else {
+                        "socket"
+                    }
                 );
-                Ok((backend, PathBuf::from(socket)))
+                Ok((backend, PathBuf::from(endpoint)))
             })
             .collect::<Result<BTreeMap<_, _>>>()?;
         let timeout_seconds = timeout_seconds.unwrap_or(30);
@@ -185,12 +192,12 @@ impl AgentPolicy {
         self.default_backend
     }
 
-    /// The default Provider's socket path relative to the app home.
-    pub fn socket(&self) -> &Path {
+    /// The default Provider's endpoint path relative to the app home.
+    pub fn endpoint(&self) -> &Path {
         &self.providers[&self.default_backend]
     }
 
-    pub fn provider_socket(&self, backend: AgentBackend) -> Option<&Path> {
+    pub fn provider_endpoint(&self, backend: AgentBackend) -> Option<&Path> {
         self.providers.get(&backend).map(PathBuf::as_path)
     }
 
@@ -230,7 +237,7 @@ impl AgentPolicy {
             .and_then(|revisions| revisions.get(revision))
             .map(|&backend| AgentRoute {
                 backend,
-                socket: &self.providers[&backend],
+                endpoint: &self.providers[&backend],
             })
     }
 }
@@ -268,8 +275,8 @@ impl crate::WorkspacePaths {
                 backend
             }
         };
-        let current_socket = policy
-            .provider_socket(backend)
+        let current_endpoint = policy
+            .provider_endpoint(backend)
             .ok_or_else(|| anyhow!("Agent provider is not configured"))?;
         let source = snapshot
             .0
@@ -278,7 +285,7 @@ impl crate::WorkspacePaths {
             .expect("a validated Agent policy has source text");
         let unchanged = match edit {
             AgentPolicyEdit::Default(backend) => policy.backend() == backend,
-            AgentPolicyEdit::Endpoint { path, .. } => current_socket.as_os_str() == path,
+            AgentPolicyEdit::Endpoint { path, .. } => current_endpoint.as_os_str() == path,
         };
         if unchanged {
             return self.save_config_file(&self.agent_policy_path(), Some(source), None);

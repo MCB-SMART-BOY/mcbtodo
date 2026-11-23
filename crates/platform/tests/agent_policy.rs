@@ -20,7 +20,7 @@ fn grant_with_provider(capability: &str, revision: &str, provider: &str) -> Stri
 fn policy_defaults_to_no_grants_and_thirty_seconds() {
     let policy = AgentPolicy::parse(SOCKET.as_bytes()).unwrap();
     assert_eq!(policy.backend(), AgentBackend::UnixSocket);
-    assert_eq!(policy.socket(), Path::new("state/agent.sock"));
+    assert_eq!(policy.endpoint(), Path::new("state/agent.sock"));
     assert_eq!(policy.timeout(), Duration::from_secs(30));
     assert!(policy.route("triage", REVISION_A).is_none());
 }
@@ -33,7 +33,7 @@ fn policy_infers_a_single_codex_provider_and_keeps_the_mixed_default() {
     let route = policy.route("triage", REVISION_A).unwrap();
     assert_eq!(policy.backend(), AgentBackend::Codex);
     assert_eq!(route.backend, AgentBackend::Codex);
-    assert_eq!(route.socket, Path::new("state/model.sock"));
+    assert_eq!(route.endpoint, Path::new("state/model.sock"));
     assert!(policy.route("triage", REVISION_B).is_none());
 
     let mixed = format!("{codex}unix_socket = 'state/agent.sock'\n{allowed}");
@@ -101,9 +101,9 @@ fn the_same_capability_can_route_different_revisions_to_different_providers() {
     let local = policy.route("triage", REVISION_A).unwrap();
     let codex = policy.route("triage", REVISION_B).unwrap();
     assert_eq!(local.backend, AgentBackend::UnixSocket);
-    assert_eq!(local.socket, Path::new("state/agent.sock"));
+    assert_eq!(local.endpoint, Path::new("state/agent.sock"));
     assert_eq!(codex.backend, AgentBackend::Codex);
-    assert_eq!(codex.socket, Path::new("state/model.sock"));
+    assert_eq!(codex.endpoint, Path::new("state/model.sock"));
     assert!(policy.route("other", REVISION_B).is_none());
     assert!(policy.route("triage", &"f".repeat(64)).is_none());
 }

@@ -21,8 +21,8 @@ implementation and its tests, then update the affected documents together.
 - [License and third-party material](licensing.md): the project's
   Apache-2.0 license and review requirements for externally sourced material.
 - [Apache License 2.0](../LICENSE): project license text.
-- [Agent adapter protocol](agent-adapter.md): local adapter authorization and
-  socket contract.
+- [Agent adapter protocol](agent-adapter.md): local adapter authorization,
+  Unix socket and stdio plugin contracts, and Codex configuration.
 - [TUI design system](tui-design.md): presentation boundaries, theme,
   responsive layout, and visual tests.
 - [Storage and sync model](storage-and-sync.md): data authority,

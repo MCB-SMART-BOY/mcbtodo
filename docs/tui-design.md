@@ -185,7 +185,7 @@ comment-only external edits.
 F3 opens Agents and shows routes and grant counts from `agents.toml`. In a
 policy with multiple providers, the selected row previews how many grants
 would follow a new default. Enter saves that default. F5 reloads the policy
-and focuses its default. On Linux, F6 edits the selected provider's socket
+and focuses its default. On Linux, F6 edits the selected provider's endpoint
 path. Enter saves, Escape discards the path draft, and F5 reloads the same
 provider. A failed reload leaves the draft on screen. F4 opens the
 `codex.toml` editor,

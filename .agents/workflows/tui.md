@@ -120,7 +120,7 @@ modified preferences draft, return with Escape, and save the original draft.
 With multiple configured providers, verify the selection previews the inherited
 grant count and Enter saves that provider as the default. Exercise the changed
 route and unchanged explicit grants through the policy reader.
-Use F6 to edit the selected socket path. Cover cancellation, invalid paths,
+Use F6 to edit the selected provider endpoint. Cover cancellation, invalid paths,
 and comment-only conflicts. Exercise the route with the saved policy reader
 and check the other provider and exact revision grants.
 

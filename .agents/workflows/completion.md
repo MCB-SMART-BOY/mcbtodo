@@ -48,7 +48,7 @@ Use exactly these labels and state their evidence scope.
 
 Keep `Supported`, `Available`, `Unavailable`, and `Degraded` for platform
 capability state. Do not describe macOS or Windows runtime support from a Linux
-cross-build. Do not describe ResourceScheduler, a process plugin protocol,
+cross-build. Do not describe ResourceScheduler, general-purpose plugin discovery,
 Managed Codex distribution, or cross-device synchronization as implemented until
 their prerequisites and end-to-end tests exist.
 

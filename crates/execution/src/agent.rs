@@ -18,6 +18,7 @@ use mcbtodo_ports::{AgentError, AgentExecutionContext, AgentProvider, AgentReque
 use mcbtodo_workflow::{NodeOutcome, Scalar};
 use rustix::process::geteuid;
 
+use crate::plugin_agent::StdioPluginProvider;
 use crate::{codex_host, unix_agent::UnixSocketAgentProvider};
 
 /// Host disposition of a single authorized Agent execution.
@@ -78,8 +79,11 @@ pub fn execute_request(
             Err(error) => Err(error),
         };
         match route.backend {
-            AgentBackend::UnixSocket => execute(&UnixSocketAgentProvider::new(paths, route.socket)),
-            AgentBackend::Codex => execute(&codex_host::provider(paths, route.socket)?),
+            AgentBackend::UnixSocket => {
+                execute(&UnixSocketAgentProvider::new(paths, route.endpoint))
+            }
+            AgentBackend::Codex => execute(&codex_host::provider(paths, route.endpoint)?),
+            AgentBackend::StdioPlugin => execute(&StdioPluginProvider::new(paths, route.endpoint)),
         }
     })();
     match result {

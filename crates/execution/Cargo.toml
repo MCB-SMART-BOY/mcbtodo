@@ -13,13 +13,14 @@ documentation = "https://docs.rs/mcbtodo-execution"
 anyhow.workspace = true
 mcbtodo-agent-codex.workspace = true
 mcbtodo-platform.workspace = true
+mcbtodo-plugin.workspace = true
 mcbtodo-ports.workspace = true
 mcbtodo-workflow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
-rustix = { workspace = true, features = ["fs", "net", "process", "stdio"] }
+rustix = { workspace = true, features = ["event", "fs", "net", "process", "stdio"] }
 
 [lints]
 workspace = true

@@ -92,13 +92,22 @@ cancellation, response limits, process exit, and result normalization.
 
 Record the Codex versions exercised by real probes. Check compatibility
 through the required protocol exchanges and state unsupported behavior
-explicitly. System Codex discovery is the first mode. Managed fixed-version
-distribution is a later release capability.
+explicitly. The policy configures a user-installed Codex executable.
+Managed fixed-version distribution is a later release capability.
 
 A controlled real integration test is required before claiming the adapter is
 verified. Tests must cover initialize, capability negotiation, timeout,
 cancellation, malformed and oversized responses, provider crash, stale result,
 duplicate request, denied network or filesystem access, and unknown side effects.
+
+## Stdio Agent Plugin
+
+Keep framing and message types in `mcbtodo-plugin` and process supervision
+in `mcbtodo-execution`. A `ready` message reports capabilities after launch.
+Only writing the `execute` frame crosses the business dispatch boundary.
+Check the same deadline and cancellation during I/O and process exit.
+If the plugin does not exit successfully by the deadline, discard its result.
+Run the sandbox smoke to verify the production Worker route.
 
 ## Verification
 

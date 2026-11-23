@@ -168,9 +168,14 @@ Markdown 时仍可打开 TUI 并显示服务连接状态。显式外部 Vault �
 
 ## 7. Phase 5 — Process Plugin Protocol
 
-至少两个真实 Provider 或 Backend 通过同类端口，并证明有跨进程扩展需求后，才建立共享契约 crate `mcbtodo-plugin`。首期采用 stdio framed JSON。Rust 动态库不作为公共插件机制。
+`mcbtodo-plugin` 定义一次性 Agent 插件的有界 stdio JSON 协议。当前流程为
+`hello`、`ready`、`execute`、`result`。Worker 负责进程隔离和回收，Daemon
+掌握结果提交。测试覆盖帧上限、版本与能力不符、首字节派发边界、期限及取消。
+真实 Worker 烟测还须验证缺少授权、网络和宿主文件系统隔离、畸形结果、正常提交，
+以及插件返回结果后未在期限内退出。
 
-协议规定 framing、message ID、响应关联、版本、消息上限、错误、取消与终止。基础消息包括 hello、capabilities、health、prepare、execute、cancel、result、diagnostic、shutdown。Manifest 校验 provider ID、版本、可执行目标、capabilities、required permissions 与配置。宿主决定授权。生命周期覆盖发现、版本选择、启动超时、健康检查、崩溃恢复、重启、熔断、卸载、日志保留和配置验证。以真实 Provider 和契约测试验证错误诊断、权限及协议协商。
+至少两个真实 Provider 通过同类进程契约，并验证实际需求后，再扩展 manifest、
+自动发现、健康检查、重启和熔断。公共插件机制采用进程边界。
 
 ## 8. 跨设备数据准备
 

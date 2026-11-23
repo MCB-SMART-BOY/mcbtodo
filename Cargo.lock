@@ -887,6 +887,7 @@ dependencies = [
  "anyhow",
  "mcbtodo-agent-codex",
  "mcbtodo-platform",
+ "mcbtodo-plugin",
  "mcbtodo-ports",
  "mcbtodo-workflow",
  "rustix",
@@ -908,6 +909,15 @@ dependencies = [
  "tempfile",
  "toml",
  "uuid",
+]
+
+[[package]]
+name = "mcbtodo-plugin"
+version = "0.1.0"
+dependencies = [
+ "mcbtodo-ports",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

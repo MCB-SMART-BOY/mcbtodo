@@ -921,18 +921,22 @@ mcbtodo workflow simulate examples/workflow/graph.yaml --fixture examples/workfl
 
 ```text
 apps/
-├── mcbtodo/                 # mcbtodo：CLI、TUI、MCP、提案、备份/诊断
+├── mcbtodo/                 # mcbtodo：CLI、TUI 启动入口、MCP、提案、备份/诊断
 ├── mcbtodo-daemon/          # mcbtodo-daemon：IPC 服务、计时、调度和执行协调
 └── mcbtodo-worker/          # mcbtodo-worker：执行已授权的单个节点 Attempt
 
 crates/
+├── agent-codex/           # Codex app-server adapter
 ├── application/           # shared business queries, commands, workflow use cases
+├── client/                # typed client shared by CLI and TUI
 ├── domain/                # domain types, time semantics, projections, graph
-├── execution/             # local Agent, Bubblewrap, script runner, desktop notifications
+├── execution/             # Worker adapters for Agent, sandbox, scripts and notifications
 ├── platform/              # WorkspacePaths, config, Agent policy
+├── plugin/                # framed stdio Agent plugin protocol
 ├── ports/                 # business-facing adapter contracts
-├── protocol/              # daemon IPC types and client
+├── protocol/              # daemon IPC types and framing
 ├── storage-sqlite/        # daemon workflow, focus and notification persistence
+├── tui/                   # terminal UI, input dispatch and presentation
 ├── vault/                 # Markdown persistence, validation, watcher, event journal
 └── workflow/              # workflow definition, compiler, publication, scheduler logic
 

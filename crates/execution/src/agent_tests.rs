@@ -96,7 +96,7 @@ impl Fixture {
         let route = policy.route(CAPABILITY, REVISION).unwrap();
         dispatch_authorized(
             &policy,
-            &UnixSocketAgentProvider::new(&self.paths, route.socket),
+            &UnixSocketAgentProvider::new(&self.paths, route.endpoint),
             AgentRequest {
                 capability: CAPABILITY.into(),
                 revision: REVISION.into(),
@@ -264,7 +264,7 @@ fn host_rejects_a_different_user_before_sending_any_request_bytes() {
     let policy = fixture.paths.load_agent_policy().unwrap().unwrap();
     let provider = UnixSocketAgentProvider::with_transport(
         &fixture.paths,
-        policy.socket(),
+        policy.endpoint(),
         &OtherUserTransport,
     );
     let result = dispatch_authorized(

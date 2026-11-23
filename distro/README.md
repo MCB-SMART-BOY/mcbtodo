@@ -95,8 +95,10 @@ Distribution channel checks for `v0.1.0` are dated 2026-11-23.
 - The AUR package record lists `mcbtodo 0.1.0-1`. The recorded build
   verification covers AArch64. See the [AUR package](https://aur.archlinux.org/packages/mcbtodo)
   and [build record](aur/README.md#v010-status).
-- The crates.io index lists `0.1.0` for all 13 publishable workspace
-  packages, including `mcbtodo` and `mcbtodo-daemon`.
+- The recorded crates.io publication covers the 13 publishable packages
+  in the `v0.1.0` tag, including `mcbtodo` and `mcbtodo-daemon`.
+  The current workspace includes `mcbtodo-client`, `mcbtodo-tui`, and
+  `mcbtodo-plugin`. Include them in the next versioned release.
 - The recorded Nix evaluation passed and the build failed Cargo's
   `rust-version` check. NUR and nixpkgs remained pending before submission.
   See [Nix status](nix/README.md#v010-status).

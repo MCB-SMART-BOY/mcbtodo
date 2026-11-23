@@ -12,6 +12,7 @@ and executable names describe their user-facing role:
 | `mcbtodo-daemon` | `apps/mcbtodo-daemon` | `mcbtodo-daemon` |
 | `mcbtodo-worker` | `apps/mcbtodo-worker` | `mcbtodo-worker` |
 | `mcbtodo-agent-codex` | `crates/agent-codex` | Library |
+| `mcbtodo-plugin` | `crates/plugin` | Library |
 | `mcbtodo-application` | `crates/application` | Library |
 | `mcbtodo-client` | `crates/client` | Library |
 | `mcbtodo-domain` | `crates/domain` | Library |

@@ -3,7 +3,7 @@ use std::{
     io::{ErrorKind, Read, Write, stdin, stdout},
     num::NonZeroU16,
     os::unix::{
-        fs::PermissionsExt,
+        fs::{PermissionsExt, symlink},
         net::{UnixListener, UnixStream},
     },
     path::{Path, PathBuf},
@@ -804,6 +804,7 @@ fn exercise_sandbox(root: &Path, temp: &Path, smoke: &Smoke<'_>) -> Result<Strin
         .context("binding did not return the Test WorkUnit's document")?
         .trim_end();
     let failed_check = exercise_agent(&fixture_root, &temp.join("nightly-fail"), smoke, test_file)?;
+    exercise_stdio_plugin(smoke, temp)?;
 
     let due = (Utc::now() + TimeDelta::seconds(1)).to_rfc3339();
     let run = smoke.json(&["workflow", "run", revision, "--at", &due])?;
@@ -884,6 +885,187 @@ fn exercise_sandbox(root: &Path, temp: &Path, smoke: &Smoke<'_>) -> Result<Strin
     );
     assert_failed_check(smoke, &failed_check)?;
     Ok(failed_check)
+}
+
+fn exercise_stdio_plugin(smoke: &Smoke<'_>, temp: &Path) -> Result<()> {
+    const SUCCESS_CAPABILITY: &str = "stdio_plugin_smoke";
+    const UNCERTAIN_CAPABILITY: &str = "stdio_plugin_uncertain";
+    const MISMATCH_CAPABILITY: &str = "stdio_plugin_missing";
+    const HANG_CAPABILITY: &str = "stdio_plugin_hang";
+    const TITLE: &str = "stdio plugin result";
+
+    let paths = smoke.paths();
+    let plugin_dir = paths.home_dir().join("bin");
+    fs::create_dir_all(&plugin_dir)?;
+    fs::set_permissions(paths.home_dir(), fs::Permissions::from_mode(0o700))?;
+    fs::set_permissions(&plugin_dir, fs::Permissions::from_mode(0o700))?;
+    let source = temp.join("stdio-plugin-probe.rs");
+    let build_dir = tempfile::tempdir_in(smoke.bin_dir)?;
+    let executable = build_dir.path().join("mcbtodo-stdio-plugin-probe");
+    let configured_executable = plugin_dir.join("probe");
+    fs::write(&source, include_str!("plugin_probe.rs"))?;
+    let mut rustc = Command::new(
+        std::env::var_os("RUSTC").unwrap_or_else(|| std::ffi::OsString::from("rustc")),
+    );
+    let status = rustc
+        .args([
+            "--edition=2024",
+            "-C",
+            "opt-level=z",
+            "-C",
+            "panic=abort",
+            "-C",
+            "lto=fat",
+            "-C",
+            "target-feature=+crt-static",
+            "-C",
+            "strip=symbols",
+        ])
+        .arg(&source)
+        .arg("-o")
+        .arg(&executable)
+        .status()
+        .context("building the stdio plugin probe")?;
+    ensure!(
+        status.success(),
+        "stdio plugin probe build exited with {status}"
+    );
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o700))?;
+    symlink(&executable, &configured_executable)?;
+
+    let graph = |capability: &str, name: &str| {
+        format!(
+            r#"schema: mcbtodo.workflow/v1
+id: stdio-plugin-smoke
+name: {name}
+entry: agent
+capabilities:
+  - {{kind: agent.invoke, scope: {capability}}}
+nodes:
+  agent:
+    kind: agent
+    capability: {capability}
+    inputs: {{text: string}}
+    outputs: {{title: string}}
+  review: {{kind: approval}}
+  report: {{kind: action, action: report.create}}
+  rejected: {{kind: action, action: report.create}}
+edges:
+  - {{from: agent, to: review}}
+  - {{from: review, to: report, when: approved}}
+  - {{from: review, to: rejected, when: rejected}}
+bindings:
+  - {{from: {{node: agent, port: title}}, to: {{node: report, port: summary}}}}
+literals:
+  - {{to: {{node: agent, port: text}}, value: "stdio plugin probe"}}
+  - {{to: {{node: rejected, port: summary}}, value: "Stdio plugin rejected"}}
+"#
+        )
+    };
+    let publish = |capability: &str, name: &str| -> Result<String> {
+        let graph_path = temp.join(format!("{capability}.yaml"));
+        fs::write(&graph_path, graph(capability, name))?;
+        Ok(smoke
+            .cli(&["workflow", "publish", path_arg(&graph_path)?])?
+            .trim()
+            .to_owned())
+    };
+    let success_revision = publish(SUCCESS_CAPABILITY, "Stdio plugin success")?;
+    let uncertain_revision = publish(UNCERTAIN_CAPABILITY, "Stdio plugin uncertain")?;
+    let mismatch_revision = publish(MISMATCH_CAPABILITY, "Stdio plugin mismatch")?;
+    let hang_revision = publish(HANG_CAPABILITY, "Stdio plugin hangs after replying")?;
+    let policy = paths.agent_policy_path();
+    let base_policy = "timeout_seconds = 3\n[providers]\nstdio_plugin = 'bin/probe'\n";
+    fs::write(&policy, base_policy)?;
+
+    let unauthorized = smoke.json(&["workflow", "run", &success_revision])?;
+    let unauthorized_id = unauthorized["id"]
+        .as_str()
+        .context("stdio plugin authorization run has no ID")?;
+    let unauthorized = smoke.await_run(unauthorized_id, "failed")?;
+    let unauthorized_trace = smoke.json(&["workflow", "trace", unauthorized_id, "0"])?;
+    ensure!(
+        unauthorized_trace["trace"]["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("not authorized for this revision")),
+        "stdio plugin authorization rejection was not enforced before dispatch: {unauthorized}; trace: {unauthorized_trace}"
+    );
+
+    fs::write(
+        &policy,
+        format!(
+            "{base_policy}\
+             [[allow]]\ncapability = \"{SUCCESS_CAPABILITY}\"\nrevision = \"{success_revision}\"\n\
+             [[allow]]\ncapability = \"{UNCERTAIN_CAPABILITY}\"\nrevision = \"{uncertain_revision}\"\n\
+             [[allow]]\ncapability = \"{MISMATCH_CAPABILITY}\"\nrevision = \"{mismatch_revision}\"\n\
+             [[allow]]\ncapability = \"{HANG_CAPABILITY}\"\nrevision = \"{hang_revision}\"\n"
+        ),
+    )?;
+
+    let mismatch = smoke.json(&["workflow", "run", &mismatch_revision])?;
+    let mismatch_id = mismatch["id"]
+        .as_str()
+        .context("stdio plugin capability mismatch run has no ID")?;
+    let mismatch = smoke.await_run(mismatch_id, "failed")?;
+    let mismatch_trace = smoke.json(&["workflow", "trace", mismatch_id, "0"])?;
+    ensure!(
+        mismatch_trace["trace"]["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.to_ascii_lowercase().contains("capability")),
+        "stdio plugin capability mismatch was not rejected during handshake: {mismatch}; trace: {mismatch_trace}"
+    );
+
+    let success = smoke.json(&["workflow", "run", &success_revision])?;
+    let success_id = success["id"]
+        .as_str()
+        .context("stdio plugin success run has no ID")?;
+    let waiting = smoke.await_run(success_id, "waiting")?;
+    ensure!(
+        waiting["revision"] == success_revision,
+        "stdio plugin success run used the wrong revision: {waiting}"
+    );
+    let agent_trace = smoke.json(&["workflow", "trace", success_id, "0"])?;
+    ensure!(
+        agent_trace["trace"]["outputs"] == json!({"title": TITLE}),
+        "stdio plugin result was not recorded by the Worker: {agent_trace}"
+    );
+    smoke.approve_workflow(success_id, "review", &waiting)?;
+    let succeeded = smoke.await_run(success_id, "succeeded")?;
+    let report_index = succeeded["step_count"]
+        .as_u64()
+        .and_then(|count| count.checked_sub(1))
+        .context("stdio plugin workflow did not record a report step")?
+        .to_string();
+    ensure!(
+        smoke.cli(&["workflow", "artifact", success_id, &report_index])? == TITLE,
+        "stdio plugin report lost the typed result"
+    );
+
+    let uncertain = smoke.json(&["workflow", "run", &uncertain_revision])?;
+    let uncertain_id = uncertain["id"]
+        .as_str()
+        .context("stdio plugin uncertain run has no ID")?;
+    let uncertain = smoke.await_run(uncertain_id, "outcome_unknown")?;
+    ensure!(
+        uncertain["step_count"] == 0
+            && uncertain["detail"]
+                .as_str()
+                .is_some_and(|detail| detail.to_ascii_lowercase().contains("plugin")),
+        "stdio plugin malformed post-dispatch result was not recorded as uncertain: {uncertain}"
+    );
+    let hanging = smoke.json(&["workflow", "run", &hang_revision])?;
+    let hanging_id = hanging["id"]
+        .as_str()
+        .context("hanging stdio plugin run has no ID")?;
+    let hanging = smoke.await_run(hanging_id, "outcome_unknown")?;
+    ensure!(
+        hanging["step_count"] == 0
+            && hanging["detail"]
+                .as_str()
+                .is_some_and(|detail| detail.contains("mcbtodo-stdio-plugin")),
+        "stdio plugin that failed to exit should not commit its result: {hanging}"
+    );
+    Ok(())
 }
 
 fn exercise_packaged_worker_rejects_malformed_prepare(bin_dir: &Path) -> Result<()> {

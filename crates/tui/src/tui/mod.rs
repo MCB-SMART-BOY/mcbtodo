@@ -2079,12 +2079,12 @@ mod tests {
             .route("summarize", &revision)
             .context("missing inherited route")?;
         assert_eq!(route.backend, Codex);
-        assert_eq!(route.socket, std::path::Path::new("state/model.sock"));
+        assert_eq!(route.endpoint, std::path::Path::new("state/model.sock"));
         let route = saved
             .route("review", &revision)
             .context("missing explicit route")?;
         assert_eq!(route.backend, UnixSocket);
-        assert_eq!(route.socket, std::path::Path::new("state/local.sock"));
+        assert_eq!(route.endpoint, std::path::Path::new("state/local.sock"));
         assert!(saved.route("summarize", &"b".repeat(64)).is_none());
 
         press(&mut state, KeyCode::Up);
@@ -2190,11 +2190,11 @@ mod tests {
         assert_eq!(saved.timeout().as_secs(), 42);
         assert_eq!(saved.max_output_bytes(), Some(900));
         assert_eq!(
-            saved.route("summarize", &revision).unwrap().socket,
+            saved.route("summarize", &revision).unwrap().endpoint,
             std::path::Path::new("state/model.sock")
         );
         assert_eq!(
-            saved.route("review", &revision).unwrap().socket,
+            saved.route("review", &revision).unwrap().endpoint,
             std::path::Path::new("state/review.sock")
         );
         assert!(saved.route("review", &"b".repeat(64)).is_none());

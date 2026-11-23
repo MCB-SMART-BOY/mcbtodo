@@ -119,7 +119,7 @@ impl ScreenChrome {
                 }
                 #[cfg(target_os = "linux")]
                 Some(settings::Subpage::Agents(page)) if page.endpoint_draft().is_some() => {
-                    ("Agent endpoint", "Socket relative to app home")
+                    ("Agent endpoint", "Relative to app home")
                 }
                 Some(settings::Subpage::Agents(_)) => ("Agents", "Host policy · Health unchecked"),
                 #[cfg(target_os = "linux")]
@@ -423,7 +423,7 @@ impl<'a> SettingsScreenModel<'a> {
         #[cfg(target_os = "linux")]
         if let Some((provider, endpoint)) = page.endpoint_draft() {
             return Self {
-                panel: " Socket path ",
+                panel: " Provider endpoint ",
                 selected: 0,
                 rows: vec![SettingsEntry {
                     section: Some(provider),

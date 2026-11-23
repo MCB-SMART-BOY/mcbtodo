@@ -1,0 +1,18 @@
+[package]
+name = "mcbtodo-plugin"
+repository.workspace = true
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "Framed stdio protocol for mcbtodo Agent plugins."
+documentation = "https://docs.rs/mcbtodo-plugin"
+
+[dependencies]
+mcbtodo-ports.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

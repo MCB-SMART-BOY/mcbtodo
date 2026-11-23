@@ -43,6 +43,7 @@ packages=(
   mcbtodo-platform
   mcbtodo-protocol
   mcbtodo-agent-codex
+  mcbtodo-plugin
   mcbtodo-storage-sqlite
   mcbtodo-vault
   mcbtodo-application

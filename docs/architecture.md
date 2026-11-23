@@ -14,6 +14,7 @@ TUI 退出后后台任务继续运行。Daemon 委派脚本和 Agent 节点给�
 | `mcbtodo-workflow` (`crates/workflow`) | 类型化图编译、发布快照、确定性轨迹重放和模拟。文件发布后由摘要标识。 |
 | `mcbtodo-execution` (`crates/execution`) | Linux Agent 适配器装配、Bubblewrap 脚本沙箱和 `notify-send` 适配器。 |
 | `mcbtodo-agent-codex` (`crates/agent-codex`) | Codex app-server 协议、Linux 隔离进程及模型请求转发。 |
+| `mcbtodo-plugin` (`crates/plugin`) | 一次性 Agent 插件的有界 stdio 消息契约。由 `mcbtodo-execution` 启动和监督进程。 |
 | `mcbtodo-ports` (`crates/ports`) | Agent、本地传输、进程控制、脚本隔离、工作流 Attempt 持久化、完成事件读取、桌面通知和 Provider 选择的业务契约。 |
 | `mcbtodo-platform` (`crates/platform`) | 用户路径和配置、Linux Unix socket 客户端及 peer 身份验证。 |
 | `mcbtodo-protocol` (`crates/protocol`) | 本机 Unix socket 的计时、日历查询和工作流等请求与响应，以及 Daemon 与单次 Worker 之间有界、带 attempt 身份的消息契约。 |
@@ -153,17 +154,14 @@ revision。未来 GUI 可直接调用同一个业务接口。终端尺寸变化�
 
 ### 插件扩展
 
-内建 Agent 和其他适配器通过 `mcbtodo-ports` 扩展。Unix socket 与 Codex
-app-server 已接到同一个 `AgentProvider` 端口。`mcbtodo-plugin` 是拟议的
-独立进程协议 crate，首个适用场景是由 Worker 启动一个用户显式配置的第三方
-Agent 可执行文件。Worker 可以用一个进程适配器把协议接到 `AgentProvider`。
-CLI、TUI 和未来 GUI 通过业务客户端契约使用该能力。
+Unix socket、Codex app-server 和 `stdio_plugin` 共用 `AgentProvider` 端口。
+`mcbtodo-plugin` 定义单次 Agent 调用的 stdio 契约。Linux Worker 通过
+`mcbtodo-execution` 中的适配器，在隔离环境中启动用户显式配置的可执行文件。
+握手核对版本和能力，定长前缀限制 JSON 帧大小，请求 ID 关联结果。
 
-首版协议可围绕握手、单次执行和结果建立。stdin/stdout 使用有大小上限的
-JSON 帧，启动时协商协议版本和能力，请求 ID 关联结果与取消，诊断走 stderr。
-宿主管理进程期限、资源限制和隔离。Daemon 负责授权、预算、修订校验及最终
-提交。插件返回待宿主验证的数据。已派发的调用在失联后保留结果未知状态。
-有实际可执行插件和宿主端到端契约测试后，再稳定公共协议。
+宿主在执行前校验授权和 revision，管理预算、期限、取消与进程回收，由 Daemon
+校验并持久化结果。派发后无法确认结果时保留 `outcome_unknown`。通用插件发现、
+健康检查和重启策略仍属后续设计。配置方式及协议见 [Agent 适配器](agent-adapter.md#stdio-agent-plugin)。
 
 按一条真实的读写路径推进，每阶段校验数据来源、修订冲突、断线行为和现有
 快捷键。
@@ -277,7 +275,7 @@ Linux AArch64 离线探测覆盖生产链路。`AgentPolicy` 为每个 capabilit
 授权解析唯一 Provider 路由，Worker 只构造被选中的适配器。这个路由边界
 只提供选择，不授予 Policy、revision、budget、deadline、cancellation 或最终结果提交
 权限。Daemon 的 Worker 执行槽统一限制 Script 和 Agent 的并发。跨请求优先级、
-独立资源预算、在线上游凭据和独立进程插件协议仍有各自的验收门禁。
+独立资源预算和在线上游凭据仍有各自的验收门禁。
 Worker 在共享的 Agent 结果接纳路径执行可选的 `max_output_bytes` 策略。
 额度按归一化后的紧凑 JSON `outputs` 对象计 UTF-8 字节。超额结果进入
 `outcome_unknown`，Daemon 保留 Attempt 与预算预留。
@@ -286,13 +284,14 @@ Worker 在共享的 Agent 结果接纳路径执行可选的 `max_output_bytes` �
 ### Provider 路由
 
 当前路由边界由 `AgentPolicy` 和 Worker 共同承担。策略可以在
-`[providers]` 中配置 `unix_socket` 与 `codex`，每个 `[[allow]]` 可以显式指定
+`[providers]` 中配置 `unix_socket`、`codex` 和 `stdio_plugin`，每个 `[[allow]]` 可以显式指定
 Provider。未指定时使用顶层默认 Provider。Worker 在授权后只构造选中的适配器，
 由适配器在启动或连接时检查执行条件。Codex 在启动前校验配置绑定的 capability，
-Unix socket 将已授权的请求交给通过身份校验的 peer。Provider metadata
+Unix socket 将已授权的请求交给通过身份校验的 peer。stdio 插件在隔离进程内
+声明能力，Worker 在派发前匹配已授权的请求。Provider metadata
 用于描述能力和标识不确定结果。
 Linux TUI 可以修改默认 Provider、预览跟随默认路由的授权数，并编辑已有
-Provider 的 socket 路径。两项编辑都通过同一个配置发布入口写入 `agents.toml`，
+Provider 的端点路径。两项编辑都通过同一个配置发布入口写入 `agents.toml`，
 由配置快照识别并发编辑。显式授权仍通过 `agents.toml` 手工配置。
 Provider 失败不会触发隐式 fallback，宿主仍保留 revision 授权、预算预留、
 deadline、cancellation、幂等语义、`outcome_unknown` 判断和最终结果提交。
@@ -304,7 +303,7 @@ Worker 槽集合的占用状态计算队列唤醒时间，并在读取下一条�
 预算。每个槽的取消、进程监督和结果接纳彼此隔离。当前调度能力是本地有界并发，
 不是通用 ResourceScheduler。
 SQLite 负责持久排队，`WorkflowRunStore` 原子预留和结算 Agent 预算。
-独立进程插件协议仍需验证实际的进程扩展需求。
+通用插件协议的发现和生命周期扩展仍需实证。
 
 ### SQLite 仓储能力
 
@@ -322,7 +321,7 @@ Daemon 作为单写者顺序调用运行仓储。仓储不提供 Watch 或同步
 | 前台 CLI、Vault 和 TUI | 本地路径和默认 Vault IPC 路径 | 离线前台路径 | 离线前台路径 |
 | 私有提案与备份、恢复 | Unix 实现 | Unix 实现 | 明确拒绝。MCP 工具发现仅提供只读工具 |
 | Daemon、Worker、IPC 与 systemd 用户服务 | Linux 实现 | 不支持 | 不支持 |
-| 工作流 Agent、Bubblewrap 与桌面通知 | Unix socket、Codex app-server、Bubblewrap 与 `notify-send`，可用性取决于本地配置及环境 | 不支持这些 Linux 后端 | 不支持这些 Linux 后端 |
+| 工作流 Agent、Bubblewrap 与桌面通知 | Unix socket、Codex app-server、stdio Agent 插件、Bubblewrap 与 `notify-send`，可用性取决于本地配置及环境 | 不支持这些 Linux 后端 | 不支持这些 Linux 后端 |
 
 [CI 配置](../.github/workflows/ci.yml)包含两种原生 Linux 发行架构、macOS 与
 Windows 原生前台测试，以及独立的交叉类型检查。各测试实际覆盖范围与运行记录见

@@ -400,7 +400,7 @@ impl AgentPage {
             .as_ref()
             .ok()
             .and_then(|snapshot| snapshot.policy().ok().flatten())
-            .and_then(|policy| policy.provider_socket(provider.backend))
+            .and_then(|policy| policy.provider_endpoint(provider.backend))
             .and_then(std::path::Path::to_str)
             .map(str::to_owned);
     }

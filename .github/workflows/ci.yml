@@ -196,7 +196,7 @@ jobs:
       - name: Check portable boundaries and platform gates
         run: |
           cargo check --locked --tests --target "$TARGET" \
-            -p mcbtodo-domain -p mcbtodo-ports -p mcbtodo-agent-codex \
+            -p mcbtodo-domain -p mcbtodo-ports -p mcbtodo-agent-codex -p mcbtodo-plugin \
             -p mcbtodo-platform -p mcbtodo-protocol -p mcbtodo-execution -p mcbtodo-worker \
             -p mcbtodo-xtask
 

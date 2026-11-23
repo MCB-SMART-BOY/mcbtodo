@@ -2,12 +2,10 @@
 
 The reusable business-facing contract is
 `mcbtodo-ports::AgentProvider`. Linux Workers use the Unix socket adapter in
-`mcbtodo-execution` by default. An explicit policy selection enables the
-`mcbtodo-agent-codex` app-server adapter. After grant validation, the Worker
-constructs the selected adapter. Codex rejects a request outside its
-configured capability before launching. The authenticated Unix socket peer
-handles the capability authorized by the host. Both adapters check actual
-availability at launch or connection time. Failure terminates the call.
+`mcbtodo-execution` by default. The policy can select the Codex app-server
+adapter or a one-shot stdio Agent plugin for each authorized call. After
+grant validation, the Worker constructs the selected adapter. The adapters
+check availability at launch or connection time. Failure terminates the call.
 
 On supported Linux targets, a workflow Agent node can call a trusted adapter listening on a
 Unix stream socket. Each call requires a grant for the node’s exact capability
@@ -103,7 +101,8 @@ a Worker crash can leave only a process or IPC diagnostic.
 
 The daemon allows up to four Agent attempts and 60 seconds of cumulative
 Agent attempt time per workflow run. These fixed limits apply across all Agent
-nodes in the run. Only one workflow execution attempt runs at a time. The
+nodes in the run. Workflow attempts share one Worker slot by default. The
+Linux Daemon can be configured with up to four slots. The
 Daemon starts and supervises a separate local `mcbtodo-worker` process for the
 attempt; the Worker executes the adapter but does not own scheduling or durable
 run state. Packaged-binary failure combinations and external side-effect
@@ -139,10 +138,12 @@ Agent calls because the earlier elapsed time is unknown.
 
 The Worker, doctor, backup, and restore use the same `agents.toml` parser in
 `mcbtodo-platform`. The policy must be UTF-8 TOML and at most 64 KiB. The
-`[providers]` table configures `unix_socket` and `codex` endpoints. If it
+`[providers]` table configures `unix_socket`, `codex`, and `stdio_plugin`
+endpoints. If it
 contains a single endpoint, grants without a `provider` use that endpoint.
-With both endpoints configured, those grants use `unix_socket` by default.
-Set a top-level `provider` to explicitly choose the default.
+With multiple endpoints, the default is `unix_socket` unless a top-level
+`provider` chooses another configured backend. Set `provider` explicitly
+when configuring multiple endpoints without `unix_socket`.
 The top-level `socket` field is not part of the current schema and is rejected.
 Each `allow` entry is a table with `capability`,
 `revision`, and an optional `provider` field. Unknown fields and duplicate
@@ -151,8 +152,9 @@ grant pairs invalidate the whole policy. An omitted `allow` grants no access.
 Capability names are 1–96 ASCII characters. They start with a letter and can
 then contain letters, digits, hyphens, and underscores. Revisions are exactly
 64 lowercase hexadecimal digits. A grant must match both strings, including
-case. The socket path must be nonempty and relative to the app home, with no
-parent traversal or NUL bytes.
+case. The endpoint must be nonempty and relative to the app home, with no
+parent traversal or NUL bytes. Socket providers use a socket path.
+The stdio provider uses an executable path.
 
 Backup and restore validate the policy before copying it and preserve its exact
 bytes. Neither operation needs a running adapter. The Worker validates the
@@ -259,9 +261,10 @@ connectivity require a runtime exchange.
 The Agents page (`F3` in Settings) shows configured routes and grant counts.
 With multiple configured providers, select one and press `Enter` to save it
 as the default. The focused row previews the number of grants that follow
-the default. Editing a provider endpoint or adding a revision grant still
-requires editing `agents.toml`. A changed save rewrites TOML formatting and
-comments. Press `F5` to reload after an intervening edit.
+the default. On Linux, press `F6` to edit the selected provider endpoint.
+Adding or removing providers or revision grants requires editing
+`agents.toml`. A changed save rewrites TOML formatting and comments.
+Press `F5` to reload after an intervening edit.
 
 `F4` edits Codex parameters through the same settings publisher. The editor
 and Worker share Codex field validation. The Worker checks executable trust
@@ -319,3 +322,47 @@ After restart all five run IDs retain `outcome_unknown` and zero steps.
 Disconnect and app-server crash also retain the Agent diagnostic.
 Resubmitting the runs produces no new request. This probe ran on Linux
 AArch64 with synthetic model responses.
+
+## Stdio Agent plugin
+
+Set the endpoint relative to `~/.mcbtodo/`, then grant a capability to the
+published revision that will use it.
+
+```toml
+[providers]
+stdio_plugin = "bin/my-agent"
+
+[[allow]]
+capability = "analyze_test_failure"
+revision = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+provider = "stdio_plugin"
+```
+
+Install a self-contained native executable in a protected location owned by
+your user or root. Its canonical path and ancestors must be protected from
+group and other writes. Linux AArch64 and x86-64 Workers use Bash and
+Bubblewrap to run it with no host network or Vault mount, no inherited
+environment, and bounded scratch space. The sandbox provides only the
+launcher's system libraries. A statically linked executable avoids depending
+on those libraries. Provision the binary separately after restoring a backup.
+
+`mcbtodo-plugin` provides Rust helpers for the v1 wire format. A process
+handles one request. Each message is a JSON object prefixed by a four-byte
+unsigned big-endian length. Payloads are 1–16,384 bytes. The exchange is:
+
+```text
+Host    {"type":"hello","version":1}
+Plugin  {"type":"ready","version":1,"capabilities":["analyze_test_failure"]}
+Host    {"type":"execute","id":1,"capability":"analyze_test_failure","inputs":{"text":"Test timed out"}}
+Plugin  {"type":"result","id":1,"outputs":{"title":"Investigate the test timeout"}}
+```
+
+The host checks the advertised version and capability before sending
+`execute`. Revision authorization stays in the host. Use stdout exclusively
+for protocol frames. The Worker discards stderr. The plugin must exit
+successfully within the call deadline after sending its result. The Worker
+terminates the sandbox on failure, deadline, or cancellation. Failure after
+the first bytes of `execute` have been written can produce `outcome_unknown`.
+The Daemon validates the outputs against the published workflow and controls
+the final commit. The protocol currently supports one result and
+process-based cancellation. The production adapter runs on Linux only.

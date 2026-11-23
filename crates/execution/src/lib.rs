@@ -9,6 +9,8 @@ mod model_relay;
 #[cfg(target_os = "linux")]
 pub mod notification;
 #[cfg(target_os = "linux")]
+mod plugin_agent;
+#[cfg(target_os = "linux")]
 pub mod sandbox;
 #[cfg(target_os = "linux")]
 mod unix_agent;
