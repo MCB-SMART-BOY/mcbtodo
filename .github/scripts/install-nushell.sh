@@ -22,11 +22,30 @@ esac
 sudo apt-get update
 sudo apt-get install --yes bubblewrap
 
-# Probe the namespace flags used by the Worker before compiling the workspace.
-if ! /usr/bin/bwrap --unshare-user --disable-userns --unshare-pid \
-    --unshare-net --unshare-ipc --unshare-uts --unshare-cgroup \
-    --cap-drop ALL --die-with-parent --new-session \
-    --ro-bind / / --chdir / -- /usr/bin/true; then
+probe_bubblewrap() {
+    /usr/bin/bwrap --unshare-user --disable-userns --unshare-pid \
+        --unshare-net --unshare-ipc --unshare-uts --unshare-cgroup \
+        --cap-drop ALL --die-with-parent --new-session \
+        --ro-bind / / --chdir / -- /usr/bin/true
+}
+
+configure_runner_bubblewrap() {
+    local restriction=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+    [[ ${RUNNER_ENVIRONMENT:-} == github-hosted && -r "$restriction" && $(<"$restriction") == 1 ]] ||
+        return 1
+
+    # Ubuntu 24.04's Bubblewrap package does not ship a profile for this
+    # runner policy. Grant user namespaces only to the system binary.
+    sudo apparmor_parser --add <<'APPARMOR'
+abi <abi/4.0>,
+profile mcbtodo-ci-bwrap /usr/bin/bwrap flags=(unconfined) {
+  userns,
+}
+APPARMOR
+}
+
+# Probe as the runner user with the same namespace flags used by the Worker.
+if ! probe_bubblewrap && ! { configure_runner_bubblewrap && probe_bubblewrap; }; then
     printf 'Bubblewrap cannot start the required namespaces on this runner.\n' >&2
     uname -srmo >&2
     /usr/bin/bwrap --version >&2
