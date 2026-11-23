@@ -10,9 +10,12 @@ use super::{Overlay, State, Workspace, deadline};
 impl State {
     pub(super) fn open_deadline(&mut self, vault: &Workspace, id: Id) {
         let context = match vault {
-            Workspace::Daemon { views, .. } => views
-                .deadline_context(id)
-                .map(|(revision, value)| (deadline::EditRevision::Daemon(revision), value)),
+            Workspace::Daemon { views, .. } => views.deadline_context(id).map(|context| {
+                (
+                    deadline::EditRevision::Daemon(context.revision),
+                    context.deadline,
+                )
+            }),
             Workspace::Local(vault) => deadline_edit_context(vault, id)
                 .context("Selection does not support deadlines")
                 .map(|context| {
@@ -38,9 +41,12 @@ impl State {
         };
         let timezone = vault.timezone();
         let context = match vault {
-            Workspace::Daemon { views, .. } => views
-                .deadline_context(form.id)
-                .map(|(revision, value)| (deadline::EditRevision::Daemon(revision), value)),
+            Workspace::Daemon { views, .. } => views.deadline_context(form.id).map(|context| {
+                (
+                    deadline::EditRevision::Daemon(context.revision),
+                    context.deadline,
+                )
+            }),
             Workspace::Local(_) => VaultQueries::new(root, timezone)
                 .deadline_edit_context(form.id)
                 .and_then(|context| context.context("Selected document is no longer available"))

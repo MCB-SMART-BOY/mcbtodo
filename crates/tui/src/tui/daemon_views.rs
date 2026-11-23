@@ -8,14 +8,14 @@ use std::{
     thread,
 };
 
-use anyhow::{Error, Result, bail};
+use anyhow::{Error, Result};
 use chrono_tz::Tz;
+use mcbtodo_client::daemon_client::{self, DeadlineContext, WriteFailure};
 use mcbtodo_domain::{
     CalendarItem, DependencyOperation, Id, InboxSummary, OutlineItem, WorkUnitDependencyPreview,
     time::{DateSpan, Deadline},
 };
 use mcbtodo_platform::WorkspacePaths;
-use mcbtodo_protocol::{Request, Response};
 
 /// Rendering and input use the same responses until the query or Vault changes.
 pub(super) struct DaemonViews {
@@ -94,7 +94,7 @@ impl DaemonViews {
 
     pub(super) fn calendar(&self, dates: DateSpan, timezone: Tz) -> Result<Rc<[CalendarItem]>> {
         self.calendar.rows((dates, timezone), || {
-            mcbtodo_client::daemon_client::calendar(&self.paths, dates, timezone)
+            daemon_client::calendar(&self.paths, dates, timezone)
         })
     }
 
@@ -112,7 +112,7 @@ impl DaemonViews {
             let worker = thread::Builder::new()
                 .name("mcbtodo-outline".into())
                 .spawn(move || {
-                    let rows = mcbtodo_client::daemon_client::outline(&paths, timezone)
+                    let rows = daemon_client::outline(&paths, timezone)
                         .map_err(|error| format!("{error:#}"));
                     let _ = send.send(rows);
                 });
@@ -163,20 +163,16 @@ impl DaemonViews {
             {
                 pending.current = false;
             }
-            mcbtodo_client::daemon_client::outline(&self.paths, timezone)
+            daemon_client::outline(&self.paths, timezone)
         })
     }
 
-    pub(super) fn deadline_context(&self, id: Id) -> Result<(String, Option<Deadline>)> {
-        match mcbtodo_client::daemon_client::exchange(&self.paths, Request::DeadlineContext { id })?
-        {
-            Response::DeadlineContext { revision, deadline } => Ok((revision, deadline)),
-            _ => bail!("unexpected response to deadline context request"),
-        }
+    pub(super) fn deadline_context(&self, id: Id) -> Result<DeadlineContext> {
+        daemon_client::deadline_context(&self.paths, id)
     }
 
     pub(super) fn document_source(&self, id: Id) -> Result<PathBuf> {
-        mcbtodo_client::daemon_client::document_source(&self.paths, id)
+        daemon_client::document_source(&self.paths, id)
     }
 
     pub(super) fn set_deadline(
@@ -184,41 +180,18 @@ impl DaemonViews {
         id: Id,
         revision: String,
         deadline: Option<Deadline>,
-    ) -> Result<bool, mcbtodo_client::daemon_client::WriteFailure> {
-        mcbtodo_client::daemon_client::submit_write(
-            &self.paths,
-            Request::SetDeadline {
-                id,
-                revision,
-                deadline,
-            },
-            |response| match response {
-                Response::DeadlineSet { synced } => Some(synced),
-                _ => None,
-            },
-        )
+    ) -> Result<bool, WriteFailure> {
+        daemon_client::set_deadline(&self.paths, id, revision, deadline)
     }
 
     pub(super) fn inbox(&self) -> Result<Rc<[InboxSummary]>> {
-        self.inbox.rows((), || {
-            match mcbtodo_client::daemon_client::exchange(&self.paths, Request::Inbox)? {
-                Response::Inbox { items, more: false } => Ok(items),
-                _ => bail!("unexpected response to Inbox request"),
-            }
-        })
+        self.inbox.rows((), || daemon_client::inbox(&self.paths))
     }
 
     pub(super) fn graph(&self, timezone: Tz) -> Result<Rc<[super::graph::Node]>> {
-        self.graph
-            .rows(timezone, || match mcbtodo_client::daemon_client::exchange(
-                &self.paths,
-                Request::WorkUnitGraph {
-                    timezone: timezone.name().into(),
-                },
-            )? {
-                Response::WorkUnitGraph { items, more: false } => Ok(super::graph::nodes(items)),
-                _ => bail!("unexpected response to WorkUnit graph request"),
-            })
+        self.graph.rows(timezone, || {
+            daemon_client::work_unit_graph(&self.paths, timezone).map(super::graph::nodes)
+        })
     }
 
     pub(super) fn preview_dependency_change(
@@ -228,35 +201,24 @@ impl DaemonViews {
         operation: DependencyOperation,
         timezone: Tz,
     ) -> Result<WorkUnitDependencyPreview> {
-        match mcbtodo_client::daemon_client::exchange(
+        daemon_client::preview_work_unit_dependencies(
             &self.paths,
-            Request::PreviewWorkUnitDependencyChange {
-                target,
-                sources: sources.clone(),
-                operation,
-                timezone: timezone.name().into(),
-            },
-        )? {
-            Response::WorkUnitDependencyPreview(edit) => Ok(edit),
-            _ => bail!("unexpected response to dependency preview"),
-        }
+            target,
+            sources,
+            operation,
+            timezone,
+        )
     }
 
     pub(super) fn set_dependencies(
         &self,
         edit: super::graph::Submission,
-    ) -> Result<bool, mcbtodo_client::daemon_client::WriteFailure> {
-        mcbtodo_client::daemon_client::submit_write(
+    ) -> Result<bool, WriteFailure> {
+        daemon_client::set_work_unit_dependencies(
             &self.paths,
-            Request::SetWorkUnitDependencies {
-                target: edit.target,
-                prerequisites: edit.prerequisites,
-                revision: edit.revision,
-            },
-            |response| match response {
-                Response::WorkUnitDependenciesSet { synced } => Some(synced),
-                _ => None,
-            },
+            edit.target,
+            edit.prerequisites,
+            edit.revision,
         )
     }
 

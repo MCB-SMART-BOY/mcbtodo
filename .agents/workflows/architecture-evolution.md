@@ -142,6 +142,8 @@ Vault 快照。快照比较依据源文件路径和 revision。
 截止日期、时间块与文档搜索弹窗由 ScreenModel 投影视图内容和操作提示。
 `:deadline` 与 `Space d` 解析同一焦点 UUID。通过命令行入口验证服务端表单
 仍使用审阅时读取的 revision，并保留冲突刷新与重新确认流程。
+截止日期、Inbox 分流和 Graph 依赖编辑的 IPC 映射由 `mcbtodo-client` 提供。
+终端测试涵盖经过这些客户端调用的读取、预览、确认和错误反馈。
 Graph 的 `a`、`d` 与 `:graph add-dependency`、`:graph remove-dependency` 分别
 打开相同预览。用终端测试比较预览，并通过命令入口验证 IPC 提交仍使用审阅 revision。
 在 28×5 验证匹配项、当前输入和 Esc 的位置。在 28×4 无色终端验证时间块

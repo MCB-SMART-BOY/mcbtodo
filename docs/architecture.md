@@ -89,8 +89,10 @@ CLI 的 Vault 写命令从已加载快照取得乐观并发控制 token 时使�
 | MCP | stdio 服务通过共享用例读取选定 Vault。在支持私有队列的平台，业务写入提案需人工批准。批准工作流快照只发布内容寻址 revision，执行授权与入队各有独立入口。 |
 
 CLI 和 TUI 共用[客户端 IPC 模块](../crates/client/src/daemon_client.rs)中的
-请求处理。TUI 通过该模块判断当前 Vault 是否由 Daemon 管理。写入处理保留
-修订冲突、拒绝和提交结果未知的区别。
+请求处理。日历、大纲、文档路径、截止日期、Inbox 和依赖图提供类型化调用，
+由客户端模块处理 IPC 请求及回执。TUI 的查询缓存存放业务投影，Graph 的行号和
+渲染数据由 TUI 转换。TUI 通过该模块判断当前 Vault 是否由 Daemon 管理。
+写入处理保留修订冲突、拒绝和提交结果未知的区别。
 帧编解码和同用户身份检查仍由协议和平台层负责。查询缓存和请求分派见
 [TUI 的查询缓存](../crates/tui/src/tui/daemon_views.rs)与
 [Daemon 的请求分派](../apps/mcbtodo-daemon/src/server.rs)。

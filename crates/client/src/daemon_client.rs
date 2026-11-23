@@ -1,13 +1,18 @@
 //! IPC used by the CLI and terminal client. The protocol crate owns framing and peer checks.
 
 use std::{
+    collections::BTreeSet,
     io,
     path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result, bail};
 use chrono_tz::Tz;
-use mcbtodo_domain::{CalendarItem, Id, OutlineItem, time::DateSpan};
+use mcbtodo_domain::{
+    CalendarItem, DependencyOperation, Id, InboxSummary, OutlineItem, WorkUnitDependencyPreview,
+    WorkUnitGraphNode,
+    time::{DateSpan, Deadline},
+};
 use mcbtodo_platform::WorkspacePaths;
 use mcbtodo_protocol::{
     ErrorCode, ProtocolError, Request, Response, TimerStatus, VaultWatchStatus, request,
@@ -57,6 +62,123 @@ pub fn outline(paths: &WorkspacePaths, timezone: Tz) -> Result<Vec<OutlineItem>>
         Response::Outline { more: true, .. } => bail!("daemon returned an incomplete outline"),
         _ => bail!("unexpected response to outline request"),
     }
+}
+
+/// The value and revision observed together when opening a deadline editor.
+pub struct DeadlineContext {
+    pub revision: String,
+    pub deadline: Option<Deadline>,
+}
+
+pub fn deadline_context(paths: &WorkspacePaths, id: Id) -> Result<DeadlineContext> {
+    match exchange(paths, Request::DeadlineContext { id })? {
+        Response::DeadlineContext { revision, deadline } => {
+            Ok(DeadlineContext { revision, deadline })
+        }
+        _ => bail!("unexpected response to deadline context request"),
+    }
+}
+
+/// Set or clear the deadline using the revision the user reviewed.
+/// On success, the returned flag indicates whether directory sync was confirmed.
+pub fn set_deadline(
+    paths: &WorkspacePaths,
+    id: Id,
+    revision: String,
+    deadline: Option<Deadline>,
+) -> Result<bool, WriteFailure> {
+    submit_write(
+        paths,
+        Request::SetDeadline {
+            id,
+            revision,
+            deadline,
+        },
+        |response| match response {
+            Response::DeadlineSet { synced } => Some(synced),
+            _ => None,
+        },
+    )
+}
+
+pub fn inbox(paths: &WorkspacePaths) -> Result<Vec<InboxSummary>> {
+    match exchange(paths, Request::Inbox)? {
+        Response::Inbox { items, more: false } => Ok(items),
+        _ => bail!("unexpected response to Inbox request"),
+    }
+}
+
+pub fn triage_inbox(
+    paths: &WorkspacePaths,
+    inbox_id: Id,
+    project_id: Id,
+    inbox_revision: String,
+) -> Result<bool, WriteFailure> {
+    submit_write(
+        paths,
+        Request::TriageInbox {
+            inbox_id,
+            project_id,
+            inbox_revision,
+        },
+        |response| match response {
+            Response::InboxTriaged { synced } => Some(synced),
+            _ => None,
+        },
+    )
+}
+
+pub fn work_unit_graph(paths: &WorkspacePaths, timezone: Tz) -> Result<Vec<WorkUnitGraphNode>> {
+    match exchange(
+        paths,
+        Request::WorkUnitGraph {
+            timezone: timezone.name().into(),
+        },
+    )? {
+        Response::WorkUnitGraph { items, more: false } => Ok(items),
+        _ => bail!("unexpected response to WorkUnit graph request"),
+    }
+}
+
+pub fn preview_work_unit_dependencies(
+    paths: &WorkspacePaths,
+    target: Id,
+    sources: &BTreeSet<Id>,
+    operation: DependencyOperation,
+    timezone: Tz,
+) -> Result<WorkUnitDependencyPreview> {
+    match exchange(
+        paths,
+        Request::PreviewWorkUnitDependencyChange {
+            target,
+            sources: sources.clone(),
+            operation,
+            timezone: timezone.name().into(),
+        },
+    )? {
+        Response::WorkUnitDependencyPreview(edit) => Ok(edit),
+        _ => bail!("unexpected response to dependency preview"),
+    }
+}
+
+pub fn set_work_unit_dependencies(
+    paths: &WorkspacePaths,
+    target: Id,
+    prerequisites: Vec<Id>,
+    revision: String,
+) -> Result<bool, WriteFailure> {
+    submit_write(
+        paths,
+        Request::SetWorkUnitDependencies {
+            target,
+            prerequisites,
+            revision,
+        },
+        |response| match response {
+            Response::WorkUnitDependenciesSet { synced } => Some(synced),
+            _ => None,
+        },
+    )
 }
 
 pub fn document_source(paths: &WorkspacePaths, id: Id) -> Result<PathBuf> {

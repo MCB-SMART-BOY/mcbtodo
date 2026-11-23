@@ -1021,21 +1021,12 @@ impl State {
         project_id: Id,
         revision: InboxRevision,
     ) {
-        use mcbtodo_client::daemon_client::WriteFailure;
+        use mcbtodo_client::daemon_client::{WriteFailure, triage_inbox};
 
         let result = match revision {
-            InboxRevision::Daemon(inbox_revision) => mcbtodo_client::daemon_client::submit_write(
-                paths,
-                Request::TriageInbox {
-                    inbox_id,
-                    project_id,
-                    inbox_revision,
-                },
-                |response| match response {
-                    mcbtodo_protocol::Response::InboxTriaged { synced } => Some(synced),
-                    _ => None,
-                },
-            ),
+            InboxRevision::Daemon(inbox_revision) => {
+                triage_inbox(paths, inbox_id, project_id, inbox_revision)
+            }
             InboxRevision::Local(revision) => match VaultCommands::new(root, vault.timezone())
                 .triage_inbox_entry(inbox_id, project_id, revision)
             {
