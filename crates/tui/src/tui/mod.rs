@@ -43,7 +43,6 @@ use mcbtodo_domain::{CalendarKind, Id, Occurrence, time::Span};
 #[cfg(test)]
 use mcbtodo_platform::AppConfig;
 use mcbtodo_platform::{HomeViewPolicy, TuiTheme, WorkspacePaths};
-use mcbtodo_protocol::workflow::WorkflowRequest;
 use mcbtodo_vault::{Revision, Vault, WriteError};
 #[cfg(test)]
 use ratatui::Terminal;
@@ -232,7 +231,7 @@ enum Action {
     CreateTask(creation::Submission),
     Proposals(proposal_review::Request),
     ApplyProposal(Id),
-    Workflow(WorkflowRequest),
+    Workflow(workflow::Operation),
     TriageInbox {
         inbox_id: Id,
         project_id: Id,
@@ -2715,7 +2714,7 @@ mod tests {
             (
                 ":view workflow\n",
                 " uf",
-                Action::Workflow(WorkflowRequest::List { before: None }),
+                Action::Workflow(workflow::Operation::List { before: None }),
                 View::Workflow,
             ),
             (

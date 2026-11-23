@@ -21,7 +21,6 @@ mcbtodo-application.workspace = true
 mcbtodo-client.workspace = true
 mcbtodo-domain.workspace = true
 mcbtodo-platform.workspace = true
-mcbtodo-protocol.workspace = true
 mcbtodo-vault.workspace = true
 mcbtodo-workflow.workspace = true
 ratatui.workspace = true
@@ -32,4 +31,5 @@ toml.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+mcbtodo-protocol.workspace = true
 tempfile.workspace = true

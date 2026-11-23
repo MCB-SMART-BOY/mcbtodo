@@ -1,6 +1,6 @@
 use chrono_tz::Tz;
 use crossterm::event::KeyCode;
-use mcbtodo_protocol::workflow::RunState;
+use mcbtodo_workflow::run::RunState;
 use ratatui::text::Line;
 
 use crate::tui::{

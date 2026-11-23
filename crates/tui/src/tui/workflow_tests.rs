@@ -1,9 +1,10 @@
 use crossterm::event::KeyEventKind;
-use mcbtodo_protocol::workflow::{RunState, RunSummary, WorkflowResponse};
+use mcbtodo_client::daemon_client::WorkflowRunPage;
+use mcbtodo_workflow::run::{RunState, RunSummary};
 use serde_json::json;
 use uuid::Uuid;
 
-use super::{calendar_tests::screen, tests::fixture, *};
+use super::{calendar_tests::screen, tests::fixture, workflow::Operation, *};
 
 fn key(state: &mut State, vault: &Workspace, code: KeyCode) -> Action {
     state.handle(KeyEvent::new(code, KeyModifiers::NONE), vault)
@@ -15,7 +16,7 @@ fn open(state: &mut State, vault: &Workspace) {
     }
     assert_eq!(
         key(state, vault, KeyCode::Char('f')),
-        Action::Workflow(WorkflowRequest::List { before: None })
+        Action::Workflow(Operation::List { before: None })
     );
 }
 
@@ -36,15 +37,12 @@ fn run(id: u128, state: RunState, steps: u32) -> RunSummary {
 }
 
 fn open_confirmation(state: &mut State, vault: &Workspace, choice: char, run: RunSummary) {
-    let inspect = WorkflowRequest::Inspect { run_id: run.id };
+    let inspect = Operation::Review { run_id: run.id };
     assert_eq!(
         key(state, vault, KeyCode::Char(choice)),
-        Action::Workflow(inspect.clone())
+        Action::Workflow(inspect)
     );
-    state
-        .workflow
-        .apply(inspect, WorkflowResponse::Run(run))
-        .unwrap();
+    state.workflow.review_decision(run).unwrap();
 }
 
 #[test]
@@ -57,19 +55,19 @@ fn workflow_prompt_and_keys_share_run_commands() {
         (
             "refresh",
             KeyCode::Char('r'),
-            WorkflowRequest::List { before: None },
+            Operation::List { before: None },
         ),
         (
             "older",
             KeyCode::Char('n'),
-            WorkflowRequest::List {
+            Operation::List {
                 before: Some(waiting.id),
             },
         ),
         (
             "trace",
             KeyCode::Enter,
-            WorkflowRequest::Step {
+            Operation::Step {
                 run_id: waiting.id,
                 index: 0,
             },
@@ -77,27 +75,24 @@ fn workflow_prompt_and_keys_share_run_commands() {
         (
             "approve",
             KeyCode::Char('a'),
-            WorkflowRequest::Inspect { run_id: waiting.id },
+            Operation::Review { run_id: waiting.id },
         ),
         (
             "reject",
             KeyCode::Char('d'),
-            WorkflowRequest::Inspect { run_id: waiting.id },
+            Operation::Review { run_id: waiting.id },
         ),
     ] {
         let setup = || {
             let mut state = State::new("2026-11-25".parse().unwrap());
             open(&mut state, &vault);
-            state
-                .workflow
-                .apply(
-                    WorkflowRequest::List { before: None },
-                    WorkflowResponse::Runs {
-                        runs: vec![waiting.clone()],
-                        next_before: Some(waiting.id),
-                    },
-                )
-                .unwrap();
+            state.workflow.install_page(
+                None,
+                WorkflowRunPage {
+                    runs: vec![waiting.clone()],
+                    next_before: Some(waiting.id),
+                },
+            );
             state
         };
         let mut typed = setup();
@@ -109,16 +104,13 @@ fn workflow_prompt_and_keys_share_run_commands() {
         let mut keyed = setup();
         assert_eq!(key(&mut keyed, &vault, shortcut), action);
 
-        if matches!(request, WorkflowRequest::Inspect { .. }) {
-            typed
-                .workflow
-                .apply(request, WorkflowResponse::Run(waiting.clone()))
-                .unwrap();
+        if matches!(request, Operation::Review { .. }) {
+            typed.workflow.review_decision(waiting.clone()).unwrap();
             assert_eq!(key(&mut typed, &vault, KeyCode::Enter), Action::Continue);
             let approved = command == "approve";
             assert_eq!(
                 key(&mut typed, &vault, KeyCode::Char('y')),
-                Action::Workflow(WorkflowRequest::Decide {
+                Action::Workflow(Operation::Decide {
                     run_id: waiting.id,
                     node: "review".into(),
                     approved,
@@ -136,54 +128,47 @@ fn workflow_paginates_and_shows_recorded_steps_for_the_selected_run() {
     open(&mut state, &vault);
     let newer = run(2, RunState::Waiting, 0);
     let older = run(1, RunState::Succeeded, 2);
-    state
-        .workflow
-        .apply(
-            WorkflowRequest::List { before: None },
-            WorkflowResponse::Runs {
-                runs: vec![newer.clone()],
-                next_before: Some(newer.id),
-            },
-        )
-        .unwrap();
+    state.workflow.install_page(
+        None,
+        WorkflowRunPage {
+            runs: vec![newer.clone()],
+            next_before: Some(newer.id),
+        },
+    );
     assert!(screen(&state, &vault, 65, 22).contains("Waiting"));
     let Action::Workflow(page) = key(&mut state, &vault, KeyCode::Char('n')) else {
         panic!("expected an older page request");
     };
     assert_eq!(
         page,
-        WorkflowRequest::List {
+        Operation::List {
             before: Some(newer.id)
         }
     );
-    state
-        .workflow
-        .apply(
-            page,
-            WorkflowResponse::Runs {
-                runs: vec![older.clone()],
-                next_before: None,
-            },
-        )
-        .unwrap();
+    state.workflow.install_page(
+        Some(newer.id),
+        WorkflowRunPage {
+            runs: vec![older.clone()],
+            next_before: None,
+        },
+    );
     key(&mut state, &vault, KeyCode::Down);
     let Action::Workflow(step) = key(&mut state, &vault, KeyCode::Enter) else {
         panic!("expected a step request");
     };
     assert_eq!(
         step,
-        WorkflowRequest::Step {
+        Operation::Step {
             run_id: older.id,
             index: 0
         }
     );
     state
         .workflow
-        .apply(
-            step,
-            WorkflowResponse::Step {
-                step: json!({"trace": {"node": "read-input", "status": "success"}}),
-            },
+        .show_step(
+            older.id,
+            0,
+            json!({"trace": {"node": "read-input", "status": "success"}}),
         )
         .unwrap();
     let trace = screen(&state, &vault, 65, 22);
@@ -193,7 +178,7 @@ fn workflow_paginates_and_shows_recorded_steps_for_the_selected_run() {
     );
     assert_eq!(
         key(&mut state, &vault, KeyCode::Right),
-        Action::Workflow(WorkflowRequest::Step {
+        Action::Workflow(Operation::Step {
             run_id: older.id,
             index: 1
         })
@@ -208,27 +193,23 @@ fn short_workflow_trace_keeps_step_navigation_while_reading_wrapped_output() {
     let mut state = State::new("2026-11-25".parse().unwrap());
     open(&mut state, &vault);
     let run = run(1, RunState::Succeeded, 2);
+    state.workflow.install_page(
+        None,
+        WorkflowRunPage {
+            runs: vec![run.clone()],
+            next_before: None,
+        },
+    );
+    assert_eq!(
+        key(&mut state, &vault, KeyCode::Enter),
+        Action::Workflow(Operation::Step {
+            run_id: run.id,
+            index: 0
+        })
+    );
     state
         .workflow
-        .apply(
-            WorkflowRequest::List { before: None },
-            WorkflowResponse::Runs {
-                runs: vec![run.clone()],
-                next_before: None,
-            },
-        )
-        .unwrap();
-    let Action::Workflow(step) = key(&mut state, &vault, KeyCode::Enter) else {
-        panic!("expected a step request");
-    };
-    state
-        .workflow
-        .apply(
-            step,
-            WorkflowResponse::Step {
-                step: json!({"output": "中文 0123456789 流程完成"}),
-            },
-        )
+        .show_step(run.id, 0, json!({"output": "中文 0123456789 流程完成"}))
         .unwrap();
 
     let top = screen(&state, &vault, 24, 5);
@@ -270,7 +251,7 @@ fn short_workflow_trace_keeps_step_navigation_while_reading_wrapped_output() {
     );
     assert_eq!(
         key(&mut state, &vault, KeyCode::Right),
-        Action::Workflow(WorkflowRequest::Step {
+        Action::Workflow(Operation::Step {
             run_id: run.id,
             index: 1
         })
@@ -285,16 +266,13 @@ fn workflow_confirmation_uses_the_displayed_run_and_node() {
     let mut state = State::new("2026-11-25".parse().unwrap());
     open(&mut state, &vault);
     let waiting = run(10, RunState::Waiting, 0);
-    state
-        .workflow
-        .apply(
-            WorkflowRequest::List { before: None },
-            WorkflowResponse::Runs {
-                runs: vec![waiting.clone(), run(9, RunState::Succeeded, 1)],
-                next_before: None,
-            },
-        )
-        .unwrap();
+    state.workflow.install_page(
+        None,
+        WorkflowRunPage {
+            runs: vec![waiting.clone(), run(9, RunState::Succeeded, 1)],
+            next_before: None,
+        },
+    );
     open_confirmation(&mut state, &vault, 'a', waiting.clone());
     let prompt = screen(&state, &vault, 65, 22);
     assert!(prompt.contains("Approve workflow run?"), "{prompt}");
@@ -312,7 +290,7 @@ fn workflow_confirmation_uses_the_displayed_run_and_node() {
     };
     assert_eq!(
         decision,
-        WorkflowRequest::Decide {
+        Operation::Decide {
             run_id: waiting.id,
             node: "review".into(),
             approved: false,
@@ -321,11 +299,7 @@ fn workflow_confirmation_uses_the_displayed_run_and_node() {
     );
     state
         .workflow
-        .apply(
-            decision,
-            WorkflowResponse::Run(run(10, RunState::Pending, 1)),
-        )
-        .unwrap();
+        .record_decision(run(10, RunState::Pending, 1));
     assert_eq!(
         key(&mut state, &vault, KeyCode::Char('a')),
         Action::Continue
@@ -352,16 +326,13 @@ fn workflow_confirmation_reviews_the_entire_snapshot_in_a_narrow_terminal() {
     ));
     let mut other = run(9, RunState::Waiting, 0);
     other.detail = Some("OTHER-RUN".into());
-    state
-        .workflow
-        .apply(
-            WorkflowRequest::List { before: None },
-            WorkflowResponse::Runs {
-                runs: vec![waiting.clone(), other],
-                next_before: None,
-            },
-        )
-        .unwrap();
+    state.workflow.install_page(
+        None,
+        WorkflowRunPage {
+            runs: vec![waiting.clone(), other],
+            next_before: None,
+        },
+    );
     let review = reviewed_run.approval_review();
     assert!(review.is_some());
     open_confirmation(&mut state, &vault, 'a', reviewed_run);
@@ -421,7 +392,7 @@ fn workflow_confirmation_reviews_the_entire_snapshot_in_a_narrow_terminal() {
     );
     assert_eq!(
         key(&mut state, &vault, KeyCode::Char('y')),
-        Action::Workflow(WorkflowRequest::Decide {
+        Action::Workflow(Operation::Decide {
             run_id: waiting.id,
             node: "review".into(),
             approved: true,
@@ -437,16 +408,13 @@ fn workflow_confirmation_advertises_remapped_scrolling_in_short_monochrome() {
     state.keymap = keymap::Keymap::from_test_config("[keys]\nmove_down = 'J'\nmove_up = 'K'\n");
     open(&mut state, &vault);
     let waiting = run(10, RunState::Waiting, 0);
-    state
-        .workflow
-        .apply(
-            WorkflowRequest::List { before: None },
-            WorkflowResponse::Runs {
-                runs: vec![waiting.clone()],
-                next_before: None,
-            },
-        )
-        .unwrap();
+    state.workflow.install_page(
+        None,
+        WorkflowRunPage {
+            runs: vec![waiting.clone()],
+            next_before: None,
+        },
+    );
     open_confirmation(&mut state, &vault, 'a', waiting);
 
     let draw = |state: &State| {
@@ -488,16 +456,13 @@ fn workflow_confirmation_keeps_movement_safe_when_y_is_remapped() {
     state.keymap = keymap::Keymap::from_test_config("[keys]\nmove_down = 'y'\nmove_up = 'K'\n");
     open(&mut state, &vault);
     let waiting = run(10, RunState::Waiting, 0);
-    state
-        .workflow
-        .apply(
-            WorkflowRequest::List { before: None },
-            WorkflowResponse::Runs {
-                runs: vec![waiting.clone()],
-                next_before: None,
-            },
-        )
-        .unwrap();
+    state.workflow.install_page(
+        None,
+        WorkflowRunPage {
+            runs: vec![waiting.clone()],
+            next_before: None,
+        },
+    );
     open_confirmation(&mut state, &vault, 'd', waiting.clone());
 
     let prompt = screen(&state, &vault, 65, 8);
@@ -520,7 +485,7 @@ fn workflow_confirmation_keeps_movement_safe_when_y_is_remapped() {
     );
     assert_eq!(
         key(&mut state, &vault, KeyCode::Enter),
-        Action::Workflow(WorkflowRequest::Decide {
+        Action::Workflow(Operation::Decide {
             run_id: waiting.id,
             node: "review".into(),
             approved: false,

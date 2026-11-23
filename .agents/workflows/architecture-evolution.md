@@ -158,6 +158,9 @@ UUID，查询失败时显示错误并停止命令。
 Workflow 列表的 `:workflow` 子命令和快捷键共用动作。验证两条输入路径匹配
 同一运行 UUID 和分页游标，审批或拒绝只在审阅弹窗中确认后提交。CLI 与 TUI
 的 Workflow 调用统一由 `mcbtodo-client` 封装。
+Workflow 列表、运行详情、步骤和决定通过类型化客户端操作调用。用模拟 Daemon
+验证分页游标、运行 UUID、审批凭据和服务拒绝。通过
+`cargo tree --locked -p mcbtodo-tui -e normal --depth 1` 核对终端的一层生产依赖。
 编辑键与 `:edit` 复用动作。连接会话根据文档 UUID 查询当前源文件。验证文件
 移动、原始 Unix 路径字节、本地快照尚未包含该 UUID 及断连时的行为。
 连接会话的手动刷新和 Daemon 变更标记复用服务投影刷新路径。验证无法读取本地

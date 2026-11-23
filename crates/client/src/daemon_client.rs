@@ -17,10 +17,12 @@ use mcbtodo_domain::{
 };
 use mcbtodo_platform::WorkspacePaths;
 use mcbtodo_protocol::{
-    ErrorCode, ProjectDates, ProtocolError, Request, Response, TimerStatus, VaultWatchStatus,
-    request,
+    ErrorCode, ProjectDates, ProtocolError, Request, Response, TimerStatus, request,
     workflow::{WorkflowRequest, WorkflowResponse},
 };
+use mcbtodo_workflow::run::RunSummary;
+
+pub use mcbtodo_protocol::VaultWatchStatus;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum TimerOperation {
@@ -47,6 +49,62 @@ pub fn workflow(paths: &WorkspacePaths, operation: WorkflowRequest) -> Result<Wo
     match exchange(paths, Request::Workflow(operation))? {
         Response::Workflow(response) => Ok(response),
         _ => bail!("unexpected response to workflow request"),
+    }
+}
+
+pub struct WorkflowRunPage {
+    pub runs: Vec<RunSummary>,
+    pub next_before: Option<Id>,
+}
+
+pub fn workflow_runs(paths: &WorkspacePaths, before: Option<Id>) -> Result<WorkflowRunPage> {
+    let WorkflowResponse::Runs { runs, next_before } =
+        workflow(paths, WorkflowRequest::List { before })?
+    else {
+        bail!("unexpected response to workflow list request");
+    };
+    if before.is_some() && before == next_before {
+        bail!("daemon returned the same page cursor");
+    }
+    Ok(WorkflowRunPage { runs, next_before })
+}
+
+pub fn workflow_run(paths: &WorkspacePaths, run_id: Id) -> Result<RunSummary> {
+    let response = workflow(paths, WorkflowRequest::Inspect { run_id })?;
+    checked_workflow_run(run_id, response)
+}
+
+pub fn workflow_step(paths: &WorkspacePaths, run_id: Id, index: u32) -> Result<serde_json::Value> {
+    let WorkflowResponse::Step { step } = workflow(paths, WorkflowRequest::Step { run_id, index })?
+    else {
+        bail!("unexpected response to workflow step request");
+    };
+    Ok(step)
+}
+
+pub fn decide_workflow(
+    paths: &WorkspacePaths,
+    run_id: Id,
+    node: String,
+    approved: bool,
+    review: Option<String>,
+) -> Result<RunSummary> {
+    let response = workflow(
+        paths,
+        WorkflowRequest::Decide {
+            run_id,
+            node,
+            approved,
+            review,
+        },
+    )?;
+    checked_workflow_run(run_id, response)
+}
+
+fn checked_workflow_run(run_id: Id, response: WorkflowResponse) -> Result<RunSummary> {
+    match response {
+        WorkflowResponse::Run(run) if run.id == run_id => Ok(run),
+        _ => bail!("unexpected workflow response for run {run_id}"),
     }
 }
 

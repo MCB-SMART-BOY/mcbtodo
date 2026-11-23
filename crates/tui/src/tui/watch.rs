@@ -5,9 +5,8 @@ use std::{
     time::Duration,
 };
 
-use mcbtodo_client::daemon_client;
+use mcbtodo_client::daemon_client::{self, VaultWatchStatus};
 use mcbtodo_platform::WorkspacePaths;
-use mcbtodo_protocol::VaultWatchStatus;
 
 pub(super) use mcbtodo_vault::VaultWatcher as Watcher;
 

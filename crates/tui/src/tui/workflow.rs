@@ -1,8 +1,8 @@
 use anyhow::{Result, bail};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
-use mcbtodo_client::daemon_client;
+use mcbtodo_client::daemon_client::{self, WorkflowRunPage};
 use mcbtodo_platform::WorkspacePaths;
-use mcbtodo_protocol::workflow::{RunState, RunSummary, WorkflowRequest, WorkflowResponse};
+use mcbtodo_workflow::run::{RunState, RunSummary};
 use uuid::Uuid;
 
 use super::{
@@ -20,6 +20,26 @@ pub(super) struct State {
     pub(super) next_before: Option<Uuid>,
     pub(super) loaded: bool,
     pub(super) panel: Panel,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum Operation {
+    List {
+        before: Option<Uuid>,
+    },
+    Step {
+        run_id: Uuid,
+        index: u32,
+    },
+    Review {
+        run_id: Uuid,
+    },
+    Decide {
+        run_id: Uuid,
+        node: String,
+        approved: bool,
+        review: Option<String>,
+    },
 }
 
 #[derive(Default)]
@@ -88,7 +108,7 @@ impl State {
         match command {
             WorkflowCommand::Refresh => refresh(),
             WorkflowCommand::Older => match self.next_before {
-                Some(before) => Action::Workflow(WorkflowRequest::List {
+                Some(before) => Action::Workflow(Operation::List {
                     before: Some(before),
                 }),
                 None => {
@@ -104,7 +124,7 @@ impl State {
                     .map(|run| run.id)
                 {
                     self.panel = Panel::InspectDecision { approved };
-                    Action::Workflow(WorkflowRequest::Inspect { run_id })
+                    Action::Workflow(Operation::Review { run_id })
                 } else {
                     *message = "Select a run waiting for approval".into();
                     Action::Continue
@@ -128,7 +148,7 @@ impl State {
                 code if code == keys.workflow_confirmation_key()
                     && key.kind == KeyEventKind::Press =>
                 {
-                    let command = WorkflowRequest::Decide {
+                    let command = Operation::Decide {
                         run_id: decision.run_id,
                         node: decision.node.clone(),
                         approved: decision.approved,
@@ -206,7 +226,7 @@ impl State {
 
     fn step(&self, index: u32, message: &mut String) -> Action {
         if let Some(run) = self.selected().filter(|run| index < run.step_count) {
-            Action::Workflow(WorkflowRequest::Step {
+            Action::Workflow(Operation::Step {
                 run_id: run.id,
                 index,
             })
@@ -221,10 +241,24 @@ impl State {
         }
     }
 
-    pub(super) fn execute(&mut self, paths: &WorkspacePaths, command: WorkflowRequest) -> String {
-        let decision = matches!(command, WorkflowRequest::Decide { .. });
-        let result = daemon_client::workflow(paths, command.clone())
-            .and_then(|response| self.apply(command, response));
+    pub(super) fn execute(&mut self, paths: &WorkspacePaths, command: Operation) -> String {
+        let decision = matches!(command, Operation::Decide { .. });
+        let result = match command {
+            Operation::List { before } => daemon_client::workflow_runs(paths, before)
+                .map(|page| self.install_page(before, page)),
+            Operation::Step { run_id, index } => daemon_client::workflow_step(paths, run_id, index)
+                .and_then(|step| self.show_step(run_id, index, step)),
+            Operation::Review { run_id } => {
+                daemon_client::workflow_run(paths, run_id).and_then(|run| self.review_decision(run))
+            }
+            Operation::Decide {
+                run_id,
+                node,
+                approved,
+                review,
+            } => daemon_client::decide_workflow(paths, run_id, node, approved, review)
+                .map(|run| self.record_decision(run)),
+        };
         if result.is_err() && matches!(self.panel, Panel::InspectDecision { .. }) {
             self.panel = Panel::Runs;
         }
@@ -241,70 +275,68 @@ impl State {
         }
     }
 
-    pub(super) fn apply(
-        &mut self,
-        command: WorkflowRequest,
-        response: WorkflowResponse,
-    ) -> Result<()> {
-        match (command, response) {
-            (WorkflowRequest::List { before }, WorkflowResponse::Runs { runs, next_before }) => {
-                if before.is_some() && before == next_before {
-                    bail!("daemon returned the same page cursor");
-                }
-                if before.is_some() {
-                    self.runs.extend(runs);
-                } else {
-                    let selected = self.selected().map(|run| run.id);
-                    self.runs = runs;
-                    self.row = self
-                        .runs
-                        .iter()
-                        .position(|run| Some(run.id) == selected)
-                        .unwrap_or(0);
-                    self.panel = Panel::Runs;
-                }
-                self.next_before = next_before;
-                self.loaded = true;
-            }
-            (WorkflowRequest::Step { run_id, index }, WorkflowResponse::Step { step })
-                if self.selected().is_some_and(|run| run.id == run_id) =>
-            {
-                self.panel = Panel::Trace {
-                    index,
-                    text: serde_json::to_string_pretty(&step)?,
-                    viewport: PannableReview::default(),
-                };
-            }
-            (WorkflowRequest::Inspect { run_id }, WorkflowResponse::Run(updated))
-                if updated.id == run_id
-                    && self.selected().is_some_and(|run| run.id == run_id)
-                    && let Panel::InspectDecision { approved } = self.panel =>
-            {
-                let confirmation = updated
-                    .current_node
-                    .as_deref()
-                    .filter(|_| updated.state == RunState::Waiting)
-                    .map(|node| Decision::new(&updated, node, approved));
-                self.runs[self.row] = updated;
-                self.panel = Panel::Runs;
-                let Some(confirmation) = confirmation else {
-                    bail!("Selected run is no longer waiting for approval");
-                };
-                self.panel = Panel::Confirm(confirmation);
-            }
-            (WorkflowRequest::Decide { run_id, .. }, WorkflowResponse::Run(updated))
-                if updated.id == run_id =>
-            {
-                if let Some(run) = self.runs.iter_mut().find(|run| run.id == run_id) {
-                    *run = updated;
-                }
-            }
-            _ => bail!("unexpected workflow response"),
+    pub(super) fn install_page(&mut self, before: Option<Uuid>, page: WorkflowRunPage) {
+        if before.is_some() {
+            self.runs.extend(page.runs);
+        } else {
+            let selected = self.selected().map(|run| run.id);
+            self.runs = page.runs;
+            self.row = self
+                .runs
+                .iter()
+                .position(|run| Some(run.id) == selected)
+                .unwrap_or(0);
+            self.panel = Panel::Runs;
         }
+        self.next_before = page.next_before;
+        self.loaded = true;
+    }
+
+    pub(super) fn show_step(
+        &mut self,
+        run_id: Uuid,
+        index: u32,
+        step: serde_json::Value,
+    ) -> Result<()> {
+        if self.selected().map(|run| run.id) != Some(run_id) {
+            bail!("Workflow selection changed");
+        }
+        self.panel = Panel::Trace {
+            index,
+            text: serde_json::to_string_pretty(&step)?,
+            viewport: PannableReview::default(),
+        };
         Ok(())
+    }
+
+    pub(super) fn review_decision(&mut self, run: RunSummary) -> Result<()> {
+        let Panel::InspectDecision { approved } = self.panel else {
+            bail!("No workflow review requested");
+        };
+        if self.selected().map(|selected| selected.id) != Some(run.id) {
+            bail!("Workflow selection changed");
+        }
+        let confirmation = run
+            .current_node
+            .as_deref()
+            .filter(|_| run.state == RunState::Waiting)
+            .map(|node| Decision::new(&run, node, approved));
+        self.runs[self.row] = run;
+        self.panel = Panel::Runs;
+        let Some(confirmation) = confirmation else {
+            bail!("Selected run is no longer waiting for approval");
+        };
+        self.panel = Panel::Confirm(confirmation);
+        Ok(())
+    }
+
+    pub(super) fn record_decision(&mut self, updated: RunSummary) {
+        if let Some(run) = self.runs.iter_mut().find(|run| run.id == updated.id) {
+            *run = updated;
+        }
     }
 }
 
 fn refresh() -> Action {
-    Action::Workflow(WorkflowRequest::List { before: None })
+    Action::Workflow(Operation::List { before: None })
 }

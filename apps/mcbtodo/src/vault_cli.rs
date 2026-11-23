@@ -3,7 +3,7 @@ use std::{
     path::Path,
 };
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use chrono::Utc;
 use chrono::{DateTime, FixedOffset, NaiveDate};
 use clap::{Args, Subcommand, ValueEnum};
@@ -18,7 +18,6 @@ use mcbtodo_domain::{
     time::{DateSpan, Deadline, Span},
 };
 use mcbtodo_platform::WorkspacePaths;
-use mcbtodo_protocol::workflow::{WorkflowRequest, WorkflowResponse};
 use mcbtodo_vault::{Revision, Vault, VaultStore};
 
 use crate::{daemon_client, parse_day};
@@ -474,31 +473,18 @@ fn validate_evidence(
 ) -> Result<()> {
     for &EvidenceRef { run_id, step_index } in references {
         if let Some(binding) = binding {
-            let WorkflowResponse::Run(run) =
-                daemon_client::workflow(paths, WorkflowRequest::Inspect { run_id })?
-            else {
-                bail!("unexpected response while inspecting workflow run {run_id}");
-            };
+            let run = daemon_client::workflow_run(paths, run_id)
+                .with_context(|| format!("inspecting workflow run {run_id}"))?;
             ensure!(
                 run.revision == binding.as_str(),
                 "workflow run {run_id} uses revision {}, but the work unit is bound to {binding}",
                 run.revision
             );
         }
-        let response = daemon_client::workflow(
-            paths,
-            WorkflowRequest::Step {
-                run_id,
-                index: step_index,
-            },
-        )
-        .with_context(|| format!("checking workflow run {run_id}, step {step_index}"))?;
+        let step = daemon_client::workflow_step(paths, run_id, step_index)
+            .with_context(|| format!("checking workflow run {run_id}, step {step_index}"))?;
         ensure!(
-            matches!(
-                response,
-                WorkflowResponse::Step { step }
-                    if successful_step_evidence(&step)
-            ),
+            successful_step_evidence(&step),
             "workflow run {run_id}, step {step_index} is not successful evidence"
         );
     }

@@ -2050,3 +2050,16 @@ On Linux AArch64 the creation and timer slice passed 728 tests, and the Workflow
 slice passed 729 tests under `MCBTODO_REQUIRE_SANDBOX=1 cargo xtask check`.
 Both passed example Vault validation and the sandbox workspace smoke, including
 default TUI launch in a temporary home with an empty executable search path.
+
+### Typed Workflow client boundary, 2026-11-23
+
+The terminal calls the shared client's Workflow list, inspect, step, and
+decision operations. Its direct `mcbtodo-protocol` dependency is test-only.
+`cargo tree --locked -p mcbtodo-tui -e normal --depth 1` confirms the production
+dependency boundary. Completion evidence in the CLI reuses inspect and step.
+Client IPC tests cover a repeated page cursor, mismatched run UUIDs, forwarding
+the approval review token, and a rejected step request.
+
+On Linux AArch64, `MCBTODO_REQUIRE_SANDBOX=1 cargo xtask check` passed 733 tests.
+Agent registry validation, example Vault validation, and the sandbox workspace
+smoke passed.

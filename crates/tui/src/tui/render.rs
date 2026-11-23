@@ -917,7 +917,7 @@ mod tests {
     #[test]
     fn compact_workflow_footer_tracks_the_selected_runs_actions() {
         use crate::tui::screen_model::WorkflowScreenModel;
-        use mcbtodo_protocol::workflow::{RunState, RunSummary};
+        use mcbtodo_workflow::run::{RunState, RunSummary};
 
         let mut state = State::new("2026-11-25".parse().unwrap());
         state.view = View::Workflow;
