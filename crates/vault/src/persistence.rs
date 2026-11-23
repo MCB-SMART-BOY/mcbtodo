@@ -931,7 +931,7 @@ impl VaultStore {
         &self,
         request: CaptureInboxEntry,
     ) -> Result<PersistedDocument, WriteError> {
-        let (_lock, vault) = self.locked_snapshot()?;
+        let (lock, vault) = self.locked_snapshot()?;
         if let Some(project_id) = request.entry.project_id
             && !vault.projects.contains_key(&project_id)
         {
@@ -946,7 +946,7 @@ impl VaultStore {
             &request.body,
         )
         .map_err(WriteError::InvalidDocument)?;
-        publish_in_directory(&self.root, "inbox", id, source)
+        publish_in_directory(&lock.root, "inbox", id, source)
     }
 
     /// Converts an Inbox entry into a Task while retaining the source entry.

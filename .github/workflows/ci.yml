@@ -25,6 +25,7 @@ jobs:
       CARGO_TERM_COLOR: always
       RUSTUP_TOOLCHAIN: 1.100.0
       ARCH: ${{ matrix.arch }}
+      NUSHELL_VERSION: 0.107.0
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -37,7 +38,7 @@ jobs:
           rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rustfmt --component clippy
 
       - name: Install sandbox test dependencies
-        run: sudo apt-get update && sudo apt-get install --yes bubblewrap nushell
+        run: bash .github/scripts/install-nushell.sh "$ARCH"
 
       - name: Check the workspace
         run: cargo xtask check

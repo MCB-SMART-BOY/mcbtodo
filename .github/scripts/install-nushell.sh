@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+version="${NUSHELL_VERSION:?NUSHELL_VERSION is required}"
+architecture="${1:?usage: install-nushell.sh <aarch64|x86_64>}"
+
+case "$architecture" in
+    aarch64)
+        target="aarch64-unknown-linux-gnu"
+        sha256="858142296927292095623c05c7ff0a79a53c9071949ca8867e672083ba87b73c"
+        ;;
+    x86_64)
+        target="x86_64-unknown-linux-gnu"
+        sha256="9c803a1b2019c80e75b4170edc2d3ccbf02aebc784bc9b243881ac178d27f381"
+        ;;
+    *)
+        printf 'unsupported Nushell architecture: %s\n' "$architecture" >&2
+        exit 2
+        ;;
+esac
+
+sudo apt-get update
+sudo apt-get install --yes bubblewrap
+
+archive="$RUNNER_TEMP/nu-$version-$target.tar.gz"
+url="https://github.com/nushell/nushell/releases/download/$version/nu-$version-$target.tar.gz"
+curl --fail --location --silent --show-error "$url" --output "$archive"
+printf '%s  %s\n' "$sha256" "$archive" | sha256sum --check
+
+extract_dir="$RUNNER_TEMP/nu-$version-$target"
+mkdir -p "$extract_dir"
+tar --extract --gzip --file "$archive" --strip-components=1 --directory "$extract_dir"
+sudo install --mode 0755 "$extract_dir/nu" /usr/bin/nu

@@ -176,7 +176,7 @@ fn list_inbox_returns_revision_and_metadata_without_mutating_markdown() {
     assert_eq!(std::fs::read_to_string(path).unwrap(), source);
 
     let tools = responses[1]["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 15);
+    assert_eq!(tools.len(), if cfg!(unix) { 15 } else { 6 });
     let inbox_tool = tools
         .iter()
         .find(|tool| tool["name"] == "list_inbox")

@@ -125,6 +125,35 @@ that a package can be built from crates.io after its workspace dependencies
 have been published. Publication remains a separately authorized operation
 that must follow dependency order.
 
+## Native CI verification follow-up (2026-11-23)
+
+GitHub Actions run `45086065249` exposed three environment-specific issues in
+the previous `main` revision. The Linux jobs attempted to install `nushell`
+from the Ubuntu 24.04 apt sources, which do not provide that package. The
+macOS CLI tests revealed that Inbox capture published through the original
+Vault path after locking and canonicalizing the workspace, so a temporary
+directory whose path was not canonical failed the platform path invariant. The
+Windows MCP test expected the Unix tool set even though Windows intentionally
+exposes the read-only tool set.
+
+The current working tree addresses those findings. CI now installs Bubblewrap
+from apt and installs the pinned Nushell `0.107.0` release binary for each
+native Linux architecture after verifying its SHA-256 digest. Inbox capture
+publishes through the canonical root held by the active Vault lock. The MCP
+tool-count assertion follows the platform capability boundary.
+
+Local verification passed after these changes:
+
+- `cargo xtask check`
+- `cargo run --locked -- --vault examples/vault --timezone Asia/Shanghai validate`
+- the two previously failing macOS CLI tests
+- the Windows MCP tool-count regression
+- shell syntax and diff checks for the CI installer
+
+No GitHub Actions run for this revision exists yet. Native macOS and Windows
+runtime verification therefore remains pending until the pushed revision
+finishes its jobs.
+
 ## Latest Review
 
 On 2026-11-22, the Linux AArch64 release packaging follow-up verified all
