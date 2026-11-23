@@ -1840,8 +1840,11 @@ perform use-case work independently for some reads and interactions:
   The edit key and `:edit` now resolve the selected UUID through the service
   in a connected session. IPC coverage exercises document moves and exact
   Unix path bytes. A TUI socket test exercises a server-only document and
-  a disconnected lookup. Session startup and local file watching still rely
-  on a Vault snapshot.
+  a disconnected lookup. After startup, file-watch notifications and manual
+  reload refresh the service projections using their existing queries. The
+  connected reload test covers focus retention for a reordered service
+  response with the local Vault path unavailable. Startup still loads a local
+  Vault, and the TUI still installs a local file watcher.
   Proposal confirmation runs in the terminal crate. The queue API rechecks the
   reviewed record under lock and is independent of terminal I/O.
   Dependency-change validation,

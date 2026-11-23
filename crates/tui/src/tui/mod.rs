@@ -1170,6 +1170,11 @@ impl State {
     }
 
     fn reload(&mut self, root: &Path, vault: &mut Vault) {
+        if self.daemon_views.is_some() {
+            self.refresh_daemon_views(vault);
+            self.message = "Vault reloaded".into();
+            return;
+        }
         match Vault::load(root, vault.timezone()) {
             Ok(next) => {
                 self.install_vault(vault, next);
@@ -1177,21 +1182,21 @@ impl State {
                 self.message = "Vault reloaded".into();
             }
             Err(error) => {
-                self.invalidate_daemon_views();
                 self.message = format!("Reload failed · {error:#}");
             }
         }
     }
 
     fn refresh_external(&mut self, root: &Path, vault: &mut Vault) -> bool {
+        if self.daemon_views.is_some() {
+            self.refresh_daemon_views(vault);
+            return true;
+        }
         match Vault::load(root, vault.timezone()) {
             Ok(next) => {
                 let recovered = self.vault_warning.take().is_some();
                 if vault.has_same_documents(&next) {
                     // A local action may already have loaded these exact bytes.
-                    if recovered {
-                        self.invalidate_daemon_views();
-                    }
                     return recovered;
                 }
                 self.install_vault(vault, next);
@@ -1204,7 +1209,6 @@ impl State {
                     return false;
                 }
                 self.vault_warning = Some(warning);
-                self.invalidate_daemon_views();
                 true
             }
         }
@@ -1216,7 +1220,18 @@ impl State {
             .or_else(|| self.document_id.map(FocusIdentity::Document));
         *vault = next;
         *self.graph_nodes.get_mut() = None;
+        self.restore_focus(vault, preferred);
+    }
+
+    fn refresh_daemon_views(&mut self, vault: &Vault) {
+        let preferred = self
+            .selected_focus(vault)
+            .or_else(|| self.document_id.map(FocusIdentity::Document));
         self.invalidate_daemon_views();
+        self.restore_focus(vault, preferred);
+    }
+
+    fn restore_focus(&mut self, vault: &Vault, preferred: Option<FocusIdentity>) {
         self.document_id = preferred.map(FocusIdentity::document_id);
         self.sync_row(vault, preferred);
         if self.graph_selection.is_some()

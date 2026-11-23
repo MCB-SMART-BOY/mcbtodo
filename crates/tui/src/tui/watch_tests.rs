@@ -56,6 +56,51 @@ fn rendered_text(
         .collect()
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn connected_reload_reconciles_outline_focus_without_reading_the_local_vault() -> Result<()> {
+    use std::os::unix::net::UnixListener;
+
+    use mcbtodo_protocol::wire;
+
+    let home = tempfile::tempdir()?;
+    let paths = WorkspacePaths::from_home(home.path().to_owned());
+    paths.initialize()?;
+    let mut vault = Vault::load(&paths.vault_root(), chrono_tz::Asia::Shanghai)?;
+    let unavailable_root = home.path().join("missing-vault");
+    let rows = mcbtodo_application::project_outline(&tests::fixture());
+    let mut reversed = rows.clone();
+    reversed.reverse();
+    let selected = rows[0].id;
+
+    let listener = UnixListener::bind(paths.socket_path())?;
+    let peer = thread::spawn(move || -> Result<()> {
+        for rows in [rows.clone(), reversed, rows] {
+            let (mut stream, _) = listener.accept()?;
+            stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+            assert!(matches!(wire::read(&mut stream)?, Request::Outline { .. }));
+            wire::write_outline(&mut stream, rows)?;
+        }
+        Ok(())
+    });
+
+    let mut state = State::new("2026-11-20".parse()?);
+    state.daemon_views = Some(daemon_views::DaemonViews::new(paths));
+    state.view = View::Outline;
+    assert_eq!(state.selected_document(&vault), Some(selected));
+    assert!(vault.source(selected).is_none());
+    assert!(state.refresh_external(&unavailable_root, &mut vault));
+    assert!(state.vault_warning.is_none());
+    assert!(state.row > 0);
+    assert_eq!(state.selected_document(&vault), Some(selected));
+    state.reload(&unavailable_root, &mut vault);
+    assert_eq!(state.message, "Vault reloaded");
+    assert_eq!(state.row, 0);
+    assert_eq!(state.selected_document(&vault), Some(selected));
+    peer.join().unwrap()?;
+    Ok(())
+}
+
 #[test]
 fn reloads_atomic_editor_save_and_retains_focus() {
     let temp = tempfile::tempdir().unwrap();

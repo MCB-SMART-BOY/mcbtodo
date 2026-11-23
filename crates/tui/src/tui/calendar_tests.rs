@@ -1568,8 +1568,10 @@ fn time_block_retains_the_daemon_candidate_and_reviewed_revision_across_reload()
 
     let edited = format!("{}\nConcurrent edit.\n", std::fs::read_to_string(path)?);
     std::fs::write(path, &edited)?;
+    let current = Vault::load(&root, chrono_tz::Asia::Shanghai)?;
+    assert_ne!(current.revision(unit).unwrap().digest(), original_revision);
     assert!(state.refresh_external(&root, &mut vault));
-    assert_ne!(vault.revision(unit).unwrap().digest(), original_revision);
+    assert!(vault.revision(unit).is_none());
 
     let block = submit_time_block(&mut state, &vault);
     assert_eq!(block.unit, unit);

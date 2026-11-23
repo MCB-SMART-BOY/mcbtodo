@@ -457,6 +457,67 @@ fn task_capture_uses_the_revision_displayed_by_the_daemon_outline() -> Result<()
 
 #[cfg(target_os = "linux")]
 #[test]
+fn connected_task_capture_focuses_the_new_daemon_document() -> Result<()> {
+    use std::{os::unix::net::UnixListener, thread};
+
+    use mcbtodo_protocol::{Request, Response, wire};
+
+    let home = tempfile::tempdir()?;
+    let paths = WorkspacePaths::from_home(home.path().to_owned());
+    paths.initialize()?;
+    let root = paths.vault_root();
+    let (mut vault, project_id) = project_vault(&root);
+    let rows = mcbtodo_application::project_outline(&vault);
+    let listener = UnixListener::bind(paths.socket_path())?;
+    let peer = thread::spawn(move || -> Result<Id> {
+        let (mut stream, _) = listener.accept()?;
+        stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+        assert!(matches!(wire::read(&mut stream)?, Request::Outline { .. }));
+        wire::write_outline(&mut stream, rows.clone())?;
+
+        let (mut stream, _) = listener.accept()?;
+        stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+        let Request::CaptureTask { task_id, .. } = wire::read(&mut stream)? else {
+            panic!("expected Task capture");
+        };
+        wire::write(
+            &mut stream,
+            &Response::TaskCaptured {
+                task_id,
+                synced: true,
+            },
+        )?;
+
+        let (mut stream, _) = listener.accept()?;
+        stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+        assert!(matches!(wire::read(&mut stream)?, Request::Outline { .. }));
+        let mut task = rows[0].clone();
+        task.id = task_id;
+        task.depth = 1;
+        task.task_id = Some(task_id);
+        task.title = "Write tests".into();
+        wire::write_outline(&mut stream, vec![rows[0].clone(), task])?;
+        Ok(task_id)
+    });
+
+    let mut state = State::new(day("2026-11-25"));
+    state.daemon_views = Some(daemon_views::DaemonViews::new(paths.clone()));
+    state.switch(View::Outline, &vault);
+    assert_eq!(state.selected_document(&vault), Some(project_id));
+    let Action::CreateTask(request) = press(&mut state, &vault, " ctWrite tests\n") else {
+        panic!("expected Task capture");
+    };
+    state.create_task(&root, &mut vault, &paths, request);
+    let task_id = peer.join().unwrap()?;
+    assert!(matches!(state.overlay, Overlay::None));
+    assert_eq!(state.selected_document(&vault), Some(task_id));
+    assert_eq!(state.message, "Task saved");
+    assert!(vault.source(task_id).is_none());
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 fn default_task_capture_does_not_repeat_a_request_without_a_response() {
     let home = tempfile::tempdir().unwrap();
     let paths = mcbtodo_platform::WorkspacePaths::from_home(home.path().to_owned());

@@ -118,7 +118,9 @@ pub fn run(
     let mut watcher = match watch::Watcher::new(root) {
         Ok(watcher) => {
             // Close the gap between the initial CLI load and watch registration.
-            state.refresh_external(root, &mut vault);
+            if state.daemon_views.is_none() {
+                state.refresh_external(root, &mut vault);
+            }
             Some(watcher)
         }
         Err(error) => {

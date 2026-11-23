@@ -14,6 +14,9 @@ settings, and proposal menus invoke the same commands as the prompt.
 The edit key and `:edit` share the editor action. A connected session resolves
 the selected UUID through the Daemon before opening the local editor. A local
 Vault session resolves the source from its own snapshot.
+Manual reload and file-watch notifications invalidate the service projection
+cache in connected sessions. Focus is restored from the document or
+occurrence identity. Explicit local sessions reload the Markdown snapshot.
 The session dispatches the resulting action through the existing client or
 local path. Text entry, resizing, and service responses follow their own
 paths. The daemon receives typed business requests with explicit arguments.
