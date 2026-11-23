@@ -3,12 +3,15 @@
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
-    io::{self, Write},
+    io,
     path::{Path, PathBuf},
 };
 
 #[cfg(unix)]
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+use std::{
+    io::Write,
+    os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt},
+};
 
 use anyhow::{Context, Result, bail, ensure};
 use chrono::{DateTime, FixedOffset, NaiveDate};
