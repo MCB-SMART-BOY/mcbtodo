@@ -89,24 +89,6 @@ impl Discovery {
         }
     }
 
-    #[cfg(target_os = "linux")]
-    pub fn check_installations(&mut self, paths: &WorkspacePaths) {
-        if let Some(codex) = self
-            .providers
-            .iter_mut()
-            .find(|provider| provider.backend == AgentBackend::Codex)
-        {
-            codex.installation = match mcbtodo_execution::codex_host::check_installation(paths) {
-                Ok(declared_capability) => Installation::PreflightPassed {
-                    declared_capability,
-                },
-                Err(error) => Installation::Unavailable {
-                    message: error.to_string(),
-                },
-            };
-        }
-    }
-
     #[cfg(not(target_os = "linux"))]
     pub fn inspect(_paths: &WorkspacePaths) -> Self {
         Self {

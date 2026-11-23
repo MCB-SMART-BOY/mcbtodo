@@ -2174,7 +2174,7 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn codex_settings_reject_stale_and_invalid_drafts_without_changing_policy() -> Result<()> {
-        use mcbtodo_execution::codex_config::{CodexConfig, ScalarType};
+        use mcbtodo_platform::codex_config::{CodexConfig, ScalarType};
 
         let home = tempfile::tempdir()?;
         let paths = WorkspacePaths::from_home(home.path().to_owned());

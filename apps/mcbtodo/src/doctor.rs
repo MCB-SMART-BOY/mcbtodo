@@ -12,7 +12,7 @@ use anyhow::{Result, ensure};
 use chrono_tz::Tz;
 use mcbtodo_application::VaultQueries;
 #[cfg(target_os = "linux")]
-use mcbtodo_execution::{notification::NotifySend, sandbox::SandboxExecutable};
+use mcbtodo_execution::{codex_host, notification::NotifySend, sandbox::SandboxExecutable};
 #[cfg(target_os = "linux")]
 use mcbtodo_platform::agent_policy::AgentBackend;
 use mcbtodo_platform::{AppConfig, WorkspacePaths};
@@ -122,11 +122,7 @@ fn inspect(paths: &WorkspacePaths, location: VaultLocation) -> Report {
     ];
     let agents = agent_discovery::Discovery::inspect(paths);
     #[cfg(target_os = "linux")]
-    let agents = {
-        let mut agents = agents;
-        agents.check_installations(paths);
-        agents
-    };
+    let agents = check_agent_installations(paths, agents);
     checks.extend(inspect_agents(paths, &agents));
     #[cfg(target_os = "linux")]
     checks.extend([
@@ -194,6 +190,30 @@ fn inspect_desktop_notification() -> Check {
             message: error.to_string(),
         },
     }
+}
+
+#[cfg(target_os = "linux")]
+fn check_agent_installations(
+    paths: &WorkspacePaths,
+    mut agents: agent_discovery::Discovery,
+) -> agent_discovery::Discovery {
+    use agent_discovery::Installation;
+
+    if let Some(provider) = agents
+        .providers
+        .iter_mut()
+        .find(|provider| provider.backend == AgentBackend::Codex)
+    {
+        provider.installation = match codex_host::check_installation(paths) {
+            Ok(declared_capability) => Installation::PreflightPassed {
+                declared_capability,
+            },
+            Err(error) => Installation::Unavailable {
+                message: error.to_string(),
+            },
+        };
+    }
+    agents
 }
 
 #[cfg(target_os = "linux")]

@@ -13,7 +13,7 @@ use std::{
 
 use anyhow::{Context, Result, bail, ensure};
 use mcbtodo_agent_codex::CodexProvider;
-use mcbtodo_platform::WorkspacePaths;
+use mcbtodo_platform::{WorkspacePaths, codex_config::CodexConfig};
 use mcbtodo_ports::{AgentError, AgentExecutionContext, AgentProvider};
 use rustix::{
     io::fcntl_dupfd_cloexec,
@@ -24,7 +24,6 @@ use rustix::{
 use serde_json::json;
 
 use crate::{
-    codex_config::CodexConfig,
     model_relay::relay_model_exchange,
     sandbox::{codex_command, protected_executable},
     unix_agent::socket_path,

@@ -362,6 +362,13 @@ Project revision. The existing reminder and time-block aliases exercise the
 same forms. The Linux AArch64 workspace check passed 714 tests, including
 175 TUI tests, and the example Vault validated.
 
+The Codex settings codec moved to `mcbtodo-platform`, with the same TOML
+format and validation. Worker still checks executable trust before launch.
+The CLI `doctor` owns installation diagnostics. The TUI dependency tree
+excludes both `mcbtodo-execution` and `mcbtodo-agent-codex`. The Linux AArch64
+workspace check passed 714 tests, including invalid and stale Settings
+drafts and the installation check that leaves the provider process stopped.
+
 ### Shared calendar query over local IPC
 
 The Linux default Vault has a typed calendar query over the existing local

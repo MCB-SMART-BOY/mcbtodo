@@ -302,7 +302,7 @@ impl crate::WorkspacePaths {
     }
 
     /// Read bounded provider configuration under the same ownership rules as
-    /// the host policy. The Codex adapter owns validation of its contents.
+    /// the host policy. The `codex_config` module validates its contents.
     pub fn read_codex_provider_config(&self) -> Result<Option<Vec<u8>>> {
         self.read_agent_config(&self.codex_provider_path())
     }

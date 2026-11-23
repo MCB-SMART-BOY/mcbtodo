@@ -25,6 +25,3 @@ mcbtodo-workflow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
-
-[target.'cfg(target_os = "linux")'.dependencies]
-mcbtodo-execution.workspace = true

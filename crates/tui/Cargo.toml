@@ -31,8 +31,5 @@ sha2.workspace = true
 toml.workspace = true
 uuid.workspace = true
 
-[target.'cfg(target_os = "linux")'.dependencies]
-mcbtodo-execution.workspace = true
-
 [dev-dependencies]
 tempfile.workspace = true

@@ -1,10 +1,11 @@
-//! The Codex provider settings shared by the Worker, doctor, and TUI.
+//! On-disk settings for the Codex provider.
 
 use std::{collections::BTreeMap, path::PathBuf};
 
 use anyhow::{Result, anyhow, ensure};
-use mcbtodo_platform::agent_policy::{MAX_POLICY_BYTES, valid_capability};
 use serde::{Deserialize, Serialize};
+
+use crate::agent_policy::{MAX_POLICY_BYTES, valid_capability};
 
 #[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]

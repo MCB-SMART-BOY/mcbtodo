@@ -126,6 +126,10 @@ Daemon 每次启动生成新的标记，检测到文件变化后更新标记，�
 提案的终端审阅与确认由 `mcbtodo-tui` 提供，CLI 共用这一入口。客户端的队列
 接收已确认的记录，持锁复核记录并提交。
 
+`mcbtodo-tui` 和 `mcbtodo-client` 通过 `mcbtodo-platform` 读取工作区配置。
+平台层提供 `codex.toml` 的编解码和校验，供设置界面和 Worker 使用。CLI 的
+`doctor` 调用执行层检查安装状态。Agent 启动与沙箱由执行层处理。
+
 当前 TUI 会话负责管理终端、分派动作和
 处理编辑器交接。[数据收集](../crates/tui/src/tui/screen_data.rs)访问当前
 视图所需的行和表单上下文，[ScreenModel](../crates/tui/src/tui/screen_model.rs)
@@ -145,12 +149,17 @@ GUI 的业务写入复用应用用例或已有的 Daemon 请求，由界面解�
 
 ### 插件扩展
 
-内建 Agent 和其他适配器通过 `mcbtodo-ports` 扩展。独立进程扩展有真实调用方后，
-拟由 `mcbtodo-plugin` 定义宿主与插件之间的消息契约。首个扩展点可以是提供
-一种 Agent 能力的独立进程。宿主通过 stdin/stdout 发送有大小上限的 JSON
-消息，用请求 ID 关联应答和取消，并在启动时协商协议版本与能力。诊断走
-stderr。Daemon 负责授权、预算、修订校验及结果提交。CLI、TUI 和未来 GUI
-使用独立的业务客户端契约。
+内建 Agent 和其他适配器通过 `mcbtodo-ports` 扩展。Unix socket 与 Codex
+app-server 已接到同一个 `AgentProvider` 端口。`mcbtodo-plugin` 是拟议的
+独立进程协议 crate，首个适用场景是由 Worker 启动一个用户显式配置的第三方
+Agent 可执行文件。Worker 可以用一个进程适配器把协议接到 `AgentProvider`。
+CLI、TUI 和未来 GUI 通过业务客户端契约使用该能力。
+
+首版协议可围绕握手、单次执行和结果建立。stdin/stdout 使用有大小上限的
+JSON 帧，启动时协商协议版本和能力，请求 ID 关联结果与取消，诊断走 stderr。
+宿主管理进程期限、资源限制和隔离。Daemon 负责授权、预算、修订校验及最终
+提交。插件返回待宿主验证的数据。已派发的调用在失联后保留结果未知状态。
+有实际可执行插件和宿主端到端契约测试后，再稳定公共协议。
 
 按一条真实的读写路径推进，每阶段校验数据来源、修订冲突、断线行为和现有
 快捷键。

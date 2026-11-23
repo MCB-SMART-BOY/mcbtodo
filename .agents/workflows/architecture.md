@@ -40,6 +40,8 @@ For the staged workspace evolution, also follow
    result persistence. `mcbtodo-ports` owns only business-shaped contracts
    already required by a real caller. Apps own presentation and transport
    parsing.
+   Provider settings shared by editors and Workers use the platform config
+   API. The CLI `doctor` owns execution-specific installation diagnostics.
 
 ## Choose and Implement a Slice
 

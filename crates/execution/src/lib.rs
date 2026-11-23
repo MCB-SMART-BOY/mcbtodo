@@ -3,8 +3,6 @@
 #[cfg(target_os = "linux")]
 pub mod agent;
 #[cfg(target_os = "linux")]
-pub mod codex_config;
-#[cfg(target_os = "linux")]
 pub mod codex_host;
 #[cfg(target_os = "linux")]
 mod model_relay;
@@ -16,3 +14,6 @@ pub mod sandbox;
 mod unix_agent;
 #[cfg(target_os = "linux")]
 pub mod workflow_script;
+
+#[cfg(target_os = "linux")]
+pub use mcbtodo_platform::codex_config;

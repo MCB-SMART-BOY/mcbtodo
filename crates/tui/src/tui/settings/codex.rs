@@ -2,8 +2,10 @@ use std::{borrow::Cow, collections::BTreeMap};
 
 use anyhow::{Result, bail, ensure};
 use crossterm::event::KeyCode;
-use mcbtodo_execution::codex_config::{CodexConfig, ScalarType};
-use mcbtodo_platform::{ConfigSnapshot, WorkspacePaths};
+use mcbtodo_platform::{
+    ConfigSnapshot, WorkspacePaths,
+    codex_config::{CodexConfig, ScalarType},
+};
 
 const LABELS: [&str; 4] = ["Executable", "Capability", "Instructions", "Outputs"];
 const HELP: [&str; 4] = [
