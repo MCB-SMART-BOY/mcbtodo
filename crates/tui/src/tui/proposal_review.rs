@@ -288,7 +288,7 @@ fn terminal_text(value: &str) -> String {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use crate::tui::{Overlay, State, calendar_tests::screen, tests::fixture};
+    use crate::tui::{Overlay, State, Workspace, calendar_tests::screen, tests::fixture};
     use crossterm::event::KeyModifiers;
     use mcbtodo_client::proposal::submit;
     use mcbtodo_vault::Vault;
@@ -297,7 +297,12 @@ mod tests {
     const ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/vault");
     const ZONE: Tz = chrono_tz::Asia::Shanghai;
 
-    fn review(state: &mut State, vault: &Vault, paths: &WorkspacePaths, code: KeyCode) -> Action {
+    fn review(
+        state: &mut State,
+        vault: &Workspace,
+        paths: &WorkspacePaths,
+        code: KeyCode,
+    ) -> Action {
         let action = state.handle(KeyEvent::new(code, KeyModifiers::NONE), vault);
         if let Action::Proposals(request) = action {
             state
@@ -599,7 +604,7 @@ bindings:
         let paths = WorkspacePaths::from_home(home.path().to_owned());
         let vault = fixture();
         let unit = "30000000-0000-4000-8000-000000000002".parse().unwrap();
-        let revision = vault.revision(unit).unwrap().digest();
+        let revision = vault.local().revision(unit).unwrap().digest();
         let operation = serde_json::from_value(json!({
             "kind": "create_time_block",
             "work_unit_id": unit,
@@ -649,7 +654,7 @@ bindings:
         let paths = WorkspacePaths::from_home(home.path().to_owned());
         let vault = fixture();
         let project: Id = "10000000-0000-4000-8000-000000000001".parse().unwrap();
-        let revision = vault.revision(project).unwrap().digest();
+        let revision = vault.local().revision(project).unwrap().digest();
         let operation = serde_json::from_value(json!({
             "kind": "set_deadline",
             "target_id": project,

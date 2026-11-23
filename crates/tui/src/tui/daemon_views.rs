@@ -2,14 +2,12 @@ use std::{cell::RefCell, collections::BTreeSet, path::PathBuf, rc::Rc};
 
 use anyhow::{Error, Result, bail};
 use chrono_tz::Tz;
-use mcbtodo_application::project_outline;
 use mcbtodo_domain::{
     CalendarItem, DependencyOperation, Id, InboxSummary, OutlineItem, WorkUnitDependencyPreview,
     time::{DateSpan, Deadline},
 };
 use mcbtodo_platform::WorkspacePaths;
 use mcbtodo_protocol::{Request, Response};
-use mcbtodo_vault::Vault;
 
 /// Rendering and input use the same responses until the query or Vault changes.
 pub(super) struct DaemonViews {
@@ -23,16 +21,6 @@ pub(super) struct DaemonViews {
 type CachedRows<T> = Result<Rc<[T]>, String>;
 
 struct QueryCache<K, T>(RefCell<Option<(K, CachedRows<T>)>>);
-
-pub(super) fn outline_rows(
-    vault: &Vault,
-    service: Option<&DaemonViews>,
-) -> Result<Rc<[OutlineItem]>> {
-    match service {
-        Some(service) => service.outline(vault.timezone()),
-        None => Ok(project_outline(vault).into()),
-    }
-}
 
 impl<K: PartialEq, T> QueryCache<K, T> {
     fn rows(&self, key: K, query: impl FnOnce() -> Result<Vec<T>>) -> Result<Rc<[T]>> {

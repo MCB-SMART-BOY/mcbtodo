@@ -7,7 +7,7 @@ use super::{calendar_tests::screen, *};
 const PROJECT: &str = include_str!("../../../../tests/fixtures/vault/projects/rust-os/project.md");
 const TITLE: &str = "整理笔记 Review ideas";
 
-fn vault_with_inbox() -> (tempfile::TempDir, Vault, Id) {
+fn vault_with_inbox() -> (tempfile::TempDir, Workspace, Id) {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
     fs::create_dir_all(root.join("projects/rust-os")).unwrap();
@@ -21,7 +21,7 @@ fn vault_with_inbox() -> (tempfile::TempDir, Vault, Id) {
         ),
     )
     .unwrap();
-    let vault = Vault::load(root, "Asia/Shanghai".parse().unwrap()).unwrap();
+    let vault = Workspace::load(root, "Asia/Shanghai".parse().unwrap()).unwrap();
     (temp, vault, id)
 }
 
@@ -42,7 +42,7 @@ fn inbox_view_lists_entries_and_triage_uses_the_observed_revision() {
     );
     assert!(matches!(state.overlay, Overlay::InboxProject { .. }));
     let action = state.handle(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &vault);
-    let project_id = vault.outline()[0].id;
+    let project_id = vault.local().outline()[0].id;
     let Action::TriageInbox {
         inbox_id: selected,
         project_id: project,
@@ -55,7 +55,7 @@ fn inbox_view_lists_entries_and_triage_uses_the_observed_revision() {
     assert_eq!(project, project_id);
     assert_eq!(
         revision,
-        InboxRevision::Local(vault.revision(inbox_id).unwrap().clone())
+        InboxRevision::Local(vault.local().revision(inbox_id).unwrap().clone())
     );
 
     let paths = WorkspacePaths::from_home(temp.path().to_owned());
@@ -67,12 +67,18 @@ fn inbox_view_lists_entries_and_triage_uses_the_observed_revision() {
         project_id,
         revision,
     );
-    assert_eq!(vault.inbox_entries().count(), 1);
+    assert_eq!(vault.local().inbox_entries().count(), 1);
     assert_eq!(
-        vault.inbox_entries().next().unwrap().data.project_id,
+        vault
+            .local()
+            .inbox_entries()
+            .next()
+            .unwrap()
+            .data
+            .project_id,
         Some(project_id)
     );
-    let inbox_path = vault.source(inbox_id).unwrap();
+    let inbox_path = vault.local().source(inbox_id).unwrap();
     assert!(
         fs::read_to_string(inbox_path)
             .unwrap()
@@ -80,6 +86,7 @@ fn inbox_view_lists_entries_and_triage_uses_the_observed_revision() {
     );
     assert_eq!(
         vault
+            .local()
             .outline()
             .into_iter()
             .find(|row| row.id == project_id)
@@ -88,8 +95,8 @@ fn inbox_view_lists_entries_and_triage_uses_the_observed_revision() {
         "Rust OS"
     );
     assert_eq!(state.message, "Inbox entry converted to Task");
-    let task_id = vault.inbox_entries().next().unwrap().data.task_id();
-    assert!(vault.outline().iter().any(|row| row.id == task_id));
+    let task_id = vault.local().inbox_entries().next().unwrap().data.task_id();
+    assert!(vault.local().outline().iter().any(|row| row.id == task_id));
 }
 
 #[test]
@@ -122,7 +129,7 @@ fn inbox_keeps_title_and_assignment_controls_in_a_short_terminal() {
 fn inbox_picker_without_projects_offers_only_cancel() {
     let (temp, vault, _) = vault_with_inbox();
     fs::remove_dir_all(temp.path().join("projects/rust-os")).unwrap();
-    let vault = Vault::load(temp.path(), vault.timezone()).unwrap();
+    let vault = Workspace::load(temp.path(), vault.timezone()).unwrap();
     let mut state = State::new("2026-11-20".parse().unwrap());
     state.switch(View::Inbox, &vault);
     state.handle(
@@ -149,15 +156,15 @@ fn inbox_project_picker_cancels_without_writing() {
         Action::Continue
     );
     assert!(matches!(state.overlay, Overlay::None));
-    assert_eq!(vault.inbox_entries().count(), 1);
+    assert_eq!(vault.local().inbox_entries().count(), 1);
 }
 
 #[test]
 fn inbox_triage_refuses_to_overwrite_an_external_edit() {
     let (temp, mut vault, inbox_id) = vault_with_inbox();
-    let project_id = vault.outline()[0].id;
-    let revision = vault.revision(inbox_id).unwrap().clone();
-    let path = vault.source(inbox_id).unwrap().to_owned();
+    let project_id = vault.local().outline()[0].id;
+    let revision = vault.local().revision(inbox_id).unwrap().clone();
+    let path = vault.local().source(inbox_id).unwrap().to_owned();
     let source = fs::read_to_string(&path).unwrap();
     fs::write(&path, source.replace(TITLE, "Edited elsewhere")).unwrap();
 
@@ -195,7 +202,7 @@ fn inbox_uses_the_entry_and_project_seen_over_ipc() -> Result<()> {
     let paths = WorkspacePaths::from_home(home.path().to_owned());
     paths.initialize()?;
     let root = paths.vault_root();
-    let mut vault = Vault::load(&root, chrono_tz::UTC)?;
+    let vault = Workspace::load(&root, chrono_tz::UTC)?;
     let listener = UnixListener::bind(paths.socket_path())?;
     let inbox_id = Id::from_u128(11);
     let project_id = Id::from_u128(12);
@@ -243,7 +250,7 @@ fn inbox_uses_the_entry_and_project_seen_over_ipc() -> Result<()> {
         Ok(request)
     });
     let mut state = State::new("2026-11-20".parse()?);
-    state.daemon_views = Some(super::daemon_views::DaemonViews::new(paths.clone()));
+    let mut vault = Workspace::daemon(vault.timezone(), paths.clone());
     state.switch(View::Inbox, &vault);
     assert!(screen(&state, &vault, 80, 18).contains("Remote research notes"));
     state.handle(

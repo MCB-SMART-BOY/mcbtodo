@@ -11,11 +11,11 @@ use mcbtodo_domain::{
 };
 use mcbtodo_platform::WorkspacePaths;
 use mcbtodo_protocol::{ProjectDates, Request, Response};
-use mcbtodo_vault::{Revision, Vault, WriteError};
+use mcbtodo_vault::{Revision, WriteError};
 
 use mcbtodo_client::daemon_client::{WriteFailure, owns_vault, submit_write};
 
-use super::{Action, Overlay, State, View, time_block};
+use super::{Action, Overlay, State, View, Workspace, time_block};
 
 #[derive(Clone, Copy)]
 pub(super) enum Kind {
@@ -244,7 +244,7 @@ impl State {
     pub(super) fn create_calendar(
         &mut self,
         root: &Path,
-        vault: &mut Vault,
+        vault: &mut Workspace,
         paths: &WorkspacePaths,
         request: Submission,
     ) {
@@ -350,7 +350,7 @@ impl State {
     pub(super) fn create_reminder(
         &mut self,
         root: &Path,
-        vault: &mut Vault,
+        vault: &mut Workspace,
         paths: &WorkspacePaths,
         request: Submission,
     ) {
@@ -429,7 +429,7 @@ impl State {
     pub(super) fn create_time_block(
         &mut self,
         root: &Path,
-        vault: &mut Vault,
+        vault: &mut Workspace,
         paths: &WorkspacePaths,
         block: time_block::Submission,
     ) {
@@ -459,8 +459,8 @@ impl State {
                 },
             )
             .map(|synced| publication_message("Time block", unit, synced))
-        } else if let Some(revision) =
-            mcbtodo_application::document_revision_in_snapshot(vault, unit)
+        } else if let Workspace::Local(local) = vault
+            && let Some(revision) = mcbtodo_application::document_revision_in_snapshot(local, unit)
                 .filter(|revision| revision.digest() == block.revision)
         {
             let result = VaultCommands::new(root, vault.timezone()).create_time_block(
@@ -522,7 +522,7 @@ impl State {
     pub(super) fn create_task(
         &mut self,
         root: &Path,
-        vault: &mut Vault,
+        vault: &mut Workspace,
         paths: &WorkspacePaths,
         request: Submission,
     ) {

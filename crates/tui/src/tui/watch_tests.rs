@@ -10,8 +10,8 @@ use super::{watch::Watcher, *};
 const PROJECT: &str = include_str!("../../../../tests/fixtures/vault/projects/rust-os/project.md");
 const EVENT: &str = include_str!("../../../../tests/fixtures/vault/calendar/review.md");
 
-fn session(root: &Path) -> (Watcher, State, Vault) {
-    let vault = Vault::load(root, "Asia/Shanghai".parse().unwrap()).unwrap();
+fn session(root: &Path) -> (Watcher, State, Workspace) {
+    let vault = Workspace::load(root, "Asia/Shanghai".parse().unwrap()).unwrap();
     let mut state = State::new("2026-11-20".parse().unwrap());
     state.switch(View::Outline, &vault);
     (Watcher::new(root).unwrap(), state, vault)
@@ -35,7 +35,7 @@ fn await_change(watch: &mut Watcher) {
     panic!("no Vault change notification");
 }
 
-fn await_refresh(watch: &mut Watcher, root: &Path, state: &mut State, vault: &mut Vault) {
+fn await_refresh(watch: &mut Watcher, root: &Path, state: &mut State, vault: &mut Workspace) {
     await_change(watch);
     assert!(state.refresh_external(root, vault));
 }
@@ -43,7 +43,7 @@ fn await_refresh(watch: &mut Watcher, root: &Path, state: &mut State, vault: &mu
 fn rendered_text(
     terminal: &mut Terminal<ratatui::backend::TestBackend>,
     state: &State,
-    vault: &Vault,
+    vault: &Workspace,
 ) -> String {
     let model = session::present(state, vault);
     terminal
@@ -66,9 +66,8 @@ fn connected_reload_reconciles_outline_focus_without_reading_the_local_vault() -
     let home = tempfile::tempdir()?;
     let paths = WorkspacePaths::from_home(home.path().to_owned());
     paths.initialize()?;
-    let mut vault = Vault::load(&paths.vault_root(), chrono_tz::Asia::Shanghai)?;
     let unavailable_root = home.path().join("missing-vault");
-    let rows = mcbtodo_application::project_outline(&tests::fixture());
+    let rows = mcbtodo_application::project_outline(tests::fixture().local());
     let mut reversed = rows.clone();
     reversed.reverse();
     let selected = rows[0].id;
@@ -85,10 +84,10 @@ fn connected_reload_reconciles_outline_focus_without_reading_the_local_vault() -
     });
 
     let mut state = State::new("2026-11-20".parse()?);
-    state.daemon_views = Some(daemon_views::DaemonViews::new(paths));
+    let mut vault = Workspace::open(&paths.vault_root(), chrono_tz::Asia::Shanghai, &paths)?;
     state.view = View::Outline;
     assert_eq!(state.selected_document(&vault), Some(selected));
-    assert!(vault.source(selected).is_none());
+    assert!(!unavailable_root.exists());
     assert!(state.refresh_external(&unavailable_root, &mut vault));
     assert!(state.vault_warning.is_none());
     assert!(state.row > 0);
@@ -114,7 +113,7 @@ fn reloads_atomic_editor_save_and_retains_focus() {
     fs::rename(stage, &path).unwrap();
     await_refresh(&mut watch, root, &mut state, &mut vault);
 
-    assert_eq!(vault.outline()[0].title, "External title");
+    assert_eq!(vault.local().outline()[0].title, "External title");
     assert_eq!(state.selected_document(&vault), selected);
 }
 
@@ -127,7 +126,7 @@ fn invalid_external_save_keeps_projection_and_repair_clears_warning() {
 
     fs::write(&path, "broken Markdown").unwrap();
     await_refresh(&mut watch, root, &mut state, &mut vault);
-    assert_eq!(vault.outline()[0].title, "Rust OS");
+    assert_eq!(vault.local().outline()[0].title, "Rust OS");
     let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(35, 14)).unwrap();
     let text = rendered_text(&mut terminal, &state, &vault);
     assert!(text.contains("Reload failed"));
@@ -151,7 +150,7 @@ fn watches_populated_projects_directory_moved_into_vault() {
 
     fs::rename(staged, root.join("projects")).unwrap();
     await_refresh(&mut watch, &root, &mut state, &mut vault);
-    assert_eq!(vault.outline()[0].title, "Rust OS");
+    assert_eq!(vault.local().outline()[0].title, "Rust OS");
 
     fs::write(
         root.join("projects/first/project.md"),
@@ -159,7 +158,7 @@ fn watches_populated_projects_directory_moved_into_vault() {
     )
     .unwrap();
     await_refresh(&mut watch, &root, &mut state, &mut vault);
-    assert_eq!(vault.outline()[0].title, "New title");
+    assert_eq!(vault.local().outline()[0].title, "New title");
 }
 
 #[test]
@@ -170,11 +169,11 @@ fn removes_deleted_calendar_markdown_from_projection() {
     let path = root.join("calendar/event.md");
     fs::write(&path, EVENT).unwrap();
     let (mut watch, mut state, mut vault) = session(root);
-    assert_eq!(vault.calendar()[0].title, "远程讨论");
+    assert_eq!(vault.local().calendar()[0].title, "远程讨论");
 
     fs::remove_file(path).unwrap();
     await_refresh(&mut watch, root, &mut state, &mut vault);
-    assert!(vault.calendar().is_empty());
+    assert!(vault.local().calendar().is_empty());
 }
 
 #[test]
@@ -223,5 +222,5 @@ fn unchanged_local_write_notification_keeps_action_feedback() {
     await_change(&mut watch);
     assert!(!state.refresh_external(root, &mut vault));
     assert_eq!(state.message, "Time block saved");
-    assert_eq!(vault.outline()[0].title, "Saved title");
+    assert_eq!(vault.local().outline()[0].title, "Saved title");
 }

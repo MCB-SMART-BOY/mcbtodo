@@ -13,7 +13,7 @@ fn day(value: &str) -> NaiveDate {
     value.parse().unwrap()
 }
 
-fn project_vault(root: &Path) -> (Vault, Id) {
+fn project_vault(root: &Path) -> (Workspace, Id) {
     let id = Id::new_v4();
     VaultStore::new(root, ZONE)
         .create_project(CreateProject {
@@ -29,10 +29,10 @@ fn project_vault(root: &Path) -> (Vault, Id) {
             body: String::new(),
         })
         .unwrap();
-    (Vault::load(root, ZONE).unwrap(), id)
+    (Workspace::load(root, ZONE).unwrap(), id)
 }
 
-pub(super) fn press(state: &mut State, vault: &Vault, input: &str) -> Action {
+pub(super) fn press(state: &mut State, vault: &Workspace, input: &str) -> Action {
     let mut action = Action::Continue;
     for character in input.chars() {
         assert_eq!(action, Action::Continue);
@@ -134,7 +134,7 @@ fn default_reminder_keeps_the_form_and_does_not_write_when_the_daemon_is_absent(
     let paths = mcbtodo_platform::WorkspacePaths::from_home(root.path().to_owned());
     paths.initialize().unwrap();
     let vault_root = paths.vault_root();
-    let mut vault = Vault::load(&vault_root, ZONE).unwrap();
+    let mut vault = Workspace::load(&vault_root, ZONE).unwrap();
     let mut state = State::new(day("2026-11-25"));
     let Action::CreateReminder(request) = press(
         &mut state,
@@ -161,7 +161,7 @@ fn reminder_response_loss_reports_uuid_without_replay_or_local_write() {
     let paths = WorkspacePaths::from_home(home.path().to_owned());
     paths.initialize().unwrap();
     let root = paths.vault_root();
-    let mut vault = Vault::load(&root, ZONE).unwrap();
+    let mut vault = Workspace::load(&root, ZONE).unwrap();
     let mut state = State::new(day("2026-11-25"));
     let Action::CreateReminder(request) = press(
         &mut state,
@@ -210,10 +210,10 @@ fn reminder_from_selected_outline_task_keeps_its_target_binding() {
             },
             title: "Prepare review".into(),
             body: String::new(),
-            expected_revision: vault.revision(project_id).unwrap().clone(),
+            expected_revision: vault.local().revision(project_id).unwrap().clone(),
         })
         .unwrap();
-    vault = Vault::load(root.path(), ZONE).unwrap();
+    vault = Workspace::load(root.path(), ZONE).unwrap();
     let mut state = State::new(day("2026-11-25"));
     state.switch(View::Outline, &vault);
     state.vertical(true, &vault);
@@ -241,12 +241,12 @@ fn timer_and_reminder_use_the_selected_daemon_outline_target() -> Result<()> {
     let home = tempfile::tempdir()?;
     let paths = WorkspacePaths::from_home(home.path().to_owned());
     paths.initialize()?;
-    let vault = Vault::load(&paths.vault_root(), ZONE)?;
-    let rows = mcbtodo_application::project_outline(&tests::fixture());
+    let vault = Workspace::load(&paths.vault_root(), ZONE)?;
+    let rows = mcbtodo_application::project_outline(tests::fixture().local());
     let task = rows.iter().position(|row| row.depth == 1).unwrap();
     let unit = rows.iter().position(|row| row.depth == 2).unwrap();
     let (task_id, unit_id) = (rows[task].id, rows[unit].id);
-    assert!(vault.revision(task_id).is_none() && vault.revision(unit_id).is_none());
+    assert!(vault.local().revision(task_id).is_none() && vault.local().revision(unit_id).is_none());
 
     let listener = UnixListener::bind(paths.socket_path())?;
     let peer = thread::spawn(move || -> Result<()> {
@@ -257,7 +257,7 @@ fn timer_and_reminder_use_the_selected_daemon_outline_target() -> Result<()> {
         Ok(())
     });
     let mut state = State::new(day("2026-11-25"));
-    state.daemon_views = Some(daemon_views::DaemonViews::new(paths));
+    let vault = Workspace::daemon(vault.timezone(), paths);
     state.view = View::Outline;
     state.row = unit;
     assert_eq!(
@@ -300,11 +300,12 @@ fn unavailable_daemon_outline_does_not_drop_the_timer_or_reminder_binding() -> R
     let mut state = State::new(day("2026-11-25"));
     state.view = View::Outline;
     state.row = vault
+        .local()
         .outline()
         .iter()
         .position(|row| row.depth == 2)
         .unwrap();
-    state.daemon_views = Some(daemon_views::DaemonViews::new(paths));
+    let vault = Workspace::daemon(vault.timezone(), paths);
 
     for view in [View::Outline, View::Day] {
         state.view = view;
@@ -346,6 +347,7 @@ fn task_capture_publishes_under_selected_project_and_focuses_the_task() {
     assert!(state.message.contains("Task saved"), "{}", state.message);
     let task_id = state.selected_document(&vault).expect("new task focused");
     let row = vault
+        .local()
         .outline()
         .into_iter()
         .find(|row| row.id == task_id)
@@ -359,6 +361,7 @@ fn task_capture_publishes_under_selected_project_and_focuses_the_task() {
     assert!(task_file.is_file());
     assert!(
         vault
+            .local()
             .outline()
             .iter()
             .any(|row| row.id == project_id && row.depth == 0)
@@ -396,10 +399,10 @@ fn task_capture_uses_the_revision_displayed_by_the_daemon_outline() -> Result<()
     let paths = WorkspacePaths::from_home(home.path().to_owned());
     paths.initialize()?;
     let root = paths.vault_root();
-    let (mut vault, project_id) = project_vault(&root);
+    let (vault, project_id) = project_vault(&root);
     let remote_revision = "a".repeat(64);
     assert_ne!(
-        vault.revision(project_id).unwrap().digest(),
+        vault.local().revision(project_id).unwrap().digest(),
         remote_revision
     );
 
@@ -433,7 +436,7 @@ fn task_capture_uses_the_revision_displayed_by_the_daemon_outline() -> Result<()
         Ok(sent)
     });
     let mut state = State::new(day("2026-11-25"));
-    state.daemon_views = Some(super::daemon_views::DaemonViews::new(paths.clone()));
+    let mut vault = Workspace::daemon(vault.timezone(), paths.clone());
     state.switch(View::Outline, &vault);
     let displayed = super::calendar_tests::screen(&state, &vault, 80, 16);
     assert!(
@@ -466,8 +469,8 @@ fn connected_task_capture_focuses_the_new_daemon_document() -> Result<()> {
     let paths = WorkspacePaths::from_home(home.path().to_owned());
     paths.initialize()?;
     let root = paths.vault_root();
-    let (mut vault, project_id) = project_vault(&root);
-    let rows = mcbtodo_application::project_outline(&vault);
+    let (vault, project_id) = project_vault(&root);
+    let rows = mcbtodo_application::project_outline(vault.local());
     let listener = UnixListener::bind(paths.socket_path())?;
     let peer = thread::spawn(move || -> Result<Id> {
         let (mut stream, _) = listener.accept()?;
@@ -501,7 +504,7 @@ fn connected_task_capture_focuses_the_new_daemon_document() -> Result<()> {
     });
 
     let mut state = State::new(day("2026-11-25"));
-    state.daemon_views = Some(daemon_views::DaemonViews::new(paths.clone()));
+    let mut vault = Workspace::daemon(vault.timezone(), paths.clone());
     state.switch(View::Outline, &vault);
     assert_eq!(state.selected_document(&vault), Some(project_id));
     let Action::CreateTask(request) = press(&mut state, &vault, " ctWrite tests\n") else {
@@ -512,7 +515,7 @@ fn connected_task_capture_focuses_the_new_daemon_document() -> Result<()> {
     assert!(matches!(state.overlay, Overlay::None));
     assert_eq!(state.selected_document(&vault), Some(task_id));
     assert_eq!(state.message, "Task saved");
-    assert!(vault.source(task_id).is_none());
+    assert!(Vault::load(&root, ZONE)?.source(task_id).is_none());
     Ok(())
 }
 
@@ -524,7 +527,7 @@ fn default_task_capture_does_not_repeat_a_request_without_a_response() {
     paths.initialize().unwrap();
     let root = paths.vault_root();
     let (mut vault, project_id) = project_vault(&root);
-    let observed = vault.revision(project_id).unwrap().digest();
+    let observed = vault.local().revision(project_id).unwrap().digest();
     let mut state = State::new(day("2026-11-25"));
     state.switch(View::Outline, &vault);
     let Action::CreateTask(request) = press(&mut state, &vault, " ctWrite tests\n") else {
@@ -595,7 +598,7 @@ fn task_capture_keeps_form_open_and_preserves_a_concurrent_project_edit() {
         panic!("expected task capture");
     };
 
-    let project_path = vault.source(project_id).unwrap().to_path_buf();
+    let project_path = vault.local().source(project_id).unwrap().to_path_buf();
     let before = fs::read(&project_path).unwrap();
     let mut edited = before.clone();
     edited.extend_from_slice(b"\nExternal edit\n");
@@ -628,7 +631,7 @@ fn project_form_defaults_to_the_inclusive_range_in_reverse_selection() {
 #[test]
 fn invalid_project_range_keeps_fields_available_and_escape_cancels() {
     let root = tempfile::tempdir().unwrap();
-    let vault = Vault::load(root.path(), ZONE).unwrap();
+    let vault = Workspace::load(root.path(), ZONE).unwrap();
     let mut state = State::new(day("2026-11-25"));
     assert_eq!(
         press(&mut state, &vault, " cpResearch\n\n2026-11-24\n"),
@@ -656,7 +659,7 @@ fn malformed_deadline_date_is_reported_instead_of_using_the_default() {
     assert!(rendered.contains("Due  invalid"), "{rendered}");
 }
 
-fn save(state: &mut State, root: &Path, vault: &mut Vault, input: &str) -> Id {
+fn save(state: &mut State, root: &Path, vault: &mut Workspace, input: &str) -> Id {
     let before = Vault::load(root, vault.timezone()).unwrap();
     let paths = WorkspacePaths::from_home(root.to_owned());
     let Action::CreateCalendar(submission) = press(state, vault, input) else {
@@ -672,7 +675,7 @@ fn save(state: &mut State, root: &Path, vault: &mut Vault, input: &str) -> Id {
 #[test]
 fn keyboard_creates_a_long_term_project_as_a_nonbusy_active_period() {
     let root = tempfile::tempdir().unwrap();
-    let mut vault = Vault::load(root.path(), ZONE).unwrap();
+    let mut vault = Workspace::load(root.path(), ZONE).unwrap();
     let mut state = State::new(day("2026-11-20"));
     let id = save(
         &mut state,
@@ -681,9 +684,9 @@ fn keyboard_creates_a_long_term_project_as_a_nonbusy_active_period() {
         " cpLong-term research\n\n2027-03-01\n",
     );
     assert_eq!(state.day, day("2026-11-20"));
-    let persisted = Vault::load(root.path(), ZONE).unwrap();
-    assert!(persisted.outline().iter().any(|row| row.id == id));
-    let entries = persisted.calendar();
+    let persisted = Workspace::load(root.path(), ZONE).unwrap();
+    assert!(persisted.local().outline().iter().any(|row| row.id == id));
+    let entries = persisted.local().calendar();
     let entry = entries.iter().find(|entry| entry.id == id).unwrap();
     assert_eq!(entry.title, "Long-term research");
     assert_eq!(entry.kind, CalendarKind::ActivePeriod);
@@ -710,7 +713,7 @@ fn keyboard_creates_a_long_term_project_as_a_nonbusy_active_period() {
 #[test]
 fn keyboard_creates_a_busy_all_day_event_with_inclusive_date_precision() {
     let root = tempfile::tempdir().unwrap();
-    let mut vault = Vault::load(root.path(), ZONE).unwrap();
+    let mut vault = Workspace::load(root.path(), ZONE).unwrap();
     let mut state = State::new(day("2026-11-24"));
     let id = save(
         &mut state,
@@ -718,7 +721,7 @@ fn keyboard_creates_a_busy_all_day_event_with_inclusive_date_precision() {
         &mut vault,
         "vl ceCampus event\n\n\n",
     );
-    let persisted = Vault::load(root.path(), ZONE).unwrap();
+    let persisted = Workspace::load(root.path(), ZONE).unwrap();
     let entries = State::new(day("2026-11-25"))
         .day_entries(&persisted)
         .unwrap();
@@ -746,7 +749,7 @@ fn keyboard_creates_a_busy_all_day_event_with_inclusive_date_precision() {
 #[test]
 fn month_selection_creates_an_inclusive_all_day_event_across_month_boundary() {
     let root = tempfile::tempdir().unwrap();
-    let mut vault = Vault::load(root.path(), ZONE).unwrap();
+    let mut vault = Workspace::load(root.path(), ZONE).unwrap();
     let mut state = State::new(day("2026-11-30"));
 
     press(&mut state, &vault, "vl ce");
@@ -758,7 +761,7 @@ fn month_selection_creates_an_inclusive_all_day_event_across_month_boundary() {
     state.create_calendar(root.path(), &mut vault, &paths, request);
     assert_eq!(state.message, "All-day event saved");
 
-    let persisted = Vault::load(root.path(), ZONE).unwrap();
+    let persisted = Workspace::load(root.path(), ZONE).unwrap();
     for selected_day in ["2026-11-30", "2026-12-01"] {
         assert!(
             State::new(day(selected_day))
@@ -786,7 +789,7 @@ fn default_calendar_creation_keeps_its_draft_without_a_daemon() {
     let paths = WorkspacePaths::from_home(home.path().to_owned());
     paths.initialize().unwrap();
     let root = paths.vault_root();
-    let mut vault = Vault::load(&root, ZONE).unwrap();
+    let mut vault = Workspace::load(&root, ZONE).unwrap();
     for (input, title) in [
         ("vl ceCampus event\n\n\n", "Campus event"),
         (" cpResearch project\n\n\n", "Research project"),
@@ -814,7 +817,7 @@ fn default_all_day_event_reports_its_identity_without_replaying_a_lost_response(
     let paths = WorkspacePaths::from_home(home.path().to_owned());
     paths.initialize().unwrap();
     let root = paths.vault_root();
-    let mut vault = Vault::load(&root, ZONE).unwrap();
+    let mut vault = Workspace::load(&root, ZONE).unwrap();
     let mut state = State::new(day("2026-11-30"));
     let Action::CreateCalendar(request) = press(&mut state, &vault, "vl ceCampus event\n\n\n")
     else {
@@ -846,12 +849,12 @@ fn default_all_day_event_reports_its_identity_without_replaying_a_lost_response(
 #[test]
 fn deadline_creation_publishes_a_project_with_no_busy_period() {
     let root = tempfile::tempdir().unwrap();
-    let mut vault = Vault::load(root.path(), ZONE).unwrap();
+    let mut vault = Workspace::load(root.path(), ZONE).unwrap();
     let mut state = State::new(day("2026-11-24"));
     let id = save(&mut state, root.path(), &mut vault, "vl cdSend report\n\n");
-    let persisted = Vault::load(root.path(), ZONE).unwrap();
-    assert_eq!(persisted.outline().len(), 1);
-    assert!(persisted.source(id).unwrap().is_file());
+    let persisted = Workspace::load(root.path(), ZONE).unwrap();
+    assert_eq!(persisted.local().outline().len(), 1);
+    assert!(persisted.local().source(id).unwrap().is_file());
     let entries = state.agenda(&persisted).unwrap();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].id, id);
@@ -871,7 +874,7 @@ fn deadline_creation_publishes_a_project_with_no_busy_period() {
 #[test]
 fn failed_vault_write_leaves_form_open_for_retry() {
     let root = tempfile::tempdir().unwrap();
-    let mut vault = Vault::load(root.path(), ZONE).unwrap();
+    let mut vault = Workspace::load(root.path(), ZONE).unwrap();
     let mut state = State::new(day("2026-11-25"));
     let Action::CreateCalendar(request) = press(&mut state, &vault, " ceRetryable event\t\t\n")
     else {
@@ -882,17 +885,17 @@ fn failed_vault_write_leaves_form_open_for_retry() {
     let rendered = screen(&state, &vault, 80, 14);
     assert!(rendered.contains("failed"), "{rendered}");
     assert!(rendered.contains("Retryable event"), "{rendered}");
-    assert!(vault.calendar().is_empty());
+    assert!(vault.local().calendar().is_empty());
 
     let id = save(&mut state, root.path(), &mut vault, "\n");
-    assert_eq!(vault.calendar()[0].id, id);
+    assert_eq!(vault.local().calendar()[0].id, id);
 }
 
 #[test]
 fn a_project_deadline_added_outside_the_tui_refreshes_an_open_snapshot() {
     let root = tempfile::tempdir().unwrap();
-    let mut observer_vault = Vault::load(root.path(), ZONE).unwrap();
-    let mut writer_vault = Vault::load(root.path(), ZONE).unwrap();
+    let mut observer_vault = Workspace::load(root.path(), ZONE).unwrap();
+    let mut writer_vault = Workspace::load(root.path(), ZONE).unwrap();
     let date = day("2026-11-25");
     let mut observer = State::new(date);
     let id = save(

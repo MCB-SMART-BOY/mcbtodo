@@ -1,20 +1,19 @@
 use std::path::Path;
 
 use anyhow::Context;
-use chrono_tz::Tz;
 use mcbtodo_application::{VaultCommands, VaultQueries, deadline_edit_context};
 use mcbtodo_domain::Id;
-use mcbtodo_vault::{Vault, WriteError};
+use mcbtodo_vault::WriteError;
 
-use super::{Overlay, State, deadline};
+use super::{Overlay, State, Workspace, deadline};
 
 impl State {
-    pub(super) fn open_deadline(&mut self, vault: &Vault, id: Id) {
-        let context = match &self.daemon_views {
-            Some(service) => service
+    pub(super) fn open_deadline(&mut self, vault: &Workspace, id: Id) {
+        let context = match vault {
+            Workspace::Daemon { views, .. } => views
                 .deadline_context(id)
                 .map(|(revision, value)| (deadline::EditRevision::Daemon(revision), value)),
-            None => deadline_edit_context(vault, id)
+            Workspace::Local(vault) => deadline_edit_context(vault, id)
                 .context("Selection does not support deadlines")
                 .map(|context| {
                     (
@@ -33,15 +32,16 @@ impl State {
         }
     }
 
-    pub(super) fn refresh_deadline(&mut self, root: &Path, timezone: Tz) {
+    pub(super) fn refresh_deadline(&mut self, root: &Path, vault: &Workspace) {
         let Overlay::Deadline(form) = &mut self.overlay else {
             return;
         };
-        let context = match &self.daemon_views {
-            Some(service) => service
+        let timezone = vault.timezone();
+        let context = match vault {
+            Workspace::Daemon { views, .. } => views
                 .deadline_context(form.id)
                 .map(|(revision, value)| (deadline::EditRevision::Daemon(revision), value)),
-            None => VaultQueries::new(root, timezone)
+            Workspace::Local(_) => VaultQueries::new(root, timezone)
                 .deadline_edit_context(form.id)
                 .and_then(|context| context.context("Selected document is no longer available"))
                 .map(|context| {
@@ -63,7 +63,7 @@ impl State {
     pub(super) fn set_deadline(
         &mut self,
         root: &Path,
-        vault: &mut Vault,
+        vault: &mut Workspace,
         request: deadline::Submission,
     ) {
         let deadline::Submission {
@@ -71,15 +71,15 @@ impl State {
             deadline,
             revision,
         } = request;
-        let revision = match (&self.daemon_views, revision) {
-            (None, deadline::EditRevision::Local(revision)) => revision,
-            (Some(service), deadline::EditRevision::Daemon(revision)) => {
+        let revision = match (&*vault, revision) {
+            (Workspace::Local(_), deadline::EditRevision::Local(revision)) => revision,
+            (Workspace::Daemon { views, .. }, deadline::EditRevision::Daemon(revision)) => {
                 use mcbtodo_client::daemon_client::WriteFailure;
 
-                self.message = match service.set_deadline(id, revision, deadline) {
+                self.message = match views.set_deadline(id, revision, deadline) {
                     Ok(synced) => {
                         self.overlay = Overlay::None;
-                        self.invalidate_daemon_views();
+                        vault.invalidate_daemon_views();
                         if synced {
                             "Deadline saved".into()
                         } else {
@@ -97,7 +97,7 @@ impl State {
                     }
                     Err(WriteFailure::Unknown) => {
                         self.overlay = Overlay::None;
-                        self.invalidate_daemon_views();
+                        vault.invalidate_daemon_views();
                         format!(
                             "Deadline update outcome unknown · Check document {id} before retrying"
                         )

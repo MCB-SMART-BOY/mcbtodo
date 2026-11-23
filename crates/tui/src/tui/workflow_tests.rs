@@ -5,11 +5,11 @@ use uuid::Uuid;
 
 use super::{calendar_tests::screen, tests::fixture, *};
 
-fn key(state: &mut State, vault: &Vault, code: KeyCode) -> Action {
+fn key(state: &mut State, vault: &Workspace, code: KeyCode) -> Action {
     state.handle(KeyEvent::new(code, KeyModifiers::NONE), vault)
 }
 
-fn open(state: &mut State, vault: &Vault) {
+fn open(state: &mut State, vault: &Workspace) {
     for ch in [' ', 'u'] {
         key(state, vault, KeyCode::Char(ch));
     }
@@ -35,7 +35,7 @@ fn run(id: u128, state: RunState, steps: u32) -> RunSummary {
     }
 }
 
-fn open_confirmation(state: &mut State, vault: &Vault, choice: char, run: RunSummary) {
+fn open_confirmation(state: &mut State, vault: &Workspace, choice: char, run: RunSummary) {
     let inspect = WorkflowRequest::Inspect { run_id: run.id };
     assert_eq!(
         key(state, vault, KeyCode::Char(choice)),

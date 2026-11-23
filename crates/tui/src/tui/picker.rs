@@ -1,8 +1,6 @@
+use super::Workspace;
 use anyhow::Result;
 use mcbtodo_domain::Id;
-use mcbtodo_vault::Vault;
-
-use super::daemon_views::{DaemonViews, outline_rows};
 
 pub(super) struct Match {
     pub(super) id: Id,
@@ -10,13 +8,10 @@ pub(super) struct Match {
     pub(super) depth: usize,
 }
 
-pub(super) fn matches(
-    vault: &Vault,
-    service: Option<&DaemonViews>,
-    query: &str,
-) -> Result<Vec<Match>> {
+pub(super) fn matches(workspace: &Workspace, query: &str) -> Result<Vec<Match>> {
     let query_lower = query.to_lowercase();
-    let mut matches: Vec<_> = outline_rows(vault, service)?
+    let mut matches: Vec<_> = workspace
+        .outline()?
         .iter()
         .filter_map(|row| {
             let score = score(query, &row.title).or_else(|| {

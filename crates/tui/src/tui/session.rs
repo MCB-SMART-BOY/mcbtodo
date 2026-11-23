@@ -10,6 +10,7 @@ use std::{
 
 use anyhow::{Context, Result, ensure};
 use chrono::NaiveDate;
+use chrono_tz::Tz;
 use crossterm::{
     cursor::Show,
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
@@ -18,11 +19,10 @@ use crossterm::{
 };
 use mcbtodo_domain::Id;
 use mcbtodo_platform::{AppConfig, AppConfigSnapshot, HomeViewPolicy, TuiTheme, WorkspacePaths};
-use mcbtodo_vault::Vault;
 use ratatui::{DefaultTerminal, Terminal, backend::CrosstermBackend};
 
 use super::{
-    Action, State, View, daemon_views, initial_view, keymap, proposal_review, render, screen_data,
+    Action, State, View, Workspace, initial_view, keymap, proposal_review, render, screen_data,
     screen_model, settings, theme, watch,
 };
 
@@ -84,24 +84,22 @@ fn no_color_requested() -> bool {
     env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty())
 }
 
-pub(super) fn present<'a>(state: &'a State, vault: &Vault) -> screen_model::ScreenModel<'a> {
+pub(super) fn present<'a>(state: &'a State, vault: &Workspace) -> screen_model::ScreenModel<'a> {
     let data = screen_data::ScreenData::load(state, vault);
     screen_model::ScreenModel::project(state, vault.timezone(), data)
 }
 
 pub fn run(
     root: &Path,
-    mut vault: Vault,
+    timezone: Tz,
     day: NaiveDate,
     paths: &WorkspacePaths,
     config: AppConfig,
     has_timezone_override: bool,
 ) -> Result<()> {
+    let mut vault = Workspace::open(root, timezone, paths)?;
     require_terminal()?;
     let mut state = State::new(day);
-    if mcbtodo_client::daemon_client::owns_vault(paths, root)? {
-        state.daemon_views = Some(daemon_views::DaemonViews::new(paths.clone()));
-    }
     state.has_timezone_override = has_timezone_override;
     state.no_color = no_color_requested();
     let mut theme = theme::Theme::for_session(config.tui_theme, state.no_color);
@@ -117,8 +115,8 @@ pub fn run(
     }
     let mut watcher = match watch::Watcher::new(root) {
         Ok(watcher) => {
-            // Close the gap between the initial CLI load and watch registration.
-            if state.daemon_views.is_none() {
+            // Close the gap between the local snapshot load and watch registration.
+            if matches!(vault, Workspace::Local(_)) {
                 state.refresh_external(root, &mut vault);
             }
             Some(watcher)
@@ -201,7 +199,7 @@ pub fn run(
                     state.create_time_block(root, &mut vault, paths, block);
                 }
                 Action::OpenDeadline(id) => state.open_deadline(&vault, id),
-                Action::RefreshDeadline => state.refresh_deadline(root, vault.timezone()),
+                Action::RefreshDeadline => state.refresh_deadline(root, &vault),
                 Action::SetDeadline(request) => {
                     state.set_deadline(root, &mut vault, request);
                 }

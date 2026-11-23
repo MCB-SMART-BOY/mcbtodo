@@ -5,11 +5,10 @@ use std::rc::Rc;
 use anyhow::Result;
 use mcbtodo_application::{CalendarItem, InboxSummary, OutlineItem};
 use mcbtodo_domain::Id;
-use mcbtodo_vault::Vault;
 
 use super::{
-    Overlay, State, View, creation, deadline, graph, picker, review::ReviewViewport, settings,
-    time_block, workflow,
+    Overlay, State, View, Workspace, creation, deadline, graph, picker, review::ReviewViewport,
+    settings, time_block, workflow,
 };
 
 pub(super) enum ScreenData<'a> {
@@ -41,7 +40,7 @@ pub(super) enum ViewRows {
 }
 
 impl<'a> ScreenData<'a> {
-    pub(super) fn load(state: &'a State, vault: &Vault) -> Self {
+    pub(super) fn load(state: &'a State, vault: &Workspace) -> Self {
         if state.view == View::Workflow
             && matches!(state.workflow.panel, workflow::Panel::Confirm(_))
         {
@@ -62,11 +61,9 @@ impl<'a> ScreenData<'a> {
             Overlay::Deadline(form) => Self::Deadline(form),
             Overlay::TimeBlock(form) => Self::TimeBlock(form),
             Overlay::GraphEdit { edit, viewport } => Self::GraphEdit(edit, viewport),
-            Overlay::Picker { query, row } => Self::Picker(
-                query,
-                *row,
-                picker::matches(vault, state.daemon_views.as_ref(), query),
-            ),
+            Overlay::Picker { query, row } => {
+                Self::Picker(query, *row, picker::matches(vault, query))
+            }
             Overlay::InboxProject { row, projects, .. } => Self::InboxProject(projects, *row),
             Overlay::Proposals => Self::Proposals,
             Overlay::Help(viewport) => Self::Help(viewport),
@@ -75,7 +72,7 @@ impl<'a> ScreenData<'a> {
 }
 
 impl ViewRows {
-    fn load(state: &State, vault: &Vault) -> Result<Self> {
+    fn load(state: &State, vault: &Workspace) -> Result<Self> {
         Ok(match state.view {
             View::Month => Self::Month(state.calendar_entries(vault, View::Month)?),
             View::Week => Self::Week(state.calendar_entries(vault, View::Week)?),

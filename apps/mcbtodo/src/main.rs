@@ -198,9 +198,8 @@ fn run(cli: Cli) -> Result<()> {
             let Some((root, timezone, config)) = location.resolve_tui(&paths)? else {
                 return Ok(());
             };
-            let vault = Vault::load(&root, timezone)?;
             let day = date.unwrap_or_else(|| Utc::now().with_timezone(&timezone).date_naive());
-            tui::run(&root, vault, day, &paths, config, has_timezone_override)?;
+            tui::run(&root, timezone, day, &paths, config, has_timezone_override)?;
         }
         Command::Workflow { command } => workflow::run(command, &paths)?,
         Command::Init => {

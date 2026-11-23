@@ -89,6 +89,23 @@ pub(crate) fn run(root: &Path, bin_dir: &Path, sandbox: bool) -> Result<()> {
         ],
     )?;
     verify_first_run(&smoke)?;
+    let projects = smoke.paths().vault_root().join("projects");
+    fs::create_dir(&projects)?;
+    let invalid_project = projects.join("invalid");
+    fs::create_dir(&invalid_project)?;
+    fs::write(invalid_project.join("project.md"), "---\ninvalid: [\n---\n")?;
+    ensure!(
+        !smoke
+            .command("mcbtodo")
+            .arg("validate")
+            .output()?
+            .status
+            .success(),
+        "the malformed document must fail local Vault validation"
+    );
+    drive_default_tui(smoke.command("mcbtodo"), &[("Start mcbtodo-daemon", "q")])?;
+    fs::remove_dir_all(invalid_project)?;
+    fs::remove_dir(projects)?;
     let settings_home = temp.path().join("settings-home");
     fs::create_dir(&settings_home)?;
     Smoke {

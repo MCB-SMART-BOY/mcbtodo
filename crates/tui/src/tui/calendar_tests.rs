@@ -4,7 +4,7 @@ use std::time::Duration;
 use super::{tests::fixture, *};
 use ratatui::backend::TestBackend;
 
-fn press(state: &mut State, vault: &Vault, keys: &str) {
+fn press(state: &mut State, vault: &Workspace, keys: &str) {
     for key in keys.chars() {
         let code = match key {
             '\n' => KeyCode::Enter,
@@ -15,7 +15,7 @@ fn press(state: &mut State, vault: &Vault, keys: &str) {
     }
 }
 
-pub(super) fn screen(state: &State, vault: &Vault, width: u16, height: u16) -> String {
+pub(super) fn screen(state: &State, vault: &Workspace, width: u16, height: u16) -> String {
     projected_screen(&session::present(state, vault), width, height)
 }
 
@@ -55,7 +55,7 @@ fn daemon_calendar_uses_the_same_rows_for_render_selection_and_refresh() -> Resu
     let paths = WorkspacePaths::from_home(home.path().to_path_buf());
     paths.initialize()?;
     let root = paths.vault_root();
-    let mut vault = Vault::load(&root, chrono_tz::UTC)?;
+    let vault = Workspace::load(&root, chrono_tz::UTC)?;
     let start = "2026-11-24".parse()?;
     let through = "2026-11-25".parse()?;
     let occurrence = |date, title: &str| -> Result<CalendarItem> {
@@ -85,7 +85,7 @@ fn daemon_calendar_uses_the_same_rows_for_render_selection_and_refresh() -> Resu
         Ok(())
     });
     let mut state = State::new(through);
-    state.daemon_views = Some(daemon_views::DaemonViews::new(paths));
+    let mut vault = Workspace::daemon(vault.timezone(), paths);
     state.anchor = Some(start);
     state.switch(View::Agenda, &vault);
     assert!(screen(&state, &vault, 80, 16).contains("Earlier occurrence"));
@@ -145,7 +145,7 @@ recurrence:
 ",
     )
     .unwrap();
-    let vault = Vault::load(root.path(), chrono_tz::Asia::Shanghai).unwrap();
+    let vault = Workspace::load(root.path(), chrono_tz::Asia::Shanghai).unwrap();
     let mut state = State::new("2026-12-01".parse().unwrap());
     let compact = screen(&state, &vault, 24, 5);
     assert!(compact.contains("Tue 01*"), "{compact}");
@@ -188,7 +188,7 @@ recurrence:
     )
     .unwrap();
     let zone = chrono_tz::America::New_York;
-    let mut vault = Vault::load(root.path(), zone).unwrap();
+    let mut vault = Workspace::load(root.path(), zone).unwrap();
     let day = "2026-11-01".parse().unwrap();
     let mut state = State::new(day);
     press(&mut state, &vault, ":view day\n");
@@ -235,7 +235,7 @@ recurrence:
 ",
     )
     .unwrap();
-    let vault = Vault::load(root.path(), chrono_tz::Asia::Shanghai).unwrap();
+    let vault = Workspace::load(root.path(), chrono_tz::Asia::Shanghai).unwrap();
     let mut state = State::new("2024-01-01".parse().unwrap());
     let compact = screen(&state, &vault, 24, 5);
     assert!(compact.contains("Calendar error"), "{compact}");
@@ -416,7 +416,7 @@ availability: free
 "#,
     )
     .unwrap();
-    let vault = Vault::load(dir.path(), "Asia/Shanghai".parse().unwrap()).unwrap();
+    let vault = Workspace::load(dir.path(), "Asia/Shanghai".parse().unwrap()).unwrap();
     let mut state = State::new("2026-11-25".parse().unwrap());
 
     press(&mut state, &vault, ":view timeline\n");
@@ -490,7 +490,7 @@ recurrence:
 "#,
     )
     .unwrap();
-    let mut vault = Vault::load(dir.path(), "Asia/Shanghai".parse().unwrap()).unwrap();
+    let mut vault = Workspace::load(dir.path(), "Asia/Shanghai".parse().unwrap()).unwrap();
     let mut state = State::new("2026-11-24".parse().unwrap());
     state.anchor = Some(state.day);
     state.day = "2026-11-26".parse().unwrap();
@@ -550,7 +550,7 @@ recurrence:
 "#,
     )
     .unwrap();
-    let vault = Vault::load(dir.path(), "Asia/Shanghai".parse().unwrap()).unwrap();
+    let vault = Workspace::load(dir.path(), "Asia/Shanghai".parse().unwrap()).unwrap();
     let target_day = "2026-11-26".parse().unwrap();
     let mut state = State::new(target_day);
     state.anchor = Some(target_day);
@@ -612,7 +612,7 @@ recurrence:
 "#,
     )
     .unwrap();
-    let vault = Vault::load(dir.path(), "Asia/Shanghai".parse().unwrap()).unwrap();
+    let vault = Workspace::load(dir.path(), "Asia/Shanghai".parse().unwrap()).unwrap();
     let target_day = "2026-11-26".parse().unwrap();
     let range_start = "2026-11-24".parse().unwrap();
     let transitions = [
@@ -704,7 +704,7 @@ recurrence:
 "#,
     )
     .unwrap();
-    let vault = Vault::load(dir.path(), "Asia/Shanghai".parse().unwrap()).unwrap();
+    let vault = Workspace::load(dir.path(), "Asia/Shanghai".parse().unwrap()).unwrap();
     let mut state = State::new("2026-11-24".parse().unwrap());
     state.anchor = Some(state.day);
     state.day = "2026-11-26".parse().unwrap();
@@ -747,7 +747,7 @@ availability: busy
 "#,
     )
     .unwrap();
-    let mut vault = Vault::load(dir.path(), "Asia/Shanghai".parse().unwrap()).unwrap();
+    let mut vault = Workspace::load(dir.path(), "Asia/Shanghai".parse().unwrap()).unwrap();
     let target_day = "2026-11-25".parse().unwrap();
     let mut state = State::new(target_day);
     state.anchor = Some(target_day);
@@ -980,7 +980,7 @@ availability: busy
 "#,
     )
     .unwrap();
-    let vault = Vault::load(dir.path(), "Asia/Shanghai".parse().unwrap()).unwrap();
+    let vault = Workspace::load(dir.path(), "Asia/Shanghai".parse().unwrap()).unwrap();
     let mut state = State::new("2026-11-25".parse().unwrap());
 
     press(&mut state, &vault, " uw");
@@ -1038,7 +1038,7 @@ availability: busy
 "#,
     )
     .unwrap();
-    let vault = Vault::load(dir.path(), "America/New_York".parse().unwrap()).unwrap();
+    let vault = Workspace::load(dir.path(), "America/New_York".parse().unwrap()).unwrap();
     let mut state = State::new("2026-11-01".parse().unwrap());
     press(&mut state, &vault, " ud");
     let text = screen(&state, &vault, 84, 20);
@@ -1057,7 +1057,7 @@ fn graph_locates_outline_focus_and_follows_outgoing_and_incoming_edges() {
     let mut state = State::new("2026-11-25".parse().unwrap());
     let mapping_id = Id::parse_str("30000000-0000-4000-8000-000000000002").unwrap();
     state.view = View::Outline;
-    state.row = mcbtodo_application::project_outline(&vault)
+    state.row = mcbtodo_application::project_outline(vault.local())
         .iter()
         .position(|item| item.id == mapping_id)
         .unwrap();
@@ -1119,7 +1119,7 @@ fn graph_projection_cache_refreshes_with_the_validated_vault_snapshot() {
         1
     );
 
-    let path = vault.source(translation).unwrap().to_owned();
+    let path = vault.local().source(translation).unwrap().to_owned();
     let contents = std::fs::read_to_string(&path).unwrap();
     std::fs::write(
         &path,
@@ -1164,7 +1164,7 @@ fn narrow_graph_keeps_the_selected_node_in_the_visible_window() {
         )
         .unwrap();
     }
-    let vault = Vault::load(home.path(), "Asia/Shanghai".parse().unwrap()).unwrap();
+    let vault = Workspace::load(home.path(), "Asia/Shanghai".parse().unwrap()).unwrap();
     let mut state = State::new("2026-11-25".parse().unwrap());
     state.switch(View::Graph, &vault);
     let selected_row = state
@@ -1317,6 +1317,7 @@ fn graph_dependency_edit_previews_then_confirms_or_cancels() {
     assert!(matches!(state.overlay, Overlay::None));
     assert!(
         !vault
+            .local()
             .work_unit(translation)
             .unwrap()
             .data
@@ -1352,16 +1353,19 @@ fn graph_dependency_edit_previews_then_confirms_or_cancels() {
     };
     assert_eq!(edit.target, translation);
     assert!(edit.prerequisites.is_empty());
-    assert_eq!(edit.revision, vault.revision(translation).unwrap().digest());
+    assert_eq!(
+        edit.revision,
+        vault.local().revision(translation).unwrap().digest()
+    );
 }
 
-fn writable_project() -> (tempfile::TempDir, Vault) {
+fn writable_project() -> (tempfile::TempDir, Workspace) {
     let dir = tempfile::tempdir().unwrap();
     let vault = copy_project(dir.path());
     (dir, vault)
 }
 
-fn copy_project(root: &Path) -> Vault {
+fn copy_project(root: &Path) -> Workspace {
     let source =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/vault/projects/rust-os");
     let target = root.join("projects/rust-os");
@@ -1376,10 +1380,10 @@ fn copy_project(root: &Path) -> Vault {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::copy(source.join(relative), path).unwrap();
     }
-    Vault::load(root, chrono_tz::Asia::Shanghai).unwrap()
+    Workspace::load(root, chrono_tz::Asia::Shanghai).unwrap()
 }
 
-fn submit_time_block(state: &mut State, vault: &Vault) -> time_block::Submission {
+fn submit_time_block(state: &mut State, vault: &Workspace) -> time_block::Submission {
     match state.handle(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), vault) {
         Action::CreateTimeBlock(block) => block,
         action => panic!("expected a time block submission, got {action:?}"),
@@ -1464,7 +1468,7 @@ fn month_menu_creates_work_unit_time_block_on_the_selected_date() {
     press(&mut state, &vault, "15:00");
     let block = submit_time_block(&mut state, &vault);
     let (id, when) = (block.unit, block.when);
-    assert!(!vault.calendar().iter().any(|entry| {
+    assert!(!vault.local().calendar().iter().any(|entry| {
         entry.id == id && matches!(entry.occurrence, Occurrence::Span(Span::DateTimeSpan(span)) if span == when)
     }));
     let paths = WorkspacePaths::from_home(dir.path().to_owned());
@@ -1494,7 +1498,7 @@ fn default_time_block_leaves_the_work_unit_unchanged_when_the_daemon_is_absent()
     let mut state = State::new("2026-11-20".parse().unwrap());
     press(&mut state, &vault, " tb映射\n13:30\n15:00");
     let block = submit_time_block(&mut state, &vault);
-    let path = vault.source(block.unit).unwrap().to_owned();
+    let path = vault.local().source(block.unit).unwrap().to_owned();
     let original = std::fs::read(&path).unwrap();
 
     state.create_time_block(&root, &mut vault, &paths, block);
@@ -1511,7 +1515,7 @@ fn offline_time_block_picker_does_not_offer_locally_loaded_work_units() {
     let paths = WorkspacePaths::from_home(dir.path().to_owned());
     paths.initialize().unwrap();
     let mut state = State::new("2026-11-20".parse().unwrap());
-    state.daemon_views = Some(daemon_views::DaemonViews::new(paths));
+    let vault = Workspace::daemon(vault.timezone(), paths);
 
     press(&mut state, &vault, " tb");
 
@@ -1533,13 +1537,13 @@ fn time_block_retains_the_daemon_candidate_and_reviewed_revision_across_reload()
     let paths = WorkspacePaths::from_home(home.path().to_owned());
     paths.initialize()?;
     let root = paths.vault_root();
-    let mut vault = Vault::load(&root, chrono_tz::Asia::Shanghai)?;
+    let vault = Workspace::load(&root, chrono_tz::Asia::Shanghai)?;
     let reviewed = copy_project(&root);
     let unit = "30000000-0000-4000-8000-000000000002".parse()?;
-    assert!(vault.work_unit(unit).is_none());
-    let original_revision = reviewed.revision(unit).unwrap().digest();
-    let path = reviewed.source(unit).unwrap();
-    let rows = mcbtodo_application::project_outline(&reviewed);
+    assert!(vault.local().work_unit(unit).is_none());
+    let original_revision = reviewed.local().revision(unit).unwrap().digest();
+    let path = reviewed.local().source(unit).unwrap();
+    let rows = mcbtodo_application::project_outline(reviewed.local());
     let listener = UnixListener::bind(paths.socket_path())?;
     let peer = thread::spawn(move || -> Result<Request> {
         let (mut stream, _) = listener.accept()?;
@@ -1560,7 +1564,7 @@ fn time_block_retains_the_daemon_candidate_and_reviewed_revision_across_reload()
         Ok(request)
     });
     let mut state = State::new("2026-11-20".parse()?);
-    state.daemon_views = Some(daemon_views::DaemonViews::new(paths.clone()));
+    let mut vault = Workspace::daemon(vault.timezone(), paths.clone());
     press(&mut state, &vault, ":time-block\n映射");
     let picker = screen(&state, &vault, 80, 14);
     assert!(picker.contains("实现 Sv39 页表映射"), "{picker}");
@@ -1571,7 +1575,7 @@ fn time_block_retains_the_daemon_candidate_and_reviewed_revision_across_reload()
     let current = Vault::load(&root, chrono_tz::Asia::Shanghai)?;
     assert_ne!(current.revision(unit).unwrap().digest(), original_revision);
     assert!(state.refresh_external(&root, &mut vault));
-    assert!(vault.revision(unit).is_none());
+    assert!(matches!(vault, Workspace::Daemon { .. }));
 
     let block = submit_time_block(&mut state, &vault);
     assert_eq!(block.unit, unit);
@@ -1611,7 +1615,7 @@ fn default_time_block_response_loss_reports_the_interval_without_replaying() {
     press(&mut state, &vault, " tb映射\n13:30\n15:00");
     let block = submit_time_block(&mut state, &vault);
     let (unit, when, observed) = (block.unit, block.when, block.revision.clone());
-    let path = vault.source(unit).unwrap().to_owned();
+    let path = vault.local().source(unit).unwrap().to_owned();
     let original = std::fs::read(&path).unwrap();
 
     let sent = disconnect_after_request(&paths, || {
@@ -1640,7 +1644,7 @@ fn a_stale_time_block_write_keeps_the_form_and_preserves_concurrent_edits() {
     let mut state = State::new("2026-11-20".parse().unwrap());
     press(&mut state, &vault, " tb映射\n13:30\n15:00");
     let block = submit_time_block(&mut state, &vault);
-    let path = vault.source(block.unit).unwrap().to_owned();
+    let path = vault.local().source(block.unit).unwrap().to_owned();
     let edited = format!(
         "{}\nConcurrent edit.\n",
         std::fs::read_to_string(&path).unwrap()
@@ -1691,7 +1695,7 @@ fn graph_opens_the_selected_daemon_work_unit_absent_from_local_snapshot() -> Res
     let home = tempfile::tempdir()?;
     let paths = WorkspacePaths::from_home(home.path().to_owned());
     paths.initialize()?;
-    let vault = Vault::load(&paths.vault_root(), chrono_tz::UTC)?;
+    let vault = Workspace::load(&paths.vault_root(), chrono_tz::UTC)?;
     let listener = UnixListener::bind(paths.socket_path())?;
     let first = Id::from_u128(21);
     let second = Id::from_u128(22);
@@ -1754,7 +1758,7 @@ fn graph_opens_the_selected_daemon_work_unit_absent_from_local_snapshot() -> Res
     });
     let mut state = State::new("2026-11-25".parse()?);
     state.view = View::Outline;
-    state.daemon_views = Some(super::daemon_views::DaemonViews::new(paths.clone()));
+    let mut vault = Workspace::daemon(vault.timezone(), paths.clone());
     press(&mut state, &vault, "g");
     assert_eq!(state.view.label(), "Graph", "{}", state.message);
     assert_eq!(state.selected_document(&vault), Some(second));
@@ -1771,7 +1775,6 @@ fn graph_opens_the_selected_daemon_work_unit_absent_from_local_snapshot() -> Res
     ) else {
         panic!("expected the reviewed dependency edit");
     };
-    let mut vault = vault;
     state.set_graph_dependencies(&paths.vault_root(), &mut vault, edit);
     assert!(
         state.message.contains("WorkUnit changed"),

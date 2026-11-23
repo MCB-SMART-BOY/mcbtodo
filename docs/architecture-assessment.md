@@ -28,11 +28,12 @@ checks. macOS AArch64 and Windows x86-64 cross-checks passed for `mcbtodo`,
 `mcbtodo-client`, and `mcbtodo-tui` with warnings denied and the pkg-config
 SQLite path. Native execution on those targets was outside this run.
 
-The terminal session still opens a local Vault snapshot and watcher and
-issues synchronous queries. The shared client still contains local proposal
-storage and terminal confirmation. A GUI-ready boundary needs service-owned
-business requests and projections with presentation supplied by each
-frontend. The external plugin contract remains a design target.
+The default Linux terminal session starts with a service projection cache.
+Queries are synchronous and the TUI still uses a local watcher to trigger
+refresh. External Vault and non-Linux terminal sessions load local snapshots.
+The shared client contains local proposal storage and the terminal crate
+handles confirmation. GUI integration and the external plugin contract
+remain design targets.
 
 ### Runtime and data ownership
 
@@ -403,9 +404,8 @@ as a completed assignment.
 
 The socket regression covers a stale revision, writer contention, a
 successful assignment, and a retry after only the Task was published.
-The TUI regression exercises a captured entry and Project absent from its
-local snapshot. The TUI still loads a local Vault for other functionality
-and uses a client-side file watcher for refresh.
+The TUI regression exercises a captured entry and Project supplied through
+IPC. Connected TUI sessions use a client-side file watcher for refresh.
 
 ### Shared Graph browsing over local IPC
 
@@ -1843,8 +1843,10 @@ perform use-case work independently for some reads and interactions:
   a disconnected lookup. After startup, file-watch notifications and manual
   reload refresh the service projections using their existing queries. The
   connected reload test covers focus retention for a reordered service
-  response with the local Vault path unavailable. Startup still loads a local
-  Vault, and the TUI still installs a local file watcher.
+  response with the local Vault path unavailable. The default Linux session
+  opens without a local Vault snapshot. The executable smoke checks that the
+  TUI opens and reports the offline service even with invalid default Vault
+  Markdown. The TUI still installs a local file watcher.
   Proposal confirmation runs in the terminal crate. The queue API rechecks the
   reviewed record under lock and is independent of terminal I/O.
   Dependency-change validation,

@@ -1,6 +1,6 @@
 use super::{calendar_tests::screen, tests::fixture, *};
 
-fn press(state: &mut State, vault: &Vault, keys: &str) {
+fn press(state: &mut State, vault: &Workspace, keys: &str) {
     for key in keys.chars() {
         let code = match key {
             '\n' => KeyCode::Enter,
@@ -37,7 +37,7 @@ fn global_picker_fuzzy_searches_and_focuses_the_selected_outline_document() {
 #[test]
 fn global_picker_matches_vault_source_paths_after_outline_projection() {
     let vault = fixture();
-    let matches = picker::matches(&vault, None, "projects/rust-os/project.md").unwrap();
+    let matches = picker::matches(&vault, "projects/rust-os/project.md").unwrap();
 
     assert_eq!(matches.len(), 1);
     assert!(matches[0].title.contains("Rust OS"));
@@ -63,11 +63,12 @@ fn default_picker_can_edit_a_document_absent_from_the_local_snapshot() -> Result
         .vault_root()
         .join(OsStr::from_bytes(b"projects/moved-\xff/project.md"));
     let unix_path = source.as_os_str().as_bytes().to_vec();
-    let mut remote = mcbtodo_application::project_outline(&vault).remove(0);
+    let mut remote = mcbtodo_application::project_outline(vault.local()).remove(0);
     remote.id = id;
     remote.project_id = Some(id);
     remote.title = "New from another client".into();
     remote.source_path = "projects/another-client/project.md".into();
+    assert!(vault.local().source(id).is_none());
     let peer = thread::spawn(move || -> Result<()> {
         let (mut stream, _) = listener.accept()?;
         stream.set_read_timeout(Some(std::time::Duration::from_secs(2)))?;
@@ -87,7 +88,7 @@ fn default_picker_can_edit_a_document_absent_from_the_local_snapshot() -> Result
     });
 
     let mut state = State::new("2026-11-25".parse().unwrap());
-    state.daemon_views = Some(daemon_views::DaemonViews::new(paths));
+    let vault = Workspace::daemon(vault.timezone(), paths);
     press(&mut state, &vault, ":search new from another client\n");
     let picker = screen(&state, &vault, 64, 20);
     assert!(picker.contains("› New from another client"), "{picker}");
@@ -101,7 +102,6 @@ fn default_picker_can_edit_a_document_absent_from_the_local_snapshot() -> Result
     press(&mut state, &vault, "\n");
     assert_eq!(state.view, View::Outline);
     assert_eq!(state.selected_document(&vault), Some(id));
-    assert!(vault.source(id).is_none());
     assert_eq!(dispatch(&mut state, &vault, "e"), Action::Edit);
     assert_eq!(dispatch(&mut state, &vault, ":edit\n"), Action::Edit);
     assert_eq!(state.source(&vault)?, Some(source));
@@ -113,12 +113,12 @@ fn default_picker_can_edit_a_document_absent_from_the_local_snapshot() -> Result
 #[cfg(target_os = "linux")]
 #[test]
 fn default_picker_reports_an_offline_daemon_and_can_be_closed() -> Result<()> {
-    let vault = fixture();
     let temp = tempfile::tempdir()?;
     let mut state = State::new("2026-11-25".parse().unwrap());
-    state.daemon_views = Some(daemon_views::DaemonViews::new(WorkspacePaths::from_home(
-        temp.path().to_owned(),
-    )));
+    let vault = Workspace::daemon(
+        chrono_tz::Asia::Shanghai,
+        WorkspacePaths::from_home(temp.path().to_owned()),
+    );
 
     press(&mut state, &vault, ":search rust\n");
     let picker = screen(&state, &vault, 80, 20);

@@ -19,6 +19,7 @@ mod time_block;
 mod timeline;
 mod watch;
 mod workflow;
+mod workspace;
 
 pub use session::{repair_config, run};
 
@@ -47,6 +48,7 @@ use mcbtodo_vault::{Revision, Vault, WriteError};
 use ratatui::Terminal;
 
 use self::command::{Command, TimerCommand};
+use self::workspace::Workspace;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum View {
@@ -245,7 +247,6 @@ struct State {
     row: usize,
     document_id: Option<Id>,
     calendar_focus: Option<FocusIdentity>,
-    daemon_views: Option<daemon_views::DaemonViews>,
     week_hour: usize,
     graph_selection: Option<BTreeSet<Id>>,
     graph_nodes: RefCell<Option<Rc<[graph::Node]>>>,
@@ -269,7 +270,6 @@ impl State {
             row: 0,
             document_id: None,
             calendar_focus: None,
-            daemon_views: None,
             week_hour: 0,
             graph_selection: None,
             graph_nodes: RefCell::new(None),
@@ -311,7 +311,7 @@ impl State {
         }
     }
 
-    fn switch(&mut self, view: View, vault: &Vault) {
+    fn switch(&mut self, view: View, vault: &Workspace) {
         if self.view != view {
             let selected = if self.view == View::Week && view == View::Day {
                 self.week(vault).ok().and_then(|week| {
@@ -349,7 +349,7 @@ impl State {
         }
     }
 
-    fn sync_row(&mut self, vault: &Vault, preferred: Option<FocusIdentity>) {
+    fn sync_row(&mut self, vault: &Workspace, preferred: Option<FocusIdentity>) {
         let focuses = self.row_focuses(vault);
         if let Some(focus) = preferred {
             if focuses.get(self.row) == Some(&focus) {
@@ -370,23 +370,23 @@ impl State {
         self.row = self.row.min(focuses.len().saturating_sub(1));
     }
 
-    fn row_ids(&self, vault: &Vault) -> Vec<Id> {
+    fn row_ids(&self, vault: &Workspace) -> Vec<Id> {
         self.row_focuses(vault)
             .into_iter()
             .map(FocusIdentity::document_id)
             .collect()
     }
 
-    fn selected_focus(&self, vault: &Vault) -> Option<FocusIdentity> {
+    fn selected_focus(&self, vault: &Workspace) -> Option<FocusIdentity> {
         self.row_focuses(vault).get(self.row).copied()
     }
 
-    fn row_focuses(&self, vault: &Vault) -> Vec<FocusIdentity> {
+    fn row_focuses(&self, vault: &Workspace) -> Vec<FocusIdentity> {
         // The presenter displays query errors. Navigation has no rows to move through.
         self.try_row_focuses(vault).unwrap_or_default()
     }
 
-    fn try_row_focuses(&self, vault: &Vault) -> Result<Vec<FocusIdentity>> {
+    fn try_row_focuses(&self, vault: &Workspace) -> Result<Vec<FocusIdentity>> {
         let calendar = match self.view {
             View::Month | View::Week | View::Workflow => return Ok(Vec::new()),
             View::Day => self.day_entries(vault),
@@ -418,36 +418,36 @@ impl State {
         Ok(calendar?.iter().map(calendar_focus).collect())
     }
 
-    fn calendar_entries(&self, vault: &Vault, view: View) -> Result<Vec<CalendarItem>> {
+    fn calendar_entries(&self, vault: &Workspace, view: View) -> Result<Vec<CalendarItem>> {
         let dates = calendar::window(view, self.day, self.selected_range());
-        match &self.daemon_views {
-            Some(service) => Ok(service.calendar(dates, vault.timezone())?.to_vec()),
-            None => project_calendar(vault, dates),
+        match vault {
+            Workspace::Daemon { timezone, views } => Ok(views.calendar(dates, *timezone)?.to_vec()),
+            Workspace::Local(vault) => project_calendar(vault, dates),
         }
     }
 
-    fn outline_rows(&self, vault: &Vault) -> Result<Rc<[OutlineItem]>> {
-        daemon_views::outline_rows(vault, self.daemon_views.as_ref())
+    fn outline_rows(&self, vault: &Workspace) -> Result<Rc<[OutlineItem]>> {
+        vault.outline()
     }
 
-    fn inbox_rows(&self, vault: &Vault) -> Result<Rc<[InboxSummary]>> {
-        match &self.daemon_views {
-            Some(service) => service.inbox(),
-            None => Ok(project_inbox(vault).into()),
+    fn inbox_rows(&self, vault: &Workspace) -> Result<Rc<[InboxSummary]>> {
+        match vault {
+            Workspace::Daemon { views, .. } => views.inbox(),
+            Workspace::Local(vault) => Ok(project_inbox(vault).into()),
         }
     }
 
-    fn day_entries(&self, vault: &Vault) -> Result<Vec<CalendarItem>> {
+    fn day_entries(&self, vault: &Workspace) -> Result<Vec<CalendarItem>> {
         let mut entries = self.calendar_entries(vault, View::Day)?;
         calendar::sort_day(&mut entries, vault.timezone());
         Ok(entries)
     }
 
-    fn agenda(&self, vault: &Vault) -> anyhow::Result<Vec<CalendarItem>> {
+    fn agenda(&self, vault: &Workspace) -> anyhow::Result<Vec<CalendarItem>> {
         self.calendar_entries(vault, View::Agenda)
     }
 
-    fn week(&self, vault: &Vault) -> Result<calendar::Week> {
+    fn week(&self, vault: &Workspace) -> Result<calendar::Week> {
         Ok(calendar::Week::from_entries(
             self.day,
             vault.timezone(),
@@ -455,13 +455,7 @@ impl State {
         ))
     }
 
-    fn invalidate_daemon_views(&mut self) {
-        if let Some(service) = &mut self.daemon_views {
-            service.invalidate();
-        }
-    }
-
-    fn execute(&mut self, command: Command, vault: &Vault) -> Action {
+    fn execute(&mut self, command: Command, vault: &Workspace) -> Action {
         match command {
             Command::Quit => return Action::Quit,
             Command::Reload => return Action::Reload,
@@ -533,7 +527,7 @@ impl State {
         Action::Continue
     }
 
-    fn handle(&mut self, mut key: KeyEvent, vault: &Vault) -> Action {
+    fn handle(&mut self, mut key: KeyEvent, vault: &Workspace) -> Action {
         use Action::*;
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             return if key.code == KeyCode::Char('c') {
@@ -603,8 +597,7 @@ impl State {
                 match key.code {
                     KeyCode::Esc => self.overlay = Overlay::None,
                     KeyCode::Enter => {
-                        let Ok(matches) = picker::matches(vault, self.daemon_views.as_ref(), query)
-                        else {
+                        let Ok(matches) = picker::matches(vault, query) else {
                             return Continue;
                         };
                         let selected = matches.get(*row).map(|item| item.id);
@@ -622,9 +615,7 @@ impl State {
                         *row = row.saturating_sub(1);
                     }
                     KeyCode::Down | KeyCode::Char('j') => {
-                        if let Ok(matches) =
-                            picker::matches(vault, self.daemon_views.as_ref(), query)
-                        {
+                        if let Ok(matches) = picker::matches(vault, query) {
                             *row = move_row(*row, true, matches.len());
                         }
                     }
@@ -838,10 +829,11 @@ impl State {
                     return Continue;
                 };
                 let inbox_id = entry.id;
-                let revision = if self.daemon_views.is_some() {
-                    Some(InboxRevision::Daemon(entry.revision.clone()))
-                } else {
-                    vault.revision(inbox_id).cloned().map(InboxRevision::Local)
+                let revision = match vault {
+                    Workspace::Daemon { .. } => Some(InboxRevision::Daemon(entry.revision.clone())),
+                    Workspace::Local(vault) => {
+                        vault.revision(inbox_id).cloned().map(InboxRevision::Local)
+                    }
                 };
                 let Some(revision) = revision else {
                     self.message = "Inbox entry has no revision; reload the Vault".into();
@@ -926,16 +918,15 @@ impl State {
                 } else {
                     mcbtodo_domain::DependencyOperation::Remove
                 };
-                let preview = match &self.daemon_views {
-                    Some(service) => service.preview_dependency_change(
-                        target,
-                        sources,
-                        operation,
-                        vault.timezone(),
-                    ),
-                    None => mcbtodo_application::preview_work_unit_dependency_change(
-                        vault, target, sources, operation,
-                    ),
+                let preview = match vault {
+                    Workspace::Daemon { timezone, views } => {
+                        views.preview_dependency_change(target, sources, operation, *timezone)
+                    }
+                    Workspace::Local(vault) => {
+                        mcbtodo_application::preview_work_unit_dependency_change(
+                            vault, target, sources, operation,
+                        )
+                    }
                 };
                 match preview {
                     Ok(edit) => {
@@ -975,7 +966,7 @@ impl State {
         Continue
     }
 
-    fn vertical(&mut self, down: bool, vault: &Vault) {
+    fn vertical(&mut self, down: bool, vault: &Workspace) {
         match self.view {
             View::Month => self.change_day(if down { 7 } else { -7 }),
             View::Week => {
@@ -1009,7 +1000,7 @@ impl State {
     fn triage_inbox(
         &mut self,
         root: &Path,
-        vault: &mut Vault,
+        vault: &mut Workspace,
         paths: &WorkspacePaths,
         inbox_id: Id,
         project_id: Id,
@@ -1072,7 +1063,7 @@ impl State {
         };
     }
 
-    fn follow_edge(&mut self, forward: bool, vault: &Vault) {
+    fn follow_edge(&mut self, forward: bool, vault: &Workspace) {
         let next = {
             let nodes = self.graph_nodes(vault).unwrap_or_default();
             nodes.get(self.row).and_then(|node| {
@@ -1090,18 +1081,18 @@ impl State {
         }
     }
 
-    fn source(&self, vault: &Vault) -> Result<Option<PathBuf>> {
+    fn source(&self, vault: &Workspace) -> Result<Option<PathBuf>> {
         let Some(focus) = self.try_row_focuses(vault)?.get(self.row).copied() else {
             return Ok(None);
         };
         let id = focus.document_id();
-        if let Some(service) = &self.daemon_views {
-            return service.document_source(id).map(Some);
+        match vault {
+            Workspace::Daemon { views, .. } => views.document_source(id).map(Some),
+            Workspace::Local(vault) => Ok(vault.source(id).map(Path::to_owned)),
         }
-        Ok(vault.source(id).map(Path::to_owned))
     }
 
-    fn selected_document(&self, vault: &Vault) -> Option<Id> {
+    fn selected_document(&self, vault: &Workspace) -> Option<Id> {
         if self.view == View::Graph {
             return self
                 .graph_nodes(vault)
@@ -1112,7 +1103,7 @@ impl State {
         self.row_ids(vault).get(self.row).copied()
     }
 
-    fn selected_time_target(&self, vault: &Vault, accepts_tasks: bool) -> Result<Option<Id>> {
+    fn selected_time_target(&self, vault: &Workspace, accepts_tasks: bool) -> Result<Option<Id>> {
         let eligible = |row: &OutlineItem| row.depth == 2 || (accepts_tasks && row.depth == 1);
         if self.view == View::Outline {
             return Ok(self
@@ -1125,25 +1116,22 @@ impl State {
             return Ok(None);
         };
         let id = focus.document_id();
-        if let Some(service) = &self.daemon_views {
-            return Ok(service
-                .outline(vault.timezone())?
+        let eligible = match vault {
+            Workspace::Daemon { timezone, views } => views
+                .outline(*timezone)?
                 .iter()
-                .any(|row| row.id == id && eligible(row))
-                .then_some(id));
-        }
-        let eligible = if accepts_tasks {
-            vault.is_reminder_target(id)
-        } else {
-            vault.is_work_unit(id)
+                .any(|row| row.id == id && eligible(row)),
+            Workspace::Local(vault) if accepts_tasks => vault.is_reminder_target(id),
+            Workspace::Local(vault) => vault.is_work_unit(id),
         };
         Ok(eligible.then_some(id))
     }
 
-    fn graph_nodes(&self, vault: &Vault) -> Result<Rc<[graph::Node]>> {
-        if let Some(service) = &self.daemon_views {
-            return service.graph(vault.timezone());
-        }
+    fn graph_nodes(&self, vault: &Workspace) -> Result<Rc<[graph::Node]>> {
+        let vault = match vault {
+            Workspace::Daemon { timezone, views } => return views.graph(*timezone),
+            Workspace::Local(vault) => vault,
+        };
         let mut cached = self.graph_nodes.borrow_mut();
         Ok(cached
             .get_or_insert_with(|| {
@@ -1152,25 +1140,32 @@ impl State {
             .clone())
     }
 
-    fn selected_project_revision(&self, vault: &Vault) -> Option<(Id, creation::ProjectRevision)> {
+    fn selected_project_revision(
+        &self,
+        vault: &Workspace,
+    ) -> Option<(Id, creation::ProjectRevision)> {
         if self.view != View::Outline {
             return None;
         }
-        if self.daemon_views.is_some() {
-            let rows = self.outline_rows(vault).ok()?;
-            let row = rows.get(self.row).filter(|row| row.depth == 0)?;
-            return Some((
-                row.id,
-                creation::ProjectRevision::Daemon(row.revision.clone()),
-            ));
+        match vault {
+            Workspace::Daemon { .. } => {
+                let rows = self.outline_rows(vault).ok()?;
+                let row = rows.get(self.row).filter(|row| row.depth == 0)?;
+                Some((
+                    row.id,
+                    creation::ProjectRevision::Daemon(row.revision.clone()),
+                ))
+            }
+            Workspace::Local(local) => {
+                let id = self.selected_document(vault)?;
+                project_revision_in_snapshot(local, id)
+                    .map(|revision| (id, creation::ProjectRevision::Local(revision)))
+            }
         }
-        let id = self.selected_document(vault)?;
-        project_revision_in_snapshot(vault, id)
-            .map(|revision| (id, creation::ProjectRevision::Local(revision)))
     }
 
-    fn reload(&mut self, root: &Path, vault: &mut Vault) {
-        if self.daemon_views.is_some() {
+    fn reload(&mut self, root: &Path, vault: &mut Workspace) {
+        if matches!(vault, Workspace::Daemon { .. }) {
             self.refresh_daemon_views(vault);
             self.message = "Vault reloaded".into();
             return;
@@ -1187,15 +1182,15 @@ impl State {
         }
     }
 
-    fn refresh_external(&mut self, root: &Path, vault: &mut Vault) -> bool {
-        if self.daemon_views.is_some() {
+    fn refresh_external(&mut self, root: &Path, vault: &mut Workspace) -> bool {
+        let Workspace::Local(local) = vault else {
             self.refresh_daemon_views(vault);
             return true;
-        }
-        match Vault::load(root, vault.timezone()) {
+        };
+        match Vault::load(root, local.timezone()) {
             Ok(next) => {
                 let recovered = self.vault_warning.take().is_some();
-                if vault.has_same_documents(&next) {
+                if local.has_same_documents(&next) {
                     // A local action may already have loaded these exact bytes.
                     return recovered;
                 }
@@ -1214,24 +1209,24 @@ impl State {
         }
     }
 
-    fn install_vault(&mut self, vault: &mut Vault, next: Vault) {
+    fn install_vault(&mut self, vault: &mut Workspace, next: Vault) {
         let preferred = self
             .selected_focus(vault)
             .or_else(|| self.document_id.map(FocusIdentity::Document));
-        *vault = next;
+        *vault = Workspace::Local(Box::new(next));
         *self.graph_nodes.get_mut() = None;
         self.restore_focus(vault, preferred);
     }
 
-    fn refresh_daemon_views(&mut self, vault: &Vault) {
+    fn refresh_daemon_views(&mut self, vault: &mut Workspace) {
         let preferred = self
             .selected_focus(vault)
             .or_else(|| self.document_id.map(FocusIdentity::Document));
-        self.invalidate_daemon_views();
+        vault.invalidate_daemon_views();
         self.restore_focus(vault, preferred);
     }
 
-    fn restore_focus(&mut self, vault: &Vault, preferred: Option<FocusIdentity>) {
+    fn restore_focus(&mut self, vault: &Workspace, preferred: Option<FocusIdentity>) {
         self.document_id = preferred.map(FocusIdentity::document_id);
         self.sync_row(vault, preferred);
         if self.graph_selection.is_some()
@@ -1243,7 +1238,13 @@ impl State {
         }
     }
 
-    fn apply_proposal(&mut self, root: &Path, vault: &mut Vault, paths: &WorkspacePaths, id: Id) {
+    fn apply_proposal(
+        &mut self,
+        root: &Path,
+        vault: &mut Workspace,
+        paths: &WorkspacePaths,
+        id: Id,
+    ) {
         let zone = vault.timezone();
         let apply = mcbtodo_client::proposal::Queue::open(root, zone, paths)
             .and_then(|queue| crate::proposal::apply_interactively(&queue, id));
@@ -1271,43 +1272,53 @@ impl State {
         self.message = message;
     }
 
-    fn set_graph_dependencies(&mut self, root: &Path, vault: &mut Vault, edit: graph::Submission) {
+    fn set_graph_dependencies(
+        &mut self,
+        root: &Path,
+        vault: &mut Workspace,
+        edit: graph::Submission,
+    ) {
         let target = edit.target;
-        if let Some(service) = &self.daemon_views {
-            self.message = match service.set_dependencies(edit) {
-                Ok(synced) => {
-                    self.graph_selection = None;
-                    self.invalidate_daemon_views();
-                    self.sync_row(vault, Some(FocusIdentity::Document(target)));
-                    if synced {
-                        "Dependencies updated".into()
-                    } else {
-                        "Dependencies updated · directory sync could not be confirmed".into()
+        let local = match vault {
+            Workspace::Local(local) => local,
+            Workspace::Daemon { views, .. } => {
+                self.message = match views.set_dependencies(edit) {
+                    Ok(synced) => {
+                        self.graph_selection = None;
+                        vault.invalidate_daemon_views();
+                        self.sync_row(vault, Some(FocusIdentity::Document(target)));
+                        if synced {
+                            "Dependencies updated".into()
+                        } else {
+                            "Dependencies updated · directory sync could not be confirmed".into()
+                        }
                     }
-                }
-                Err(mcbtodo_client::daemon_client::WriteFailure::StaleRevision) => {
-                    self.invalidate_daemon_views();
-                    "WorkUnit changed · r to reload, then retry".into()
-                }
-                Err(mcbtodo_client::daemon_client::WriteFailure::Rejected(error)) => {
-                    format!("Graph edit failed · {error}")
-                }
-                Err(mcbtodo_client::daemon_client::WriteFailure::Unknown) => {
-                    self.invalidate_daemon_views();
-                    self.sync_row(vault, Some(FocusIdentity::Document(target)));
-                    format!("Graph edit outcome unknown · Check WorkUnit {target} before retrying")
-                }
-            };
-            return;
-        }
-        let Some(revision) = vault
+                    Err(mcbtodo_client::daemon_client::WriteFailure::StaleRevision) => {
+                        vault.invalidate_daemon_views();
+                        "WorkUnit changed · r to reload, then retry".into()
+                    }
+                    Err(mcbtodo_client::daemon_client::WriteFailure::Rejected(error)) => {
+                        format!("Graph edit failed · {error}")
+                    }
+                    Err(mcbtodo_client::daemon_client::WriteFailure::Unknown) => {
+                        vault.invalidate_daemon_views();
+                        self.sync_row(vault, Some(FocusIdentity::Document(target)));
+                        format!(
+                            "Graph edit outcome unknown · Check WorkUnit {target} before retrying"
+                        )
+                    }
+                };
+                return;
+            }
+        };
+        let Some(revision) = local
             .revision(target)
             .filter(|r| r.digest() == edit.revision)
         else {
             self.message = "WorkUnit changed · r to reload, then retry".into();
             return;
         };
-        match VaultCommands::new(root, vault.timezone()).set_work_unit_dependencies(
+        match VaultCommands::new(root, local.timezone()).set_work_unit_dependencies(
             target,
             edit.prerequisites,
             revision.clone(),
@@ -1460,8 +1471,8 @@ mod tests {
     use super::*;
     use ratatui::backend::TestBackend;
 
-    pub(super) fn fixture() -> Vault {
-        Vault::load(
+    pub(super) fn fixture() -> Workspace {
+        Workspace::load(
             &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/vault"),
             "Asia/Shanghai".parse().unwrap(),
         )
@@ -1472,7 +1483,7 @@ mod tests {
     fn settings_save_shortcuts_and_update_the_live_hints_and_input() -> Result<()> {
         let home = tempfile::tempdir()?;
         let paths = WorkspacePaths::from_home(home.path().to_owned());
-        let vault = Vault::load(home.path(), chrono_tz::UTC)?;
+        let vault = Workspace::load(home.path(), chrono_tz::UTC)?;
         let mut state = State::new("2026-11-24".parse()?);
         let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
         let screen = |state: &State, width, height| -> Result<String> {
@@ -1576,7 +1587,7 @@ mod tests {
         let path = paths.keymap_path();
         let invalid = "[keys]\nquit = 'r'\n";
         std::fs::write(&path, invalid)?;
-        let vault = Vault::load(&paths.vault_root(), chrono_tz::UTC)?;
+        let vault = Workspace::load(&paths.vault_root(), chrono_tz::UTC)?;
         let mut state = State::new("2026-11-24".parse()?);
         let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
         state.open_settings(&paths);
@@ -1633,7 +1644,7 @@ mod tests {
         let home = tempfile::tempdir()?;
         let paths = WorkspacePaths::from_home(home.path().to_owned());
         paths.initialize()?;
-        let vault = Vault::load(&paths.vault_root(), chrono_tz::UTC)?;
+        let vault = Workspace::load(&paths.vault_root(), chrono_tz::UTC)?;
         let mut state = State::new("2026-11-24".parse()?);
         let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
         let config_before = std::fs::read(paths.config_path())?;
@@ -1695,7 +1706,7 @@ mod tests {
         let paths = WorkspacePaths::from_home(home.path().to_owned());
         paths.initialize()?;
         std::fs::write(paths.keymap_path(), "[keys]\nreload = 'c'\nquit = 'Q'\n")?;
-        let vault = Vault::load(home.path(), chrono_tz::UTC)?;
+        let vault = Workspace::load(home.path(), chrono_tz::UTC)?;
         let mut state = State::new("2026-11-24".parse()?);
         state.keymap = keymap::Keymap::load_config(&paths)?;
 
@@ -1720,7 +1731,7 @@ mod tests {
     fn settings_validate_save_and_discard_drafts() -> Result<()> {
         let home = tempfile::tempdir()?;
         let paths = WorkspacePaths::from_home(home.path().to_owned());
-        let vault = Vault::load(home.path(), chrono_tz::UTC)?;
+        let vault = Workspace::load(home.path(), chrono_tz::UTC)?;
         let mut state = State::new("2026-11-24".parse()?);
         let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
         assert_eq!(
@@ -1797,7 +1808,7 @@ mod tests {
         let home = tempfile::tempdir()?;
         let paths = WorkspacePaths::from_home(home.path().to_owned());
         paths.initialize()?;
-        let vault = Vault::load(&paths.vault_root(), chrono_tz::UTC)?;
+        let vault = Workspace::load(&paths.vault_root(), chrono_tz::UTC)?;
         let mut state = State::new("2026-11-24".parse()?);
         let save = |state: &mut State, keys: &[KeyCode]| {
             state.open_settings(&paths);
@@ -1846,7 +1857,7 @@ mod tests {
         let home = tempfile::tempdir()?;
         let paths = WorkspacePaths::from_home(home.path().to_owned());
         let initial = paths.initialize_config()?;
-        let vault = Vault::load(&paths.vault_root(), initial.timezone)?;
+        let vault = Workspace::load(&paths.vault_root(), initial.timezone)?;
         let mut state = State::new("2026-11-24".parse()?);
         let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
 
@@ -1917,7 +1928,7 @@ mod tests {
         let home = tempfile::tempdir()?;
         let paths = WorkspacePaths::from_home(home.path().to_owned());
         paths.initialize()?;
-        let vault = Vault::load(&paths.vault_root(), chrono_tz::UTC)?;
+        let vault = Workspace::load(&paths.vault_root(), chrono_tz::UTC)?;
         let mut state = State::new("2026-11-24".parse()?);
         let config = paths.config_path();
         let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
@@ -1987,7 +1998,7 @@ mod tests {
         let home = tempfile::tempdir()?;
         let paths = WorkspacePaths::from_home(home.path().to_owned());
         paths.initialize()?;
-        let vault = Vault::load(&paths.vault_root(), chrono_tz::UTC)?;
+        let vault = Workspace::load(&paths.vault_root(), chrono_tz::UTC)?;
         let mut state = State::new("2026-11-24".parse()?);
         let revision = "a".repeat(64);
         let original = format!(
@@ -2059,7 +2070,7 @@ mod tests {
         let home = tempfile::tempdir()?;
         let paths = WorkspacePaths::from_home(home.path().to_owned());
         paths.initialize()?;
-        let vault = Vault::load(&paths.vault_root(), chrono_tz::UTC)?;
+        let vault = Workspace::load(&paths.vault_root(), chrono_tz::UTC)?;
         let mut state = State::new("2026-11-24".parse()?);
         let revision = "a".repeat(64);
         let original = format!(
@@ -2163,7 +2174,7 @@ mod tests {
         let home = tempfile::tempdir()?;
         let paths = WorkspacePaths::from_home(home.path().to_owned());
         paths.initialize()?;
-        let vault = Vault::load(&paths.vault_root(), chrono_tz::UTC)?;
+        let vault = Workspace::load(&paths.vault_root(), chrono_tz::UTC)?;
         let mut state = State::new("2026-11-24".parse()?);
         let policy = "[providers]\nunix_socket = 'state/agent.sock'\n";
         std::fs::write(paths.agent_policy_path(), policy)?;
@@ -2228,7 +2239,7 @@ mod tests {
     fn saving_unchanged_settings_preserves_file_bytes_and_absence() -> Result<()> {
         let home = tempfile::tempdir()?;
         let paths = WorkspacePaths::from_home(home.path().to_owned());
-        let vault = Vault::load(home.path(), chrono_tz::UTC)?;
+        let vault = Workspace::load(home.path(), chrono_tz::UTC)?;
         let mut state = State::new("2026-11-24".parse()?);
         let save_key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         let save_unchanged = |state: &mut State| {
@@ -2262,7 +2273,7 @@ mod tests {
         let paths = WorkspacePaths::from_home(home.path().to_owned());
         paths.initialize()?;
         let mut state = State::new("2026-11-24".parse()?);
-        let vault = Vault::load(&paths.vault_root(), chrono_tz::UTC)?;
+        let vault = Workspace::load(&paths.vault_root(), chrono_tz::UTC)?;
         state.open_settings(&paths);
         for code in [KeyCode::BackTab, KeyCode::Right] {
             state.handle(KeyEvent::new(code, KeyModifiers::NONE), &vault);
@@ -2287,7 +2298,7 @@ mod tests {
         let home = tempfile::tempdir()?;
         let paths = WorkspacePaths::from_home(home.path().to_owned());
         paths.initialize()?;
-        let vault = Vault::load(&paths.vault_root(), chrono_tz::UTC)?;
+        let vault = Workspace::load(&paths.vault_root(), chrono_tz::UTC)?;
         let mut state = State::new("2026-11-24".parse()?);
         let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
         let path = paths.config_path();
@@ -2336,7 +2347,7 @@ mod tests {
     fn settings_groups_preferences_and_keeps_one_focus_order() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let paths = WorkspacePaths::from_home(directory.path().to_owned());
-        let vault = Vault::load(directory.path(), chrono_tz::UTC)?;
+        let vault = Workspace::load(directory.path(), chrono_tz::UTC)?;
         let mut state = State::new("2026-11-24".parse()?);
         let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
         let mut terminal = Terminal::new(TestBackend::new(64, 14))?;
@@ -2382,7 +2393,7 @@ mod tests {
     fn settings_save_the_worker_limit_for_the_next_daemon_start() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let paths = WorkspacePaths::from_home(directory.path().to_owned());
-        let vault = Vault::load(directory.path(), chrono_tz::UTC)?;
+        let vault = Workspace::load(directory.path(), chrono_tz::UTC)?;
         let mut state = State::new("2026-11-24".parse()?);
         let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
 
@@ -2408,7 +2419,7 @@ mod tests {
     fn compact_settings_keep_the_field_error_and_actions_visible() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let paths = WorkspacePaths::from_home(directory.path().to_owned());
-        let vault = Vault::load(directory.path(), chrono_tz::UTC)?;
+        let vault = Workspace::load(directory.path(), chrono_tz::UTC)?;
         let mut state = State::new("2026-11-24".parse()?);
         let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
         let mut terminal = Terminal::new(TestBackend::new(24, 5))?;
@@ -2521,7 +2532,7 @@ mod tests {
     #[test]
     fn narrow_workspace_menu_can_reach_hidden_commands() {
         let root = tempfile::tempdir().unwrap();
-        let vault = Vault::load(root.path(), chrono_tz::UTC).unwrap();
+        let vault = Workspace::load(root.path(), chrono_tz::UTC).unwrap();
         let day = "2026-11-24".parse().unwrap();
         let mut state = State::new(day);
         let press =
@@ -2565,7 +2576,7 @@ mod tests {
     #[test]
     fn compact_view_selector_reaches_every_view_and_preserves_back_navigation() {
         let root = tempfile::tempdir().unwrap();
-        let vault = Vault::load(root.path(), chrono_tz::UTC).unwrap();
+        let vault = Workspace::load(root.path(), chrono_tz::UTC).unwrap();
         let mut state = State::new("2026-11-24".parse().unwrap());
         let press =
             |state: &mut State, code| state.handle(KeyEvent::new(code, KeyModifiers::NONE), &vault);
@@ -2859,10 +2870,10 @@ mod tests {
         let mut vault = fixture();
         let temp = tempfile::tempdir().unwrap();
         let mut state = State::new("2026-11-20".parse().unwrap());
-        let before = vault.graph_mermaid();
+        let before = vault.local().graph_mermaid();
         state.reload(&temp.path().join("missing"), &mut vault);
         assert!(state.message.starts_with("Reload failed"));
-        assert_eq!(vault.graph_mermaid(), before);
+        assert_eq!(vault.local().graph_mermaid(), before);
     }
 }
 
