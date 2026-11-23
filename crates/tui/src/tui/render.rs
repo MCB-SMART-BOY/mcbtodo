@@ -463,6 +463,15 @@ fn render_view(frame: &mut Frame<'_>, area: Rect, model: &Content<'_>, theme: Th
         Content::Month(month_model) => return month(frame, area, month_model, theme),
         Content::Week(week) => return schedule::week(frame, area, week, theme),
         Content::Day(day) => return schedule::day(frame, area, day, theme),
+        Content::OutlineLoading => {
+            frame.render_widget(
+                Paragraph::new("Loading Outline…")
+                    .style(theme.muted())
+                    .block(content_panel(theme.panel(" Outline "), area)),
+                area,
+            );
+            return;
+        }
         Content::ViewError { title, message } => {
             frame.render_widget(
                 Paragraph::new(message.as_str())

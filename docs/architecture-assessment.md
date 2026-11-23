@@ -12,6 +12,17 @@ This review traced the checked-out source. The CI runs and smoke results
 recorded below retain their original scope and dates. The current route and
 platform summary lives in the [architecture overview](architecture.md).
 
+### Background Outline reads (2026-11-23)
+
+The connected TUI loads Outline and document search rows on a background
+thread with one outstanding display request. It discards invalidated
+replies and uses the selected document UUID when new rows arrive. A
+controlled socket test holds a reply while the terminal processes commands,
+then verifies that an obsolete reply cannot populate the time-block
+editor or replace the selection. Other projections and some explicit
+actions still perform synchronous reads. On Linux AArch64, `cargo xtask
+check` passed 718 tests. The example Vault and sandbox smoke passed.
+
 ### Deadline command dispatch (2026-11-23)
 
 The TUI prompt `:deadline` and menu key `Space d` now dispatch the same

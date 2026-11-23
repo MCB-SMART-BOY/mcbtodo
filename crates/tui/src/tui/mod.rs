@@ -482,7 +482,12 @@ impl State {
             Command::TimeBlock => {
                 self.overlay = Overlay::None;
                 self.message.clear();
-                match self.outline_rows(vault) {
+                let outline = if self.view == View::Outline {
+                    self.outline_rows(vault)
+                } else {
+                    vault.outline_for_action()
+                };
+                match outline {
                     Ok(rows) => {
                         self.overlay = Overlay::TimeBlock(time_block::Form::new(
                             self.day,
@@ -842,7 +847,7 @@ impl State {
                     self.message = "Inbox entry has no revision; reload the Vault".into();
                     return Continue;
                 };
-                let outline = match self.outline_rows(vault) {
+                let outline = match vault.outline_for_action() {
                     Ok(outline) => outline,
                     Err(error) => {
                         self.message = format!("Project list unavailable · {error:#}");
@@ -1120,8 +1125,8 @@ impl State {
         };
         let id = focus.document_id();
         let eligible = match vault {
-            Workspace::Daemon { timezone, views } => views
-                .outline(*timezone)?
+            Workspace::Daemon { .. } => vault
+                .outline_for_action()?
                 .iter()
                 .any(|row| row.id == id && eligible(row)),
             Workspace::Local(vault) if accepts_tasks => vault.is_reminder_target(id),
@@ -1227,6 +1232,27 @@ impl State {
             .or_else(|| self.document_id.map(FocusIdentity::Document));
         vault.invalidate_daemon_views();
         self.restore_focus(vault, preferred);
+    }
+
+    fn poll_outline(&mut self, vault: &mut Workspace) -> bool {
+        let Workspace::Daemon { timezone, views } = vault else {
+            return false;
+        };
+        let received_rows = match views.poll_outline(*timezone) {
+            None => return false,
+            Some(daemon_views::OutlineUpdate::RowsChanged) => true,
+            Some(daemon_views::OutlineUpdate::Redraw) => false,
+        };
+        if received_rows && self.view == View::Outline {
+            self.sync_row(vault, self.document_id.map(FocusIdentity::Document));
+            if let Some(id) = self.selected_document(vault) {
+                self.document_id = Some(id);
+            }
+        }
+        if received_rows && let Overlay::Picker { row, .. } = &mut self.overlay {
+            *row = 0;
+        }
+        true
     }
 
     fn restore_focus(&mut self, vault: &Workspace, preferred: Option<FocusIdentity>) {

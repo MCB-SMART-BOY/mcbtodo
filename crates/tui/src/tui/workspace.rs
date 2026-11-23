@@ -10,7 +10,10 @@ use super::daemon_views::DaemonViews;
 
 pub(super) enum Workspace {
     Local(Box<Vault>),
-    Daemon { timezone: Tz, views: DaemonViews },
+    Daemon {
+        timezone: Tz,
+        views: Box<DaemonViews>,
+    },
 }
 
 impl Workspace {
@@ -29,7 +32,7 @@ impl Workspace {
     pub(super) fn daemon(timezone: Tz, paths: WorkspacePaths) -> Self {
         Self::Daemon {
             timezone,
-            views: DaemonViews::new(paths),
+            views: Box::new(DaemonViews::new(paths)),
         }
     }
 
@@ -44,6 +47,13 @@ impl Workspace {
         match self {
             Self::Local(vault) => Ok(project_outline(vault).into()),
             Self::Daemon { timezone, views } => views.outline(*timezone),
+        }
+    }
+
+    pub(super) fn outline_for_action(&self) -> Result<Rc<[OutlineItem]>> {
+        match self {
+            Self::Local(_) => self.outline(),
+            Self::Daemon { timezone, views } => views.outline_for_action(*timezone),
         }
     }
 

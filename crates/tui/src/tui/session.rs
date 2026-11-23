@@ -98,6 +98,12 @@ pub fn run(
     has_timezone_override: bool,
 ) -> Result<()> {
     let mut vault = Workspace::open(root, timezone, paths)?;
+    let connected = if let Workspace::Daemon { views, .. } = &mut vault {
+        views.enable_outline_loader();
+        true
+    } else {
+        false
+    };
     require_terminal()?;
     let mut state = State::new(day);
     state.has_timezone_override = has_timezone_override;
@@ -168,15 +174,14 @@ pub fn run(
                     .then(|| "Auto-reload unavailable · r reload".into());
                 redraw |= state.refresh_external(root, &mut vault);
             }
+            redraw |= state.poll_outline(&mut vault);
             if redraw {
                 let model = present(&state, &vault);
                 terminal.draw(|frame| render::draw(frame, &model, theme))?;
                 redraw = false;
             }
-            // Check for workspace changes even when no keys are pressed.
-            if (local_watcher.is_some() || daemon_watcher.is_some())
-                && !event::poll(Duration::from_millis(50))?
-            {
+            // Check workspace changes and query replies even when no keys are pressed.
+            if (local_watcher.is_some() || connected) && !event::poll(Duration::from_millis(50))? {
                 continue;
             }
             redraw = true;

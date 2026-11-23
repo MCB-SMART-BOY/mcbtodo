@@ -100,6 +100,104 @@ fn connected_reload_reconciles_outline_focus_without_reading_the_local_vault() -
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn outline_keeps_input_responsive_and_discards_a_reply_after_invalidation() -> Result<()> {
+    use std::{os::unix::net::UnixListener, sync::mpsc::channel};
+
+    use mcbtodo_protocol::wire;
+
+    let home = tempfile::tempdir()?;
+    let paths = WorkspacePaths::from_home(home.path().to_owned());
+    paths.initialize()?;
+    let listener = UnixListener::bind(paths.socket_path())?;
+    let original = mcbtodo_application::project_outline(tests::fixture().local());
+    let selected = original[1].id;
+    let mut superseded = original.clone();
+    superseded[1].title = "Superseded title".into();
+    let mut refreshed = original.clone();
+    refreshed[1].title = "Refreshed title".into();
+    refreshed.reverse();
+
+    let accept = |listener: &UnixListener| -> Result<_> {
+        let (mut stream, _) = listener.accept()?;
+        stream.set_read_timeout(Some(Duration::from_secs(3)))?;
+        assert_eq!(
+            wire::read::<Request>(&mut stream)?,
+            Request::Outline {
+                timezone: "UTC".into()
+            }
+        );
+        Ok(stream)
+    };
+    let (started_tx, started_rx) = channel();
+    let (release_tx, release_rx) = channel();
+    let peer = thread::spawn(move || -> Result<()> {
+        wire::write_outline(&mut accept(&listener)?, original)?;
+        let mut stream = accept(&listener)?;
+        started_tx.send(())?;
+        release_rx.recv_timeout(Duration::from_secs(2))?;
+        wire::write_outline(&mut stream, superseded)?;
+        wire::write_outline(&mut accept(&listener)?, refreshed)?;
+        Ok(())
+    });
+
+    let mut vault = Workspace::daemon(chrono_tz::UTC, paths);
+    let Workspace::Daemon { views, .. } = &mut vault else {
+        unreachable!()
+    };
+    views.enable_outline_loader();
+    let mut state = State::new("2026-11-20".parse()?);
+    state.view = View::Outline;
+    let wait_for_reply = |state: &mut State, vault: &mut Workspace| {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            if state.poll_outline(vault) {
+                return;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        panic!("Outline reply did not arrive");
+    };
+    assert!(calendar_tests::screen(&state, &vault, 80, 12).contains("Loading Outline"));
+    wait_for_reply(&mut state, &mut vault);
+    assert_eq!(
+        creation_tests::press(&mut state, &vault, "j"),
+        Action::Continue
+    );
+    assert_eq!(state.selected_document(&vault), Some(selected));
+
+    state.refresh_daemon_views(&mut vault);
+    started_rx.recv_timeout(Duration::from_secs(2))?;
+    assert_eq!(
+        creation_tests::press(&mut state, &vault, ":time-block\n"),
+        Action::Continue
+    );
+    assert!(matches!(state.overlay, Overlay::None));
+    assert!(state.message.contains("Loading Outline"));
+    assert_eq!(state.document_id, Some(selected));
+    assert_eq!(
+        creation_tests::press(&mut state, &vault, ":help\n"),
+        Action::Continue
+    );
+    assert!(matches!(state.overlay, Overlay::Help(_)));
+    state.refresh_daemon_views(&mut vault);
+    release_tx.send(())?;
+    wait_for_reply(&mut state, &mut vault);
+    assert_eq!(state.document_id, Some(selected));
+    assert!(matches!(state.overlay, Overlay::Help(_)));
+    creation_tests::press(&mut state, &vault, "\x1b");
+    let loading = calendar_tests::screen(&state, &vault, 80, 12);
+    assert!(loading.contains("Loading Outline"), "{loading}");
+    assert!(!loading.contains("Superseded title"), "{loading}");
+    wait_for_reply(&mut state, &mut vault);
+    assert_eq!(state.selected_document(&vault), Some(selected));
+    assert_ne!(state.row, 1);
+    assert!(calendar_tests::screen(&state, &vault, 80, 12).contains("Refreshed title"));
+    peer.join().unwrap()?;
+    Ok(())
+}
+
 #[test]
 fn reloads_atomic_editor_save_and_retains_focus() {
     let temp = tempfile::tempdir().unwrap();

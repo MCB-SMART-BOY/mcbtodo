@@ -9,7 +9,9 @@ use ratatui::text::Line;
 use super::{
     Overlay, State, View,
     calendar::{self, Lane, Week},
-    creation, deadline, picker,
+    creation,
+    daemon_views::OutlineLoading,
+    deadline, picker,
     review::ReviewViewport,
     screen_data::{ScreenData, ViewRows},
     settings, timeline,
@@ -207,6 +209,7 @@ pub(super) enum Content<'a> {
         title: &'static str,
         message: String,
     },
+    OutlineLoading,
     Workflow(WorkflowScreenModel<'a>),
     Menu {
         title: &'static str,
@@ -566,6 +569,7 @@ impl<'a> ScreenModel<'a> {
     pub(super) fn project(state: &'a State, timezone: Tz, data: ScreenData<'a>) -> Self {
         let content = match data {
             ScreenData::Main(Ok(rows)) => Self::project_view(state, timezone, rows),
+            ScreenData::Main(Err(error)) if error.is::<OutlineLoading>() => Content::OutlineLoading,
             ScreenData::Main(Err(error)) => Self::view_error(
                 if state.view == View::Outline {
                     " Outline error "
@@ -617,6 +621,11 @@ impl<'a> ScreenModel<'a> {
             }
             ScreenData::Picker(query, row, Ok(matches)) => {
                 Content::Picker(PickerScreenModel::documents(query, row, matches))
+            }
+            ScreenData::Picker(query, _, Err(error)) if error.is::<OutlineLoading>() => {
+                let mut picker = PickerScreenModel::documents(query, 0, Vec::new());
+                picker.empty = "Loading Outline…";
+                Content::Picker(picker)
             }
             ScreenData::Picker(_, _, Err(error)) => Self::view_error(" Picker error ", error),
             ScreenData::InboxProject(projects, row) => {
