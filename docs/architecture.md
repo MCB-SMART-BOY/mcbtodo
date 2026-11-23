@@ -154,6 +154,10 @@ revision。未来 GUI 可直接调用同一个业务接口。终端尺寸变化�
 文件监听和异步响应由各自的事件处理路径消费。
 见[TUI 命令](../crates/tui/src/tui/command.rs)。
 
+项目、全天事件、提醒、时间块和任务捕获的服务端调用由 `mcbtodo-client`
+转换为协议请求。客户端核对写入回执的对象 UUID，并向前端报告明确拒绝或
+需要核对的未知结果。计时操作也由 CLI 与 TUI 共用类型化客户端入口。
+
 ### 插件扩展
 
 Unix socket、Codex app-server 和 `stdio_plugin` 共用 `AgentProvider` 端口。

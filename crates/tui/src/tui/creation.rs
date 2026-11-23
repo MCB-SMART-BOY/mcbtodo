@@ -10,10 +10,9 @@ use mcbtodo_domain::{
     time::{DateSpan, Span, ZonedMoment},
 };
 use mcbtodo_platform::WorkspacePaths;
-use mcbtodo_protocol::{ProjectDates, Request, Response};
 use mcbtodo_vault::{Revision, WriteError};
 
-use mcbtodo_client::daemon_client::{WriteFailure, owns_vault, submit_write};
+use mcbtodo_client::daemon_client::{self, WriteFailure, owns_vault};
 
 use super::{Action, Overlay, State, View, Workspace, time_block};
 
@@ -267,40 +266,24 @@ impl State {
         };
         let commands = VaultCommands::new(root, vault.timezone());
         let saved = if use_daemon {
-            let request = match request.schedule {
-                Schedule::Project(span) => Request::CreatePlannedProject {
-                    project_id: id,
+            match request.schedule {
+                Schedule::Project(span) => daemon_client::create_planned_project(
+                    paths,
+                    id,
                     title,
-                    dates: ProjectDates::ActivePeriod {
-                        start: span.start(),
-                        through: span.through(),
-                    },
-                },
-                Schedule::Deadline(due) => Request::CreatePlannedProject {
-                    project_id: id,
+                    ProjectPlan::ActivePeriod(span),
+                ),
+                Schedule::Deadline(due) => daemon_client::create_planned_project(
+                    paths,
+                    id,
                     title,
-                    dates: ProjectDates::Deadline { due },
-                },
-                Schedule::Event(span) => Request::CreateAllDayEvent {
-                    event_id: id,
-                    title,
-                    start: span.start(),
-                    through: span.through(),
-                },
-                _ => unreachable!("expected a calendar submission"),
-            };
-            submit_write(paths, request, |response| match (kind, response) {
-                (Kind::Event, Response::AllDayEventCreated { event_id, synced })
-                    if event_id == id =>
-                {
-                    Some(synced)
+                    ProjectPlan::Deadline(due),
+                ),
+                Schedule::Event(span) => {
+                    daemon_client::create_all_day_event(paths, id, title, span)
                 }
-                (
-                    Kind::Project | Kind::Deadline,
-                    Response::PlannedProjectCreated { project_id, synced },
-                ) if project_id == id => Some(synced),
-                _ => None,
-            })
+                _ => unreachable!("expected a calendar submission"),
+            }
             .map(|synced| publication_message(label, id, synced))
         } else {
             let saved = match request.schedule {
@@ -370,23 +353,8 @@ impl State {
         }
         let id = Id::new_v4();
         let saved = if cfg!(target_os = "linux") {
-            submit_write(
-                paths,
-                Request::CreateReminder {
-                    reminder_id: id,
-                    target_id,
-                    title: request.title,
-                    at: at.fixed_offset(),
-                },
-                |response| match response {
-                    Response::ReminderCreated {
-                        reminder_id,
-                        synced,
-                    } if reminder_id == id => Some(synced),
-                    _ => None,
-                },
-            )
-            .map(|synced| publication_message("Reminder", id, synced))
+            daemon_client::create_reminder(paths, id, target_id, request.title, at.fixed_offset())
+                .map(|synced| publication_message("Reminder", id, synced))
         } else {
             local_publication(
                 "Reminder",
@@ -442,23 +410,8 @@ impl State {
             }
         };
         let saved = if use_daemon {
-            submit_write(
-                paths,
-                Request::CreateTimeBlock {
-                    work_unit_id: unit,
-                    work_unit_revision: block.revision,
-                    start: when.start(),
-                    end: when.end(),
-                },
-                |response| match response {
-                    Response::TimeBlockCreated {
-                        work_unit_id,
-                        synced,
-                    } if work_unit_id == unit => Some(synced),
-                    _ => None,
-                },
-            )
-            .map(|synced| publication_message("Time block", unit, synced))
+            daemon_client::create_time_block(paths, unit, block.revision, when)
+                .map(|synced| publication_message("Time block", unit, synced))
         } else if let Workspace::Local(local) = vault
             && let Some(revision) = mcbtodo_application::document_revision_in_snapshot(local, unit)
                 .filter(|revision| revision.digest() == block.revision)
@@ -542,18 +495,12 @@ impl State {
             }
         };
         let saved = if use_daemon {
-            submit_write(
+            daemon_client::capture_task(
                 paths,
-                Request::CaptureTask {
-                    task_id: id,
-                    project_id,
-                    project_revision: expected_revision.digest(),
-                    title: request.title,
-                },
-                |response| match response {
-                    Response::TaskCaptured { task_id, synced } if task_id == id => Some(synced),
-                    _ => None,
-                },
+                id,
+                project_id,
+                expected_revision.digest(),
+                request.title,
             )
             .map(|synced| publication_message("Task", id, synced))
         } else if let ProjectRevision::Local(expected_revision) = expected_revision {

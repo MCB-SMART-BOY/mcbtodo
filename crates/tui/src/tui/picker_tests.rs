@@ -49,7 +49,7 @@ fn default_picker_can_edit_a_document_absent_from_the_local_snapshot() -> Result
     use std::{ffi::OsStr, os::unix::ffi::OsStrExt, os::unix::net::UnixListener, thread};
 
     use super::creation_tests::press as dispatch;
-    use mcbtodo_protocol::{Response, wire};
+    use mcbtodo_protocol::{Request, Response, wire};
 
     let vault = fixture();
     let temp = tempfile::tempdir()?;

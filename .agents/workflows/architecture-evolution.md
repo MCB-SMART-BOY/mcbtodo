@@ -152,6 +152,9 @@ Graph 的 `a`、`d` 与 `:graph add-dependency`、`:graph remove-dependency` 分
 Daemon Outline 获取候选，刷新保留已审阅的 revision，断连不切换到本地候选。
 计时和提醒使用 Daemon Outline 判定关联对象。验证选中服务端对象时保留其
 UUID，查询失败时显示错误并停止命令。
+表单确认调用 `mcbtodo-client` 提交项目、全天事件、提醒、时间块和任务捕获。
+检查服务端请求中的对象 UUID、日期、时区和关联实体的审阅 revision，并验证
+明确拒绝、断连后的未知结果和不匹配的写入回执。CLI 与 TUI 共用计时操作入口。
 编辑键与 `:edit` 复用动作。连接会话根据文档 UUID 查询当前源文件。验证文件
 移动、原始 Unix 路径字节、本地快照尚未包含该 UUID 及断连时的行为。
 连接会话的手动刷新和 Daemon 变更标记复用服务投影刷新路径。验证无法读取本地

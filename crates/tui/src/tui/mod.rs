@@ -38,11 +38,12 @@ use mcbtodo_application::{
     CalendarItem, InboxSummary, OutlineItem, VaultCommands, project_calendar, project_inbox,
     project_revision_in_snapshot,
 };
+use mcbtodo_client::daemon_client::TimerOperation;
 use mcbtodo_domain::{CalendarKind, Id, Occurrence, time::Span};
 #[cfg(test)]
 use mcbtodo_platform::AppConfig;
 use mcbtodo_platform::{HomeViewPolicy, TuiTheme, WorkspacePaths};
-use mcbtodo_protocol::{Request, workflow::WorkflowRequest};
+use mcbtodo_protocol::workflow::WorkflowRequest;
 use mcbtodo_vault::{Revision, Vault, WriteError};
 #[cfg(test)]
 use ratatui::Terminal;
@@ -220,7 +221,7 @@ enum Action {
     Edit,
     OpenSettings,
     Settings(settings::Command),
-    Timer(Request),
+    Timer(TimerOperation),
     CreateCalendar(creation::Submission),
     CreateReminder(creation::Submission),
     CreateTimeBlock(time_block::Submission),
@@ -569,16 +570,16 @@ impl State {
             }
             Command::Timer(operation) => {
                 return Action::Timer(match operation {
-                    TimerCommand::Status => Request::Status,
+                    TimerCommand::Status => TimerOperation::Status,
                     TimerCommand::Start => match self.selected_time_target(vault, false) {
-                        Ok(work_unit_id) => Request::Start { work_unit_id },
+                        Ok(work_unit_id) => TimerOperation::Start { work_unit_id },
                         Err(error) => {
                             self.message = format!("Cannot load timer target · {error:#}");
                             return Action::Continue;
                         }
                     },
-                    TimerCommand::Pause => Request::Pause,
-                    TimerCommand::Stop => Request::Stop,
+                    TimerCommand::Pause => TimerOperation::Pause,
+                    TimerCommand::Stop => TimerOperation::Stop,
                 });
             }
         }
@@ -2709,7 +2710,7 @@ mod tests {
             (
                 ":timer start\n",
                 " ts",
-                Action::Timer(Request::Start { work_unit_id: None }),
+                Action::Timer(TimerOperation::Start { work_unit_id: None }),
                 View::Month,
             ),
             (":settings\n", " \n", Action::OpenSettings, View::Month),

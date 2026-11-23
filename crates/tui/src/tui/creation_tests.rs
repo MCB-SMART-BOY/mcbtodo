@@ -311,7 +311,7 @@ fn reminder_from_selected_outline_task_keeps_its_target_binding() {
 fn timer_and_reminder_use_the_selected_daemon_outline_target() -> Result<()> {
     use std::{os::unix::net::UnixListener, thread};
 
-    use mcbtodo_protocol::wire;
+    use mcbtodo_protocol::{Request, wire};
 
     let home = tempfile::tempdir()?;
     let paths = WorkspacePaths::from_home(home.path().to_owned());
@@ -337,14 +337,14 @@ fn timer_and_reminder_use_the_selected_daemon_outline_target() -> Result<()> {
     state.row = unit;
     assert_eq!(
         press(&mut state, &vault, " ts"),
-        Action::Timer(Request::Start {
+        Action::Timer(TimerOperation::Start {
             work_unit_id: Some(unit_id),
         })
     );
     state.row = task;
     assert_eq!(
         press(&mut state, &vault, ":timer start\n"),
-        Action::Timer(Request::Start { work_unit_id: None })
+        Action::Timer(TimerOperation::Start { work_unit_id: None })
     );
     for entry in [" cr", ":reminder\n", ":create reminder\n"] {
         press(&mut state, &vault, entry);

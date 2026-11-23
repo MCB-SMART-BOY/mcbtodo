@@ -49,7 +49,7 @@ fn daemon_calendar_uses_the_same_rows_for_render_selection_and_refresh() -> Resu
     use std::{os::unix::net::UnixListener, thread};
 
     use mcbtodo_domain::time::DateSpan;
-    use mcbtodo_protocol::{Response, wire};
+    use mcbtodo_protocol::{Request, Response, wire};
 
     let home = tempfile::tempdir()?;
     let paths = WorkspacePaths::from_home(home.path().to_path_buf());
@@ -790,7 +790,7 @@ fn command_mode_dispatches_timer_and_proposal_actions() {
     }
     assert_eq!(
         state.handle(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &vault),
-        Action::Timer(Request::Start { work_unit_id: None })
+        Action::Timer(TimerOperation::Start { work_unit_id: None })
     );
 
     assert_eq!(

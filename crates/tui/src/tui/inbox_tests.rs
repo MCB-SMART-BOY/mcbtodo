@@ -196,7 +196,7 @@ fn inbox_triage_refuses_to_overwrite_an_external_edit() {
 fn inbox_uses_the_entry_and_project_seen_over_ipc() -> Result<()> {
     use std::{os::unix::net::UnixListener, thread};
 
-    use mcbtodo_protocol::{Response, wire};
+    use mcbtodo_protocol::{Request, Response, wire};
 
     let home = tempfile::tempdir()?;
     let paths = WorkspacePaths::from_home(home.path().to_owned());

@@ -221,7 +221,7 @@ fn run(cli: Cli) -> Result<()> {
                 return focus_report::run(&paths, &root, timezone, args, json);
             }
             let command = match command {
-                TimerCommand::Status => Request::Status,
+                TimerCommand::Status => daemon_client::TimerOperation::Status,
                 TimerCommand::Start { unit } => {
                     if let Some(id) = unit {
                         let (root, zone) = location.resolve(&paths)?;
@@ -232,10 +232,10 @@ fn run(cli: Cli) -> Result<()> {
                             "no work unit with ID {id} in the vault"
                         );
                     }
-                    Request::Start { work_unit_id: unit }
+                    daemon_client::TimerOperation::Start { work_unit_id: unit }
                 }
-                TimerCommand::Pause => Request::Pause,
-                TimerCommand::Stop => Request::Stop,
+                TimerCommand::Pause => daemon_client::TimerOperation::Pause,
+                TimerCommand::Stop => daemon_client::TimerOperation::Stop,
                 TimerCommand::Report(_) => unreachable!("handled above"),
             };
             let status = daemon_client::timer(&paths, command)?;

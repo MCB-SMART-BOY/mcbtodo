@@ -13,7 +13,7 @@ fn open_deadline(state: &mut State, vault: &Workspace, input: &str) {
 use std::{os::unix::net::UnixListener, thread, time::Duration};
 
 #[cfg(target_os = "linux")]
-use mcbtodo_protocol::{ErrorCode, Response, wire};
+use mcbtodo_protocol::{ErrorCode, Request, Response, wire};
 
 #[cfg(target_os = "linux")]
 fn listen(paths: &WorkspacePaths) -> Result<UnixListener> {

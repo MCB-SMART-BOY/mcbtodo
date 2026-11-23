@@ -61,7 +61,7 @@ fn rendered_text(
 fn connected_reload_reconciles_outline_focus_without_reading_the_local_vault() -> Result<()> {
     use std::os::unix::net::UnixListener;
 
-    use mcbtodo_protocol::wire;
+    use mcbtodo_protocol::{Request, wire};
 
     let home = tempfile::tempdir()?;
     let paths = WorkspacePaths::from_home(home.path().to_owned());
@@ -105,7 +105,7 @@ fn connected_reload_reconciles_outline_focus_without_reading_the_local_vault() -
 fn outline_keeps_input_responsive_and_discards_a_reply_after_invalidation() -> Result<()> {
     use std::{os::unix::net::UnixListener, sync::mpsc::channel};
 
-    use mcbtodo_protocol::wire;
+    use mcbtodo_protocol::{Request, wire};
 
     let home = tempfile::tempdir()?;
     let paths = WorkspacePaths::from_home(home.path().to_owned());

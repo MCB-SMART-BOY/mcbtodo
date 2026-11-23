@@ -7,22 +7,160 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
+use chrono::{DateTime, FixedOffset};
 use chrono_tz::Tz;
+use mcbtodo_application::ProjectPlan;
 use mcbtodo_domain::{
     CalendarItem, DependencyOperation, Id, InboxSummary, OutlineItem, WorkUnitDependencyPreview,
     WorkUnitGraphNode,
-    time::{DateSpan, Deadline},
+    time::{DateSpan, DateTimeSpan, Deadline},
 };
 use mcbtodo_platform::WorkspacePaths;
 use mcbtodo_protocol::{
-    ErrorCode, ProtocolError, Request, Response, TimerStatus, VaultWatchStatus, request,
+    ErrorCode, ProjectDates, ProtocolError, Request, Response, TimerStatus, VaultWatchStatus,
+    request,
 };
 
-pub fn timer(paths: &WorkspacePaths, operation: Request) -> Result<TimerStatus> {
-    match exchange(paths, operation)? {
+#[derive(Debug, PartialEq, Eq)]
+pub enum TimerOperation {
+    Status,
+    Start { work_unit_id: Option<Id> },
+    Pause,
+    Stop,
+}
+
+pub fn timer(paths: &WorkspacePaths, operation: TimerOperation) -> Result<TimerStatus> {
+    let request = match operation {
+        TimerOperation::Status => Request::Status,
+        TimerOperation::Start { work_unit_id } => Request::Start { work_unit_id },
+        TimerOperation::Pause => Request::Pause,
+        TimerOperation::Stop => Request::Stop,
+    };
+    match exchange(paths, request)? {
         Response::Status(status) => Ok(status),
         _ => bail!("unexpected response to timer request"),
     }
+}
+
+pub fn create_planned_project(
+    paths: &WorkspacePaths,
+    id: Id,
+    title: String,
+    plan: ProjectPlan,
+) -> Result<bool, WriteFailure> {
+    let dates = match plan {
+        ProjectPlan::ActivePeriod(span) => ProjectDates::ActivePeriod {
+            start: span.start(),
+            through: span.through(),
+        },
+        ProjectPlan::Deadline(due) => ProjectDates::Deadline { due },
+    };
+    submit_write(
+        paths,
+        Request::CreatePlannedProject {
+            project_id: id,
+            title,
+            dates,
+        },
+        |response| match response {
+            Response::PlannedProjectCreated { project_id, synced } if project_id == id => {
+                Some(synced)
+            }
+            _ => None,
+        },
+    )
+}
+
+pub fn create_all_day_event(
+    paths: &WorkspacePaths,
+    id: Id,
+    title: String,
+    span: DateSpan,
+) -> Result<bool, WriteFailure> {
+    submit_write(
+        paths,
+        Request::CreateAllDayEvent {
+            event_id: id,
+            title,
+            start: span.start(),
+            through: span.through(),
+        },
+        |response| match response {
+            Response::AllDayEventCreated { event_id, synced } if event_id == id => Some(synced),
+            _ => None,
+        },
+    )
+}
+
+pub fn create_reminder(
+    paths: &WorkspacePaths,
+    id: Id,
+    target_id: Option<Id>,
+    title: String,
+    at: DateTime<FixedOffset>,
+) -> Result<bool, WriteFailure> {
+    submit_write(
+        paths,
+        Request::CreateReminder {
+            reminder_id: id,
+            target_id,
+            title,
+            at,
+        },
+        |response| match response {
+            Response::ReminderCreated {
+                reminder_id,
+                synced,
+            } if reminder_id == id => Some(synced),
+            _ => None,
+        },
+    )
+}
+
+pub fn create_time_block(
+    paths: &WorkspacePaths,
+    id: Id,
+    revision: String,
+    when: DateTimeSpan,
+) -> Result<bool, WriteFailure> {
+    submit_write(
+        paths,
+        Request::CreateTimeBlock {
+            work_unit_id: id,
+            work_unit_revision: revision,
+            start: when.start(),
+            end: when.end(),
+        },
+        |response| match response {
+            Response::TimeBlockCreated {
+                work_unit_id,
+                synced,
+            } if work_unit_id == id => Some(synced),
+            _ => None,
+        },
+    )
+}
+
+pub fn capture_task(
+    paths: &WorkspacePaths,
+    id: Id,
+    project_id: Id,
+    project_revision: String,
+    title: String,
+) -> Result<bool, WriteFailure> {
+    submit_write(
+        paths,
+        Request::CaptureTask {
+            task_id: id,
+            project_id,
+            project_revision,
+            title,
+        },
+        |response| match response {
+            Response::TaskCaptured { task_id, synced } if task_id == id => Some(synced),
+            _ => None,
+        },
+    )
 }
 
 pub fn vault_watch_status(paths: &WorkspacePaths) -> Result<VaultWatchStatus> {
@@ -230,7 +368,7 @@ pub fn owns_vault(paths: &WorkspacePaths, root: &Path) -> Result<bool> {
     }
 }
 
-pub fn submit_write(
+fn submit_write(
     paths: &WorkspacePaths,
     operation: Request,
     confirmation: impl FnOnce(Response) -> Option<bool>,
