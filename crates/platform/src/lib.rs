@@ -46,6 +46,49 @@ pub struct AppConfig {
     pub home_view: HomeViewPolicy,
     /// Color palette used by the TUI.
     pub tui_theme: TuiTheme,
+    /// Maximum number of supervised Script and Agent Workers on Linux.
+    pub worker_slots: WorkerSlots,
+}
+
+/// Validated capacity of the local Daemon's Worker pool.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(try_from = "u8", into = "u8")]
+pub struct WorkerSlots(u8);
+
+impl WorkerSlots {
+    pub const MIN: u8 = 1;
+    pub const MAX: u8 = 4;
+    pub const DEFAULT: Self = Self(Self::MIN);
+
+    pub fn get(self) -> u8 {
+        self.0
+    }
+}
+
+impl Default for WorkerSlots {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+impl TryFrom<u8> for WorkerSlots {
+    type Error = anyhow::Error;
+
+    fn try_from(value: u8) -> Result<Self> {
+        ensure!(
+            (Self::MIN..=Self::MAX).contains(&value),
+            "worker_slots must be between {} and {}",
+            Self::MIN,
+            Self::MAX
+        );
+        Ok(Self(value))
+    }
+}
+
+impl From<WorkerSlots> for u8 {
+    fn from(slots: WorkerSlots) -> Self {
+        slots.get()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -71,6 +114,7 @@ impl Default for AppConfig {
             timezone: chrono_tz::UTC,
             home_view: HomeViewPolicy::Month,
             tui_theme: TuiTheme::Default,
+            worker_slots: WorkerSlots::DEFAULT,
         }
     }
 }

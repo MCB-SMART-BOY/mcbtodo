@@ -42,8 +42,8 @@ action keys work from any scroll position. Include menu navigation in the
 28×6 pseudoterminal smoke.
 
 Keep one preferences form in input state and project it through
-`SettingsScreenModel`. Build `AppConfig` at save time. Derive General and
-Appearance headings from the field order and available height. Keep input
+`SettingsScreenModel`. Build `AppConfig` at save time. Derive General,
+Appearance, and Linux Daemon headings from the field order and available height. Keep input
 and rendering on that same field order. Test that
 reverse focus crosses groups and that the headings appear in order at 64×14.
 Keep only the timezone's
@@ -62,7 +62,8 @@ At 24×5, check the focused value,
 validation error, and save and cancel hints. Verify that focus follows the
 theme row at the same size. Start the PTY smoke with a partial config and
 `--timezone`. Verify the defaults, the focused field's apply timing, and the
-timezone override notice. Save all three fields, check the restart message, and restart without `--timezone`. Compare the bytes of
+timezone override notice. Save the preferences, including Worker slots on
+Linux. Check the restart hints and restart the TUI without `--timezone`. Compare the bytes of
 `agents.toml`, `codex.toml`, and `keymap.toml` before and after the save.
 Exercise successive saves while the session still uses the old timezone.
 The restart hint persists after saving another field or an unchanged draft,

@@ -258,6 +258,7 @@ fn saving_config_persists_preferences_without_creating_a_default_vault() -> anyh
         timezone: Shanghai,
         home_view: HomeViewPolicy::RestoreLastView,
         tui_theme: mcbtodo_platform::TuiTheme::HighContrast,
+        worker_slots: mcbtodo_platform::WorkerSlots::try_from(4)?,
     };
 
     assert_eq!(paths.load_optional_config()?, None);

@@ -143,6 +143,8 @@ impl ScreenChrome {
                                 "NO_COLOR active · ←/→ change saved palette"
                             }
                             settings::Field::Theme => "Applies on save · ←/→ change",
+                            #[cfg(target_os = "linux")]
+                            settings::Field::Workers => "Daemon restart required · ←/→ change",
                         },
                     ),
                 },
@@ -391,7 +393,8 @@ impl<'a> SettingsScreenModel<'a> {
             panel: " Preferences ",
             selected: draft.selected(),
             rows: settings::Field::ALL
-                .into_iter()
+                .iter()
+                .copied()
                 .map(|field| {
                     let (label, value) = draft.row(field);
                     SettingsEntry {
@@ -399,9 +402,11 @@ impl<'a> SettingsScreenModel<'a> {
                             Timezone => Some("General"),
                             Theme => Some("Appearance"),
                             HomeView => None,
+                            #[cfg(target_os = "linux")]
+                            settings::Field::Workers => Some("Daemon"),
                         },
                         label,
-                        value: Cow::Borrowed(value),
+                        value,
                         cursor: field == Timezone,
                     }
                 })

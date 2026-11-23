@@ -1,7 +1,9 @@
+use std::borrow::Cow;
+
 use crossterm::event::KeyCode;
 use mcbtodo_platform::{
     AppConfig, AppConfigSnapshot, ConfigConflict, ConfigSnapshot, HomeViewPolicy, TuiTheme,
-    WorkspacePaths,
+    WorkerSlots, WorkspacePaths,
 };
 
 use super::{keymap::Keymap, move_row};
@@ -19,10 +21,18 @@ pub(super) enum Field {
     Timezone,
     HomeView,
     Theme,
+    #[cfg(target_os = "linux")]
+    Workers,
 }
 
 impl Field {
-    pub(super) const ALL: [Self; 3] = [Self::Timezone, Self::HomeView, Self::Theme];
+    pub(super) const ALL: &'static [Self] = &[
+        Self::Timezone,
+        Self::HomeView,
+        Self::Theme,
+        #[cfg(target_os = "linux")]
+        Self::Workers,
+    ];
 }
 
 const THEMES: [(TuiTheme, &str); 3] = [
@@ -42,6 +52,7 @@ pub(super) struct Preferences {
     home_view: HomeViewPolicy,
     theme: TuiTheme,
     timezone: String,
+    worker_slots: WorkerSlots,
 }
 
 pub(super) enum Subpage {
@@ -204,6 +215,7 @@ impl Preferences {
             home_view: config.home_view,
             theme: config.tui_theme,
             timezone: config.timezone.to_string(),
+            worker_slots: config.worker_slots,
         }
     }
 
@@ -219,18 +231,25 @@ impl Preferences {
         Field::ALL[self.selected]
     }
 
-    pub(super) fn row(&self, field: Field) -> (&'static str, &str) {
+    pub(super) fn row(&self, field: Field) -> (&'static str, Cow<'_, str>) {
         match field {
-            Field::Timezone => ("TZ", &self.timezone),
+            Field::Timezone => ("TZ", self.timezone.as_str().into()),
             Field::HomeView => (
                 "Home",
                 match self.home_view {
                     HomeViewPolicy::Month => "Month",
                     HomeViewPolicy::RestoreLastView => "Restore last view",
-                },
+                }
+                .into(),
             ),
-            Field::Theme => ("Theme", THEMES[self.theme_index()].1),
+            Field::Theme => ("Theme", THEMES[self.theme_index()].1.into()),
+            #[cfg(target_os = "linux")]
+            Field::Workers => ("Worker slots", self.worker_slots.get().to_string().into()),
         }
+    }
+
+    pub(super) fn worker_limit_changed(&self) -> bool {
+        self.original.preferences().unwrap_or_default().worker_slots != self.worker_slots
     }
 
     pub(super) fn save(&mut self, paths: &WorkspacePaths) -> anyhow::Result<(AppConfig, bool)> {
@@ -242,6 +261,7 @@ impl Preferences {
             timezone,
             home_view: self.home_view,
             tui_theme: self.theme,
+            worker_slots: self.worker_slots,
         };
         let written = paths.save_config(&self.original, config)?;
         Ok((config, written))
@@ -278,6 +298,18 @@ impl Preferences {
                     HomeViewPolicy::Month => HomeViewPolicy::RestoreLastView,
                     HomeViewPolicy::RestoreLastView => HomeViewPolicy::Month,
                 };
+            }
+            #[cfg(target_os = "linux")]
+            (KeyCode::Left | KeyCode::Right, Field::Workers) => {
+                let current = self.worker_slots.get();
+                let next = if key == KeyCode::Left {
+                    current - 1
+                } else {
+                    current + 1
+                };
+                if let Ok(slots) = WorkerSlots::try_from(next) {
+                    self.worker_slots = slots;
+                }
             }
             (KeyCode::Backspace, Field::Timezone) => {
                 self.timezone.pop();

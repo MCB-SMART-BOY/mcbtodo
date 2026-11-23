@@ -2183,7 +2183,10 @@ impl Smoke<'_> {
                 ("> Theme Default", "\x1b[C\x1bOR"),
                 ("unix_socket Default · 0 grants", "\r"),
                 ("Health unchecked", "\x1b"),
-                ("> Theme High contrast", "\r"),
+                ("> Theme High contrast", "\t"),
+                ("> Worker slots 1", "\x1b[C"),
+                ("Daemon restart required", ""),
+                ("> Worker slots 2", "\r"),
                 ("Restart without --timezone to apply", " uw"),
                 ("Week", "q"),
             ],
@@ -2198,7 +2201,8 @@ impl Smoke<'_> {
         ensure!(
             saved.timezone.name() == "Asia/Tokyo"
                 && saved.home_view == HomeViewPolicy::RestoreLastView
-                && saved.tui_theme == TuiTheme::HighContrast,
+                && saved.tui_theme == TuiTheme::HighContrast
+                && saved.worker_slots.get() == 2,
             "TUI did not save the selected settings"
         );
         ensure!(
@@ -2214,7 +2218,7 @@ impl Smoke<'_> {
                 ("Week", ""),
                 ("Asia/Tokyo", " \r"),
                 ("Applies on restart", ""),
-                ("> TZ Asia/Tokyo", "\x1b[A"),
+                ("> TZ Asia/Tokyo", "\t\t"),
                 ("> Theme High contrast", ""),
                 ("NO_COLOR active", "\x1b[C"),
                 ("> Theme Monochrome", "\x1b[C"),

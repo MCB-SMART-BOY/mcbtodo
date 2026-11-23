@@ -86,7 +86,8 @@ the main menu.
 
 The action menu opens Settings with Enter. The command prompt also accepts
 `:settings`. General contains timezone and home view. Appearance contains
-theme. Tab and Shift+Tab move through a single focus order across both
+theme. On Linux, Daemon contains the Worker slot count. Tab and Shift+Tab
+move through a single focus order across these
 groups. Short terminals prioritize the focused field over the headings.
 The form's field order drives navigation and the selected renderer row.
 `SettingsScreenModel` projects the preferences form. The form keeps the
@@ -103,6 +104,9 @@ focused setting takes effect and how to edit it. The renderer applies the saved 
 immediately. Nonempty `NO_COLOR` keeps the session monochrome and the header
 shows that `NO_COLOR` is active. Saving still updates the theme preference
 in `config.toml`. The legacy `MCBTODO_TUI_THEME` variable is ignored.
+The Worker slot count is limited to 1–4. Saving a change prompts the user
+to restart the Daemon. Its startup flag `--worker-slots` overrides the saved
+value.
 The running Vault keeps its session timezone until restart. The save message
 compares the saved preference with that active timezone, so it continues to
 show the restart hint after later edits until the two values agree. When

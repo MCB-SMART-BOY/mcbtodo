@@ -103,7 +103,9 @@ deadline。`UnixSocketAgentProvider` 负责 socket 路径和同用户身份校�
 或连接时检查执行条件。连接失败会终止调用。
 
 Daemon 对 Script 和 Agent 使用共享的有界 Worker 槽集合。默认配置为一个槽，
-Linux CLI 可通过 `--worker-slots` 配置 1 到 4 个槽。空闲时按到期时间及入队顺序
+Linux 上 Daemon 启动时读取 `config.toml` 的 `worker_slots`（1 到 4）。启动参数
+`--worker-slots` 优先。读取错误会记录在服务日志中，Worker 容量采用默认值，
+Vault 校验仍使用原有配置规则。空闲时按到期时间及入队顺序
 读取下一项 `pending` 运行，由宿主提供当前时间。运行状态及摘要由
 `mcbtodo-workflow` 拥有，IPC 沿用原有 JSON 字段。`Prepare`、`Ready` 和 `Start`
 使用同一个五秒握手期限。后台线程写入 `Prepare` 并等待 `Ready`，Daemon
@@ -250,8 +252,8 @@ Linux Daemon 每次接纳一条本机 IPC 连接。该连接的线程负责同 U
 
 上述配置与应用数据路径固定相对于用户 home；当前实现不读取 `XDG_CONFIG_HOME` 或 `XDG_DATA_HOME` 来重定位。
 
-TUI Settings 是 `config.toml` 中普通偏好的交互式编辑入口。General 和
-Appearance 共用一个 `AppConfig` 草稿和一套字段焦点。时区文本在提交时解析，
+TUI Settings 是 `config.toml` 中普通偏好的交互式编辑入口。General、
+Appearance 和 Linux 专有的 Daemon 分组共用一个 `AppConfig` 草稿和一套字段焦点。时区文本在提交时解析，
 校验失败时焦点回到时区字段，便于修正原始输入。保存动作直接从当前草稿生成
 配置，平台层使用打开设置时读取的配置作为并发比较基线。
 打开子页、保存和重载通过同一个设置命令入口。`keymap.toml` 的键位草稿由

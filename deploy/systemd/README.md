@@ -16,9 +16,10 @@ sudo tar -xzf target/dist/mcbtodo-linux-$(uname -m).tar.gz -C /
 执行尝试启动并监督该 Worker，因此该二进制必须与 Daemon 一起安装在
 `/usr/bin/`。Worker 不是独立的 systemd 服务，也不单独常驻。
 
-服务默认启动一个 Worker 槽。需要并行执行时，可在服务覆盖配置中为
-`mcbtodo-daemon` 增加 `--worker-slots 2`，允许值为 1 到 4。槽位全部占用时，
-后续工作保持 `pending`，重启恢复和 `outcome_unknown` 语义不变。
+服务默认启动一个 Worker 槽。可以在 TUI 的 Settings → Daemon 中设置 1 到 4
+个槽，保存后运行 `systemctl --user restart mcbtodo-daemon.service`。服务覆盖
+配置中的 `--worker-slots` 启动参数优先。槽位全部占用时，后续工作保持
+`pending`，重启恢复和 `outcome_unknown` 语义不变。
 
 ```sh
 mcbtodo init

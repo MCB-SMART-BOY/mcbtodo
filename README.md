@@ -1,6 +1,6 @@
 # mcbtodo
 
-以 Markdown Vault 为基础的个人工作台。默认打开月历，使用 Helix 风格的键位管理日期选择，在同一工作台查看任务层级、依赖和日程。后台守护进程保存专注计时。当前发行构建目标为 Linux x86_64 和 AArch64。macOS ARM64 和 Windows x64 的前台应用已通过交叉类型检查，原生运行验证仍待完成。
+以 Markdown Vault 为基础的个人工作台。默认打开月历，使用 Helix 风格的键位管理日期选择，在同一工作台查看任务层级、依赖和日程。后台守护进程保存专注计时。当前发行构建目标为 Linux x86_64 和 AArch64。macOS ARM64 和 Windows x64 的前台 CLI、TUI 渲染和 Vault 已在原生 CI 测试。后台服务目前在 Linux 上运行。
 
 ## 开始使用
 
@@ -19,8 +19,8 @@ cargo run --locked -p mcbtodo-daemon
 
 `mcbtodo-worker` 是由 Daemon 按工作流节点启动的内部进程，通常不需要手动运行。浏览 TUI 不需要先构建 Daemon 或 Worker；专注计时、提醒、调度和工作流执行才需要构建并另外运行 `mcbtodo-daemon`。
 
-Daemon 默认只使用一个 Worker 槽。需要并行执行多个独立的脚本或 Agent
-尝试时，可以显式设置 1 到 4 个槽：
+Daemon 默认使用一个 Worker 槽。在 TUI 设置的 Daemon 分组中可以选择
+1 到 4 个槽，重启 Daemon 后生效。启动参数 `--worker-slots` 优先于保存的设置。
 
 ```sh
 mcbtodo-daemon --worker-slots 2
@@ -39,7 +39,7 @@ mcbtodo-daemon --worker-slots 2
 
 | 位置 | 用途 |
 | --- | --- |
-| `~/.config/mcbtodo/config.toml` | 用户偏好。`timezone` 默认 `UTC`，`home_view` 可设为 `month`（默认）或 `restore_last_view`，`tui_theme` 可设为 `default`、`high-contrast` 或 `monochrome`。 |
+| `~/.config/mcbtodo/config.toml` | 用户偏好。`timezone` 默认 `UTC`，`home_view` 可设为 `month`（默认）或 `restore_last_view`，`tui_theme` 可设为 `default`、`high-contrast` 或 `monochrome`。Linux 上的 `worker_slots` 是 1 到 4 之间的整数，默认 1。 |
 | `~/.config/mcbtodo/agents.toml` | 可选的工作流 Agent 策略。每条授权绑定能力和发布摘要。 |
 | `~/.config/mcbtodo/codex.toml` | 可选 Codex Provider 配置。包含受保护的可执行路径、能力、指令和输出 schema。 |
 | `~/.config/mcbtodo/keymap.toml` | 可选 TUI 键位覆盖，可在设置页中编辑。未创建时使用内置默认键位。 |
@@ -47,7 +47,7 @@ mcbtodo-daemon --worker-slots 2
 | `~/.mcbtodo/state/` | 计时和工作流 SQLite 状态、提案队列、工作流 revision 快照、进程锁与 Unix socket。工作流产物保存在工作流 SQLite 状态中。 |
 | `~/.mcbtodo/cache/agents/` | 由 `xtask` 生成的 AI 上下文与固定摘要的下载缓存。 |
 
-在 TUI 中按 `Space` → `Enter` 打开设置，也可以输入 `:settings`。General 包含时区和首页，Appearance 包含主题。用 `Tab` 或 `Shift+Tab` 跨分组切换字段。时区输入 IANA 名称（例如 `Asia/Shanghai`），用 `Delete` 清空输入。选中首页或主题后用 `←` / `→` 切换选项。`Enter` 保存本页设置，`Esc` 放弃。
+在 TUI 中按 `Space` → `Enter` 打开设置，也可以输入 `:settings`。General 包含时区和首页，Appearance 包含主题，Linux 上的 Daemon 包含 Worker 槽位。用 `Tab` 或 `Shift+Tab` 跨分组切换字段。时区输入 IANA 名称（例如 `Asia/Shanghai`），用 `Delete` 清空输入。用 `←` / `→` 调整其他字段。`Enter` 保存本页设置，`Esc` 放弃。
 
 每次打开设置页都会读取当前的 `config.toml`。手工编辑时只需填写想改的字段，其余项使用应用默认值。值未改动时按 `Enter` 会保留原文件。如果打开设置后文件有任何修改（包括注释），保存会提示冲突。按 `F5` 可原地读取新版本并重置当前页的草稿。
 

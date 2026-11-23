@@ -46,6 +46,10 @@ save API compares the baseline, skips unchanged writes, and atomically
 publishes edited preferences. A successful save updates the palette in the
 current session unless `NO_COLOR` is active. Restart applies the
 saved timezone and startup view.
+On Linux, the same draft edits `worker_slots`. The Daemon reads the saved
+limit at startup and gives `--worker-slots` precedence. If preferences cannot
+be loaded, the Daemon logs the cause and uses one slot. Workspace validation
+still reports an invalid configuration.
 
 F2 opens the Keyboard page. It applies successful saves immediately and
 preserves the preferences draft. Both preferences and keyboard bindings use
@@ -192,6 +196,15 @@ that could break the Prepare pipe before the supervisor observed Worker exit.
 The fixture now preserves the pipe on a separate inherited descriptor while
 its descendant holds stdout. The exit assertion, attempt invalidation,
 empty history, and descendant cleanup assertions still run.
+
+CI run `45091917141` passed both Linux jobs, both native foreground jobs,
+and both cross-target checks after the fixture fix. Release preparation run
+`45091524686` passed both Linux artifact smoke jobs and crates.io package
+validation, including the publication dry-run.
+
+The Worker Settings update passed `MCBTODO_REQUIRE_SANDBOX=1 cargo xtask check`
+on Linux AArch64 with 668 tests and no skips. The debug-binary sandbox smoke
+edited the slot count in a pseudoterminal and verified the saved configuration.
 
 ## Latest Review
 

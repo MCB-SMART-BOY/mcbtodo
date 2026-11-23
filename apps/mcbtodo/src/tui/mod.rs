@@ -1282,6 +1282,7 @@ impl State {
         }
 
         let preferences = form.preferences.as_mut().ok()?;
+        let worker_limit_changed = preferences.worker_limit_changed();
         let (updated, written) = match preferences.save(paths) {
             Ok(saved) => saved,
             Err(error) => {
@@ -1301,6 +1302,9 @@ impl State {
             } else {
                 " · Restart for the new timezone"
             });
+        }
+        if worker_limit_changed {
+            self.message.push_str(" · Restart daemon for Worker slots");
         }
         self.home_view = updated.home_view;
         self.overlay = Overlay::None;
@@ -1934,7 +1938,7 @@ mod tests {
             state.message,
             "Settings saved · Restart for the new timezone"
         );
-        save(&mut state, &[KeyCode::BackTab, KeyCode::Right]);
+        save(&mut state, &[KeyCode::Tab, KeyCode::Tab, KeyCode::Right]);
         assert_eq!(
             state.message,
             "Settings saved · Restart for the new timezone"
@@ -1986,10 +1990,7 @@ mod tests {
             panic!("an unreadable config should keep the current draft");
         };
         let preferences = form.preferences.as_ref().expect("loaded draft");
-        assert_eq!(
-            preferences.row(preferences.field()),
-            ("Home", "Restore last view")
-        );
+        assert_eq!(preferences.row(preferences.field()).1, "Restore last view");
         std::fs::remove_dir(&config_path)?;
         std::fs::write(&config_path, edited)?;
 
@@ -2003,11 +2004,8 @@ mod tests {
         };
         let preferences = form.preferences.as_ref().expect("reloaded draft");
         assert!(preferences.field() == settings::Field::HomeView);
-        assert_eq!(preferences.row(preferences.field()), ("Home", "Month"));
-        assert_eq!(
-            preferences.row(settings::Field::Timezone),
-            ("TZ", "Asia/Tokyo")
-        );
+        assert_eq!(preferences.row(preferences.field()).1, "Month");
+        assert_eq!(preferences.row(settings::Field::Timezone).1, "Asia/Tokyo");
         state.handle(key(KeyCode::Right), &vault);
         assert_eq!(
             state.handle(key(KeyCode::Enter), &vault),
@@ -2458,6 +2456,8 @@ mod tests {
 
         state.open_settings(&paths);
         state.handle(key(KeyCode::BackTab), &vault);
+        #[cfg(target_os = "linux")]
+        state.handle(key(KeyCode::BackTab), &vault);
         state.handle(key(KeyCode::Right), &vault);
         let model = screen_model::ScreenModel::project(&state, &vault);
         let buffer = terminal
@@ -2481,7 +2481,39 @@ mod tests {
             "the header should show how to change the focused choice"
         );
         assert!(row_of("Appearance") < row_of("> Theme High contrast"));
+        #[cfg(target_os = "linux")]
+        {
+            assert!(row_of("> Theme High contrast") < row_of("Daemon"));
+            assert!(row_of("Daemon") < row_of("Worker slots 1"));
+        }
         assert!(row_of("> Theme High contrast") < row_of("F5 reload"));
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn settings_save_the_worker_limit_for_the_next_daemon_start() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let paths = WorkspacePaths::from_home(directory.path().to_owned());
+        let vault = Vault::load(directory.path(), chrono_tz::UTC)?;
+        let mut state = State::new("2026-11-24".parse()?);
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+
+        state.open_settings(&paths);
+        for code in [KeyCode::BackTab, KeyCode::Left, KeyCode::Right] {
+            assert_eq!(state.handle(key(code), &vault), Action::Continue);
+        }
+        assert_eq!(
+            state.handle(key(KeyCode::Enter), &vault),
+            Action::Settings(settings::Command::Save)
+        );
+        state.apply_settings(settings::Command::Save, &paths, vault.timezone());
+        assert_eq!(paths.load_config()?.worker_slots.get(), 2);
+        assert_eq!(
+            state.message,
+            "Settings saved · Restart daemon for Worker slots"
+        );
+        assert!(!paths.state_dir().exists());
         Ok(())
     }
 
@@ -2536,6 +2568,15 @@ mod tests {
             rows.iter().any(|row| row.contains("> Theme High contrast")),
             "{rows:?}"
         );
+        #[cfg(target_os = "linux")]
+        {
+            state.handle(key(KeyCode::Tab), &vault);
+            let rows = draw(&state)?;
+            assert!(
+                rows.iter().any(|row| row.contains("> Worker slots 1")),
+                "{rows:?}"
+            );
+        }
         state.handle(key(KeyCode::Tab), &vault);
         state.handle(key(KeyCode::Delete), &vault);
         state.handle(key(KeyCode::BackTab), &vault);
