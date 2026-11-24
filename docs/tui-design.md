@@ -72,8 +72,10 @@ Open proposals with `:proposals` or `Space a`. Inside the list,
 Enter. The command prompt keeps the current list or detail visible. Esc
 returns to the same selection or preview. To refresh or open a different
 proposal from a detail, return to the list first. Use `a` or `x` in an eligible
-detail to act on the proposal. Approval shows the record in the terminal and
-asks you to type `apply` before the queue commits it.
+detail to act on the proposal. `:proposal approve` and `:proposal reject`
+use those same detail actions. Approval shows the record in the terminal and
+asks you to type `apply` before the queue commits it. A decision command is
+ignored when no eligible detail is displayed.
 
 `GraphScreenModel` projects visible list rows, selected nodes,
 adjacent dependencies and dependency edit previews. The TUI shares cached

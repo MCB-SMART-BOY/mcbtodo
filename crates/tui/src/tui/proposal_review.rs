@@ -136,26 +136,37 @@ pub(super) struct Review {
 }
 
 impl Review {
-    pub fn list_command_for_key(&self, key: KeyCode) -> Option<ProposalCommand> {
-        if self.detail.is_some() {
-            return None;
-        }
-        match key {
-            KeyCode::Char('r') => Some(ProposalCommand::Refresh),
-            KeyCode::Enter => Some(ProposalCommand::Review),
+    pub fn command_for_key(&self, key: KeyEvent) -> Option<ProposalCommand> {
+        match (self.detail.is_some(), key.code, key.kind) {
+            (false, KeyCode::Char('r'), _) => Some(ProposalCommand::Refresh),
+            (false, KeyCode::Enter, _) => Some(ProposalCommand::Review),
+            (true, KeyCode::Char('a'), KeyEventKind::Press) => Some(ProposalCommand::Approve),
+            (true, KeyCode::Char('x'), KeyEventKind::Press) => Some(ProposalCommand::Reject),
             _ => None,
         }
     }
 
-    pub fn list_action(&self, command: ProposalCommand) -> Action {
-        if self.detail.is_some() {
-            return Action::Continue;
-        }
-        match command {
-            ProposalCommand::Refresh => Action::Proposals(Request::List),
-            ProposalCommand::Review => self.rows.get(self.row).map_or(Action::Continue, |row| {
-                Action::Proposals(Request::Show(row.id))
-            }),
+    pub fn action(&self, command: ProposalCommand) -> Action {
+        match (command, &self.detail) {
+            (ProposalCommand::Refresh, None) => Action::Proposals(Request::List),
+            (ProposalCommand::Review, None) => {
+                self.rows.get(self.row).map_or(Action::Continue, |row| {
+                    Action::Proposals(Request::Show(row.id))
+                })
+            }
+            (
+                ProposalCommand::Approve,
+                Some(Detail {
+                    pending: Some(id), ..
+                }),
+            ) => Action::ApplyProposal(*id),
+            (
+                ProposalCommand::Reject,
+                Some(Detail {
+                    pending: Some(id), ..
+                }),
+            ) => Action::Proposals(Request::Reject(*id)),
+            _ => Action::Continue,
         }
     }
 
@@ -165,16 +176,6 @@ impl Review {
                 KeyCode::Esc => {
                     self.detail = None;
                     message.clear();
-                }
-                KeyCode::Char('a') if key.kind == KeyEventKind::Press => {
-                    if let Some(id) = detail.pending {
-                        return Some(Action::ApplyProposal(id));
-                    }
-                }
-                KeyCode::Char('x') if key.kind == KeyEventKind::Press => {
-                    if let Some(id) = detail.pending {
-                        return Some(Action::Proposals(Request::Reject(id)));
-                    }
                 }
                 KeyCode::Char('w') if key.kind == KeyEventKind::Press => {
                     self.viewport.toggle_wrap();
@@ -332,6 +333,18 @@ mod tests {
         action
     }
 
+    fn type_command(state: &mut State, vault: &Workspace, input: &str) {
+        for character in std::iter::once(':').chain(input.chars()) {
+            assert_eq!(
+                state.handle(
+                    KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE),
+                    vault,
+                ),
+                Action::Continue
+            );
+        }
+    }
+
     #[test]
     fn proposal_commands_share_list_actions_and_keep_review_context() {
         let home = tempfile::tempdir().unwrap();
@@ -353,12 +366,7 @@ mod tests {
             .proposal_id;
         let mut state = State::new("2026-11-20".parse().unwrap());
         let press = |state: &mut State, code| review(state, &vault, &paths, code);
-        let open_prompt = |state: &mut State, input: &str| {
-            assert_eq!(press(state, KeyCode::Char(':')), Action::Continue);
-            for ch in input.chars() {
-                assert_eq!(press(state, KeyCode::Char(ch)), Action::Continue);
-            }
-        };
+        let open_prompt = |state: &mut State, input: &str| type_command(state, &vault, input);
 
         open_prompt(&mut state, "proposals");
         assert_eq!(
@@ -396,6 +404,84 @@ mod tests {
         assert_eq!(press(&mut state, KeyCode::Enter), Action::Continue);
         assert!(matches!(state.overlay, Overlay::None));
         assert!(state.proposals.detail.is_none());
+    }
+
+    #[test]
+    fn proposal_decision_commands_require_a_displayed_eligible_detail_and_fresh_press() {
+        let home = tempfile::tempdir().unwrap();
+        let paths = WorkspacePaths::from_home(home.path().to_owned());
+        let vault = fixture();
+        let unit = "30000000-0000-4000-8000-000000000002".parse().unwrap();
+        let revision = vault.local().revision(unit).unwrap().digest();
+        let submit_proposal = |date: &str| {
+            let operation = serde_json::from_value(json!({
+                "kind": "set_deadline",
+                "target_id": unit,
+                "expected_revision": revision,
+                "date": date,
+            }))
+            .unwrap();
+            submit(Path::new(ROOT), ZONE, &paths, operation, None)
+                .unwrap()
+                .proposal_id
+        };
+        let first = submit_proposal("2026-11-21");
+        let second = submit_proposal("2026-11-22");
+        let mut state = State::new("2026-11-20".parse().unwrap());
+        let press = |state: &mut State, code| review(state, &vault, &paths, code);
+        let command = |state: &mut State, input: &str| {
+            type_command(state, &vault, input);
+            press(state, KeyCode::Enter)
+        };
+        assert_eq!(
+            command(&mut state, "proposals"),
+            Action::Proposals(Request::List)
+        );
+        assert_eq!(command(&mut state, "proposal approve"), Action::Continue);
+        assert_eq!(command(&mut state, "proposal reject"), Action::Continue);
+
+        state.proposals.row = state
+            .proposals
+            .rows
+            .iter()
+            .position(|row| row.id == first)
+            .unwrap();
+        assert_eq!(
+            press(&mut state, KeyCode::Enter),
+            Action::Proposals(Request::Show(first))
+        );
+        state.proposals.row = state
+            .proposals
+            .rows
+            .iter()
+            .position(|row| row.id == second)
+            .unwrap();
+        let approve = press(&mut state, KeyCode::Char('a'));
+        assert_eq!(approve, Action::ApplyProposal(first));
+        type_command(&mut state, &vault, "proposal approve");
+        let held_enter =
+            KeyEvent::new_with_kind(KeyCode::Enter, KeyModifiers::NONE, KeyEventKind::Repeat);
+        assert_eq!(state.handle(held_enter, &vault), Action::Continue);
+        assert!(matches!(state.overlay, Overlay::Command { .. }));
+        assert_eq!(press(&mut state, KeyCode::Enter), approve);
+
+        assert_eq!(
+            command(&mut state, "proposal reject"),
+            Action::Proposals(Request::Reject(first))
+        );
+        let queue = Queue::open(Path::new(ROOT), ZONE, &paths).unwrap();
+        assert_eq!(queue.review(first).unwrap().status, Status::Rejected);
+        assert_eq!(queue.review(second).unwrap().status, Status::Pending);
+        state.proposals.row = state
+            .proposals
+            .rows
+            .iter()
+            .position(|row| row.id == first)
+            .unwrap();
+        press(&mut state, KeyCode::Enter);
+        assert_eq!(command(&mut state, "proposal approve"), Action::Continue);
+        assert_eq!(command(&mut state, "proposal reject"), Action::Continue);
+        assert!(state.proposals.detail.is_some());
     }
 
     #[test]

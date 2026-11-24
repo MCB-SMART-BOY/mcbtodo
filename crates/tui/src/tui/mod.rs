@@ -33,7 +33,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use chrono::{Datelike, Days, NaiveDate};
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use mcbtodo_application::{
     CalendarItem, InboxSummary, OutlineItem, VaultCommands, project_calendar, project_inbox,
     project_revision_in_snapshot,
@@ -487,7 +487,7 @@ impl State {
             }
             Command::Proposal(command) => {
                 if matches!(self.overlay, Overlay::Proposals) {
-                    return self.proposals.list_action(command);
+                    return self.proposals.action(command);
                 }
                 self.message = "Open the proposal list with :proposals first".into();
             }
@@ -661,7 +661,7 @@ impl State {
                 };
                 match key.code {
                     KeyCode::Esc => self.overlay = previous,
-                    KeyCode::Enter => {
+                    KeyCode::Enter if key.kind == KeyEventKind::Press => {
                         let parsed = Command::parse(input);
                         self.overlay = match &parsed {
                             Ok(Command::Proposal(_)) | Err(_) => previous,
@@ -869,7 +869,7 @@ impl State {
                     };
                     return Continue;
                 }
-                if let Some(command) = self.proposals.list_command_for_key(key.code) {
+                if let Some(command) = self.proposals.command_for_key(key) {
                     return self.execute(Command::Proposal(command), vault);
                 }
                 if let Some(action) = self.proposals.handle(key, &mut self.message) {

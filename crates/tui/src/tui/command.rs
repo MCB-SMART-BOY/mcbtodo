@@ -40,7 +40,9 @@ impl Command {
             ["proposals" | "proposal"] => Ok(Self::Proposals),
             ["proposal", "refresh"] => Ok(Self::Proposal(ProposalCommand::Refresh)),
             ["proposal", "review"] => Ok(Self::Proposal(ProposalCommand::Review)),
-            ["proposal", ..] => Err("Usage: proposal refresh|review".into()),
+            ["proposal", "approve"] => Ok(Self::Proposal(ProposalCommand::Approve)),
+            ["proposal", "reject"] => Ok(Self::Proposal(ProposalCommand::Reject)),
+            ["proposal", ..] => Err("Usage: proposal refresh|review|approve|reject".into()),
             ["graph", "add-dependency"] => Ok(Self::GraphDependencies(DependencyOperation::Add)),
             ["graph", "remove-dependency"] => {
                 Ok(Self::GraphDependencies(DependencyOperation::Remove))
@@ -104,6 +106,8 @@ pub(super) enum TimerCommand {
 pub(super) enum ProposalCommand {
     Refresh,
     Review,
+    Approve,
+    Reject,
 }
 
 pub(super) enum WorkflowCommand {

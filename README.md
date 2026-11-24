@@ -140,7 +140,7 @@ view_workflow = "7"
 
 按 `/` 可按名称或源文件路径搜索 Project、Task 和 WorkUnit。用上下键选择，Enter 切换到 Outline 并聚焦该对象，Esc 取消并保留原焦点。Linux 默认 Vault 的搜索与 Outline 共用同一份服务响应。
 
-按 `:` 打开命令模式：`:view month|week|day|agenda|outline|graph|timeline|workflow` 切换视图，`:search <文字>` 打开对象搜索，`:timer status|start|pause|stop` 操作计时器，`:proposals` 打开提案审阅；`:today`、`:date YYYY-MM-DD`、`:reload`、`:help` 和 `:quit` 提供日期、重载、帮助与退出操作。直接输入视图名称也可切换视图。
+按 `:` 打开命令模式：`:view month|week|day|agenda|outline|graph|timeline|workflow` 切换视图，`:search <文字>` 打开对象搜索，`:timer status|start|pause|stop` 操作计时器，`:proposals` 打开提案审阅；在提案列表中可用 `:proposal refresh|review`，在已显示的待处理提案详情中可用 `:proposal approve|reject`；`:today`、`:date YYYY-MM-DD`、`:reload`、`:help` 和 `:quit` 提供日期、重载、帮助与退出操作。直接输入视图名称也可切换视图。
 
 `:create project|task|event|deadline|reminder|time-block` 和 `Space c` 创建菜单打开同一组表单。`:reminder` 和 `:time-block` 也是可用的简写。按表单提示填写后再按 Enter 提交。
 
